@@ -52,10 +52,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if args.command == "runs" and args.runs_command == "show":
-        # Rendering the timeline requires the journal, which lands in V1.
-        raise NotImplementedError("`satay runs show` lands in V1")
+        return _runs_show(args.run_id, args.data_dir)
 
     parser.error(f"unknown command: {args.command}")
+    return 2  # pragma: no cover - parser.error raises SystemExit
+
+
+def _runs_show(run_id: str, data_dir: str | None) -> int:
+    """Open the store read-only and print a run's text timeline (U1)."""
+    import asyncio
+
+    from satay.config import db_path, resolve_data_dir
+    from satay.journal.store import SQLiteStore
+    from satay.journal.timeline import render_timeline
+
+    path = db_path(resolve_data_dir(data_dir))
+    if not path.exists():
+        print(f"no satay database at {path}", file=sys.stderr)
+        return 1
+
+    async def _load() -> int:
+        store = SQLiteStore.open(path)
+        try:
+            record = await store.get_run(run_id)
+            if record is None:
+                print(f"run {run_id!r} not found", file=sys.stderr)
+                return 1
+            events = list(await store.read_events(run_id))
+        finally:
+            store.close()
+        print(render_timeline(events, run_id=run_id))
+        return 0
+
+    return asyncio.run(_load())
 
 
 if __name__ == "__main__":  # pragma: no cover

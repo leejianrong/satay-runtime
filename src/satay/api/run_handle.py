@@ -1,27 +1,57 @@
-"""The run handle returned by ``satay.start``.
+"""The run handle returned by ``satay.start`` (N4).
 
 Drives a run to a terminal state (``result``) and reads current state (``status``).
-``cancel`` lands in V5. Behaviour lands in V1; this is the public shape.
+The heavy lifting — create/resume/no-op decision and the replay drive — lives in a
+:class:`RunController` (see :mod:`satay.api.runner`) attached to the handle, so the
+public ``satay.api`` package stays free of a heavy import cycle. ``cancel`` lands in
+V5.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
+
+
+class WorkflowFailedError(RuntimeError):
+    """Raised by ``result()`` when the run terminated in ``WorkflowFailed``.
+
+    Carries the recorded error type, message, and native traceback string so callers
+    and the CLI surface the original failure.
+    """
+
+    def __init__(self, error_type: str, message: str, tb: str) -> None:
+        super().__init__(f"{error_type}: {message}")
+        self.error_type = error_type
+        self.error_message = message
+        self.traceback_str = tb
+
+
+class RunController(Protocol):
+    """The drive/read backend a :class:`RunHandle` delegates to."""
+
+    async def result(self) -> Any: ...
+
+    async def status(self) -> str: ...
 
 
 class RunHandle:
-    """Handle to a durable run (N4). Public surface; behaviour lands in V1."""
+    """Handle to a durable run (N4)."""
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, controller: RunController | None = None) -> None:
         self.run_id = run_id
+        self._controller = controller
 
     async def result(self) -> Any:
-        """Drive the run to a terminal state and return/raise its outcome (lands in V1)."""
-        raise NotImplementedError("RunHandle.result lands in V1")
+        """Drive the run to a terminal state and return/raise its outcome."""
+        if self._controller is None:  # pragma: no cover - defensive
+            raise RuntimeError("run handle is not attached to a controller")
+        return await self._controller.result()
 
     async def status(self) -> str:
-        """Read the run's current status without driving it (lands in V1)."""
-        raise NotImplementedError("RunHandle.status lands in V1")
+        """Read the run's current status without driving it."""
+        if self._controller is None:  # pragma: no cover - defensive
+            raise RuntimeError("run handle is not attached to a controller")
+        return await self._controller.status()
 
     async def cancel(self) -> None:
         """Request cancellation of the run (lands in V5)."""
