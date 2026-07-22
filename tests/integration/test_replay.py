@@ -76,7 +76,13 @@ async def test_hit_reuses_recorded_result_without_reexecuting() -> None:
 
 
 async def test_determinism_guard_raises_on_task_name_collision() -> None:
-    """A resume whose workflow issues a different task at a recorded position errors."""
+    """A resume whose workflow issues a different task at a recorded position errors.
+
+    V2 upgrades the V1 guard to the public ``NondeterminismError``; under ``strict`` it
+    hard-fails (the default ``warn`` mode logs and continues — covered in the E2E tier).
+    """
+    from satay.api import NondeterminismError
+
     store = SQLiteStore.open(":memory:")
     # Drive ri_one_step, crashing after ri_alpha's TaskCompleted so the run is left
     # non-terminal with ri_alpha recorded at durable-call position 0.
@@ -90,7 +96,7 @@ async def test_determinism_guard_raises_on_task_name_collision() -> None:
 
     # Resume the SAME run_id with a workflow that issues ri_beta first — a different
     # task name at the recorded position 0.
-    resumed = start(ri_beta_first, 1, run_id=handle.run_id, store=store)
-    with pytest.raises(RuntimeError, match="nondeterministic"):
+    resumed = start(ri_beta_first, 1, run_id=handle.run_id, store=store, effect_safety="strict")
+    with pytest.raises(NondeterminismError, match="nondeterministic"):
         await resumed.result()
     store.close()

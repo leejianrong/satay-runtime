@@ -9,8 +9,13 @@ drive; a fresh resolver is created per drive so ordinals restart from 0. Explici
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
+
+#: Field separator for the idempotency-key pre-image (a byte that cannot occur in the
+#: components, so the derivation is unambiguous).
+_KEY_SEP = "\x00"
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +24,19 @@ class CallIdentity:
 
     task_name: str
     ordinal: int
+
+
+def idempotency_key(run_id: str, task_name: str, ordinal_or_map_key: int | str) -> str:
+    """Derive the stable idempotency key of a logical durable call (A4.3, ADR-0006).
+
+    ``key = hash(run_id, task_name, ordinal_or_map_key)`` — deliberately excluding task
+    *arguments* so it is **stable across physical retries** of the same logical task and
+    **distinct across invocations** (a different ordinal, task, or run yields a different
+    key). ``ordinal_or_map_key`` is the per-name ordinal today; V4 passes an explicit
+    fan-out map key here. Exposed read-only to task bodies via ``ctx.idempotency_key``.
+    """
+    pre_image = _KEY_SEP.join((run_id, task_name, str(ordinal_or_map_key)))
+    return hashlib.sha256(pre_image.encode("utf-8")).hexdigest()
 
 
 class IdentityResolver:

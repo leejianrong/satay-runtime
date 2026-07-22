@@ -17,6 +17,8 @@ The public surface (ARCHITECTURE §1):
 from __future__ import annotations
 
 from satay.api import (
+    EffectSafetyError,
+    NondeterminismError,
     RunHandle,
     TaskContext,
     gather,
@@ -26,6 +28,7 @@ from satay.api import (
     start,
     start_child,
     task,
+    task_context,
     wait_for_event,
     workflow,
 )
@@ -33,6 +36,8 @@ from satay.api import (
 __version__ = "0.0.0"
 
 __all__ = [
+    "EffectSafetyError",
+    "NondeterminismError",
     "RunHandle",
     "TaskContext",
     "__version__",
@@ -43,6 +48,7 @@ __all__ = [
     "start",
     "start_child",
     "task",
+    "task_context",
     "wait_for_event",
     "workflow",
 ]

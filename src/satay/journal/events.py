@@ -21,12 +21,13 @@ from typing import Any
 
 
 class EventType(StrEnum):
-    """The V1 journal event types (a strict prefix of ADR-0004's full set)."""
+    """The journal event types active through V2 (a prefix of ADR-0004's full set)."""
 
     WORKFLOW_CREATED = "WorkflowCreated"
     WORKFLOW_RESUMED = "WorkflowResumed"
     TASK_SCHEDULED = "TaskScheduled"
     TASK_ATTEMPT_STARTED = "TaskAttemptStarted"
+    TASK_ATTEMPT_FAILED = "TaskAttemptFailed"
     TASK_COMPLETED = "TaskCompleted"
     WORKFLOW_COMPLETED = "WorkflowCompleted"
     WORKFLOW_FAILED = "WorkflowFailed"

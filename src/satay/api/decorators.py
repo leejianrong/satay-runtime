@@ -38,11 +38,15 @@ def task(
     retries: int = 0,
     timeout: float | None = None,
     side_effect: bool = False,
+    idempotent: bool = False,
 ) -> Callable[[_AsyncFn], _AsyncFn]:
     """Register a task and wrap calls as durable calls (N2).
 
-    ``retries``/``timeout``/``side_effect`` are recorded on the definition now; the
-    retry loop and effect-safety enforcement land in V2 (single attempt in V1).
+    ``retries``/``timeout`` drive the retry loop with exponential backoff (N10).
+    ``side_effect``/``idempotent`` drive effect-safety enforcement (A10.2): a
+    retryable side-effecting task must set ``idempotent=True`` (a promise it keys its
+    effect on ``ctx.idempotency_key``), else ``effect_safety=strict`` rejects it at
+    schedule time.
     """
 
     def decorator(fn: _AsyncFn) -> _AsyncFn:
@@ -52,6 +56,7 @@ def task(
             retries=retries,
             timeout=timeout,
             side_effect=side_effect,
+            idempotent=idempotent,
         )
         REGISTRY.register_task(definition)
 
@@ -59,8 +64,16 @@ def task(
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             driver = CURRENT_DRIVER.get()
             if driver is None:
-                # Outside a workflow drive: execute inline (tasks stay callable).
-                return await fn(*args, **kwargs)
+                # Outside a workflow drive: execute inline (tasks stay callable) with a
+                # detached context so ``task_context()`` still works.
+                from satay.api.context import CURRENT_TASK_CONTEXT
+                from satay.executor import detached_context
+
+                token = CURRENT_TASK_CONTEXT.set(detached_context(definition.name))
+                try:
+                    return await fn(*args, **kwargs)
+                finally:
+                    CURRENT_TASK_CONTEXT.reset(token)
             return await driver.durable_call(definition, args, kwargs)
 
         setattr(wrapper, TASK_ATTR, definition)

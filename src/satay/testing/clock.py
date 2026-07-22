@@ -9,6 +9,7 @@ is what the executor and timer loop depend on.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
@@ -86,8 +87,16 @@ class ManualClock:
         deadline = self._elapsed + seconds
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[None] = loop.create_future()
-        self._sleepers.append((deadline, fut))
-        await fut
+        entry = (deadline, fut)
+        self._sleepers.append(entry)
+        try:
+            await fut
+        except asyncio.CancelledError:
+            # A cancelled sleeper (e.g. a timeout race the body won) must not linger in
+            # ``pending_sleepers`` — drop it so test introspection stays accurate.
+            with contextlib.suppress(ValueError):
+                self._sleepers.remove(entry)
+            raise
 
     @property
     def pending_sleepers(self) -> int:

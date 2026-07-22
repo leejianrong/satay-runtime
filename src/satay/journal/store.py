@@ -24,7 +24,8 @@ from satay.journal.codec import from_json, to_json
 from satay.journal.events import Event, EventType, RunRecord, RunStatus
 
 #: The schema version this build writes. Forward-only migrations bring older DBs up.
-SCHEMA_VERSION = 1
+#: v2 (V2 slice) adds the ``runs.idempotency_key`` index backing keyed ``satay.start``.
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -46,6 +47,12 @@ CREATE TABLE IF NOT EXISTS events (
     PRIMARY KEY (run_id, seq)
 );
 """
+
+#: The index backing keyed idempotent ``satay.start`` look-up (V2, build step 5).
+_IDEMPOTENCY_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_runs_idempotency_key "
+    "ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL"
+)
 
 
 class SQLiteStore:
@@ -95,6 +102,10 @@ class SQLiteStore:
             )
         if current < 1:
             self._conn.executescript(_SCHEMA)
+        if current < 2:
+            # v1 → v2: add the idempotency-key index (idempotent under IF NOT EXISTS).
+            self._conn.execute(_IDEMPOTENCY_INDEX)
+        if current < SCHEMA_VERSION:
             self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     # -- writes ------------------------------------------------------------------
@@ -186,6 +197,24 @@ class SQLiteStore:
         """List known run ids, oldest first."""
         rows = self._conn.execute("SELECT run_id FROM runs ORDER BY created_at").fetchall()
         return [row["run_id"] for row in rows]
+
+    async def get_run_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None:
+        """Return the earliest run created with ``idempotency_key`` (keyed start, N13)."""
+        row = self._conn.execute(
+            "SELECT run_id, workflow_name, status, code_version, created_at, idempotency_key "
+            "FROM runs WHERE idempotency_key = ? ORDER BY created_at LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return RunRecord(
+            run_id=row["run_id"],
+            workflow_name=row["workflow_name"],
+            status=RunStatus(row["status"]),
+            code_version=row["code_version"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            idempotency_key=row["idempotency_key"],
+        )
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> Event:

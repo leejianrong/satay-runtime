@@ -22,6 +22,7 @@ from typing import Any
 
 from satay.api.registry import WorkflowDefinition
 from satay.api.run_handle import RunHandle, WorkflowFailedError
+from satay.config import EffectSafety
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
 from satay.journal.events import (
@@ -35,6 +36,7 @@ from satay.journal.events import (
 from satay.replay.engine import ReplayEngine, _return_annotation
 from satay.testing.clock import Clock
 from satay.testing.faults import FaultInjector
+from satay.testing.rng import Rng
 from satay.versioning import stamp_code_version
 
 
@@ -49,16 +51,26 @@ class RunController:
         workflow_def: WorkflowDefinition,
         workflow_input: Any,
         idempotency_key: str | None,
+        key_lookup: bool,
         injector: FaultInjector | None,
         clock: Clock | None,
+        rng: Rng | None,
+        effect_safety: EffectSafety,
     ) -> None:
         self._store = store
         self._run_id = run_id
         self._wf = workflow_def
         self._input = workflow_input
         self._idempotency_key = idempotency_key
+        self._key_lookup = key_lookup
         self._injector = injector
         self._clock = clock
+        self._rng = rng
+        self._effect_safety = effect_safety
+
+    def current_run_id(self) -> str:
+        """The resolved run id (may change once a keyed start resolves, N13)."""
+        return self._run_id
 
     def _now(self) -> Any:
         return self._clock.now() if self._clock is not None else utc_now()
@@ -69,8 +81,18 @@ class RunController:
             await self._injector.reached(stored.type.value)
         return stored
 
+    async def _resolve_keyed_run(self) -> None:
+        """Resolve a keyed idempotent start to any existing run (N13, build step 5)."""
+        if not self._key_lookup or self._idempotency_key is None:
+            return
+        existing = await self._store.get_run_by_idempotency_key(self._idempotency_key)
+        if existing is not None:
+            # Repeated key → the same logical run: resume it or return its result.
+            self._run_id = existing.run_id
+
     async def result(self) -> Any:
         """Ensure the run exists, drive it if non-terminal, return/raise the outcome."""
+        await self._resolve_keyed_run()
         record = await self._store.get_run(self._run_id)
 
         if record is None:
@@ -91,6 +113,7 @@ class RunController:
 
     async def status(self) -> str:
         """Return the run's current status ('running' until the row exists)."""
+        await self._resolve_keyed_run()
         record = await self._store.get_run(self._run_id)
         if record is None:
             return RunStatus.RUNNING.value
@@ -132,6 +155,8 @@ class RunController:
             run_id=self._run_id,
             injector=self._injector,
             clock=self._clock,
+            rng=self._rng,
+            effect_safety=self._effect_safety,
         )
         await engine.drive(self._wf, self._input)
 
@@ -160,18 +185,26 @@ def build_run_handle(
     store: Store,
     injector: FaultInjector | None,
     clock: Clock | None,
+    rng: Rng | None,
+    effect_safety: EffectSafety,
 ) -> RunHandle:
     """Resolve the workflow definition and return a handle wired to a controller."""
     workflow_def = _resolve_workflow(workflow)
     resolved_run_id = run_id or uuid.uuid4().hex
+    # A keyed start (idempotency_key, no explicit run_id) resolves to any existing run
+    # with that key; an explicit run_id is an unambiguous resume-by-id and wins.
+    key_lookup = idempotency_key is not None and run_id is None
     controller = RunController(
         store=store,
         run_id=resolved_run_id,
         workflow_def=workflow_def,
         workflow_input=workflow_input,
         idempotency_key=idempotency_key,
+        key_lookup=key_lookup,
         injector=injector,
         clock=clock,
+        rng=rng,
+        effect_safety=effect_safety,
     )
     return RunHandle(resolved_run_id, controller)
 

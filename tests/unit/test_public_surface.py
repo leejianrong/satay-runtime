@@ -20,10 +20,19 @@ def test_public_surface_is_exported() -> None:
         "start_child",
         "TaskContext",
         "RunHandle",
+        # V2 public error types (N9/A10.2).
+        "NondeterminismError",
+        "EffectSafetyError",
     }
     assert expected <= set(satay.__all__)
     for name in expected:
         assert hasattr(satay, name), name
+
+
+def test_v2_error_types_are_public() -> None:
+    """NondeterminismError/EffectSafetyError are public runtime errors (V2)."""
+    assert issubclass(satay.NondeterminismError, RuntimeError)
+    assert issubclass(satay.EffectSafetyError, RuntimeError)
 
 
 def test_version_is_exposed() -> None:
