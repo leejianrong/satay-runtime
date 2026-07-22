@@ -1,0 +1,199 @@
+"""``SQLiteStore`` — the V1 durable store (A3.5, ADR-0017).
+
+Raw parameterized SQL over the stdlib ``sqlite3`` driver — no ORM (ADR-0016). One
+process, one writer (ADR-0007/0012): a single long-lived connection guarded by a
+per-run :class:`asyncio.Lock`. Each event is one transaction, and its per-run ``seq``
+is allocated (``MAX(seq)+1``) *inside* that transaction, which the single-writer model
+makes sufficient without row locking.
+
+Schema is versioned with ``PRAGMA user_version`` and migrated forward on open. A
+temp-file path or ``":memory:"`` is supported (the latter keeps the one connection
+alive for the store's lifetime, since a fresh connection is a fresh in-memory DB).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from collections import defaultdict
+from collections.abc import Sequence
+from datetime import datetime
+from pathlib import Path
+
+from satay.journal.codec import from_json, to_json
+from satay.journal.events import Event, EventType, RunRecord, RunStatus
+
+#: The schema version this build writes. Forward-only migrations bring older DBs up.
+SCHEMA_VERSION = 1
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id          TEXT PRIMARY KEY,
+    workflow_name   TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    code_version    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    idempotency_key TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    run_id       TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    event_id     TEXT NOT NULL UNIQUE,
+    type         TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+);
+"""
+
+
+class SQLiteStore:
+    """Append-only journal store backed by stdlib ``sqlite3``.
+
+    Construct with :meth:`open`; close with :meth:`close`. Safe as an async context
+    manager.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._conn = connection
+        self._run_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    @classmethod
+    def open(cls, path: str | Path) -> SQLiteStore:
+        """Open (creating if needed) a store at ``path`` (a file path or ``":memory:"``)."""
+        conn = sqlite3.connect(
+            str(path),
+            isolation_level=None,  # explicit transaction control
+            check_same_thread=False,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        store = cls(conn)
+        store._migrate()
+        return store
+
+    def close(self) -> None:
+        """Close the underlying connection."""
+        self._conn.close()
+
+    async def __aenter__(self) -> SQLiteStore:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.close()
+
+    # -- schema ------------------------------------------------------------------
+
+    def _migrate(self) -> None:
+        current = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if current > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database written by a newer satay (user_version={current} > "
+                f"{SCHEMA_VERSION}); refusing to open (ADR-0017)"
+            )
+        if current < 1:
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    # -- writes ------------------------------------------------------------------
+
+    async def create_run(self, record: RunRecord) -> None:
+        """Insert a new run row; a repeated ``run_id`` is ignored (idempotent)."""
+        async with self._run_locks[record.run_id]:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO runs "
+                "(run_id, workflow_name, status, code_version, created_at, idempotency_key) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    record.run_id,
+                    record.workflow_name,
+                    record.status.value,
+                    record.code_version,
+                    record.created_at.isoformat(),
+                    record.idempotency_key,
+                ),
+            )
+
+    async def append(self, event: Event) -> Event:
+        """Atomically append one event, allocating its per-run ``seq`` in-transaction."""
+        async with self._run_locks[event.run_id]:
+            conn = self._conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM events WHERE run_id = ?",
+                    (event.run_id,),
+                ).fetchone()
+                seq = int(row[0]) + 1
+                conn.execute(
+                    "INSERT INTO events (run_id, seq, event_id, type, ts, payload_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        event.run_id,
+                        seq,
+                        event.event_id,
+                        event.type.value,
+                        event.ts.isoformat(),
+                        to_json(dict(event.payload)),
+                    ),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            return event.with_seq(seq)
+
+    async def set_status(self, run_id: str, status: RunStatus) -> None:
+        """Update a run's denormalised status."""
+        async with self._run_locks[run_id]:
+            self._conn.execute(
+                "UPDATE runs SET status = ? WHERE run_id = ?",
+                (status.value, run_id),
+            )
+
+    # -- reads -------------------------------------------------------------------
+
+    async def read_events(self, run_id: str) -> Sequence[Event]:
+        """Read a run's events in ``seq`` order."""
+        rows = self._conn.execute(
+            "SELECT run_id, seq, event_id, type, ts, payload_json "
+            "FROM events WHERE run_id = ? ORDER BY seq",
+            (run_id,),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    async def get_run(self, run_id: str) -> RunRecord | None:
+        """Return the run record, or ``None`` if unknown."""
+        row = self._conn.execute(
+            "SELECT run_id, workflow_name, status, code_version, created_at, idempotency_key "
+            "FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return RunRecord(
+            run_id=row["run_id"],
+            workflow_name=row["workflow_name"],
+            status=RunStatus(row["status"]),
+            code_version=row["code_version"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            idempotency_key=row["idempotency_key"],
+        )
+
+    async def list_runs(self) -> Sequence[str]:
+        """List known run ids, oldest first."""
+        rows = self._conn.execute("SELECT run_id FROM runs ORDER BY created_at").fetchall()
+        return [row["run_id"] for row in rows]
+
+    @staticmethod
+    def _row_to_event(row: sqlite3.Row) -> Event:
+        return Event(
+            run_id=row["run_id"],
+            type=EventType(row["type"]),
+            payload=from_json(row["payload_json"]),
+            ts=datetime.fromisoformat(row["ts"]),
+            event_id=row["event_id"],
+            seq=int(row["seq"]),
+        )
