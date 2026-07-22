@@ -33,13 +33,22 @@ class RunController(Protocol):
 
     async def status(self) -> str: ...
 
+    def current_run_id(self) -> str: ...
+
 
 class RunHandle:
     """Handle to a durable run (N4)."""
 
     def __init__(self, run_id: str, controller: RunController | None = None) -> None:
-        self.run_id = run_id
+        self._run_id = run_id
         self._controller = controller
+
+    @property
+    def run_id(self) -> str:
+        """The run id. A keyed idempotent start may resolve it once driven (N13)."""
+        if self._controller is not None:
+            return self._controller.current_run_id()
+        return self._run_id
 
     async def result(self) -> Any:
         """Drive the run to a terminal state and return/raise its outcome."""

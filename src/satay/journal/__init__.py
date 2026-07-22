@@ -53,6 +53,10 @@ class Store(Protocol):
         """Return the run record, or ``None`` if the run is unknown."""
         ...
 
+    async def get_run_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None:
+        """Return the run created with ``idempotency_key`` (keyed start, N13), or ``None``."""
+        ...
+
     async def set_status(self, run_id: str, status: RunStatus) -> None:
         """Update a run's denormalised status."""
         ...

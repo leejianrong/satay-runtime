@@ -11,6 +11,7 @@ agree on where things go.
 from __future__ import annotations
 
 import os
+from enum import StrEnum
 from pathlib import Path
 
 #: Name of the project-local data directory (ADR-0017).
@@ -18,6 +19,51 @@ DEFAULT_DATA_DIR_NAME = ".satay"
 
 #: Environment variable that overrides the data directory.
 DATA_DIR_ENV_VAR = "SATAY_DATA_DIR"
+
+#: Environment variable providing the project-level effect-safety mode (ADR-0006).
+EFFECT_SAFETY_ENV_VAR = "SATAY_EFFECT_SAFETY"
+
+
+class EffectSafety(StrEnum):
+    """Project effect-safety mode (A10.2, ADR-0006).
+
+    In :attr:`STRICT`, a retryable ``side_effect=True`` task must declare an
+    idempotency or compensation strategy or the runtime rejects it at schedule time.
+    :attr:`WARN` (the dev default) logs the same condition; :attr:`OFF` is silent.
+    """
+
+    OFF = "off"
+    WARN = "warn"
+    STRICT = "strict"
+
+    @classmethod
+    def parse(cls, value: str | EffectSafety | None) -> EffectSafety:
+        """Parse a mode, defaulting to :attr:`WARN` (the dev default) when unset.
+
+        Raises :class:`ValueError` naming the valid modes for an unknown value.
+        """
+        if value is None:
+            return cls.WARN
+        if isinstance(value, cls):
+            return value
+        try:
+            return cls(str(value).strip().lower())
+        except ValueError:
+            valid = ", ".join(m.value for m in cls)
+            raise ValueError(
+                f"unknown effect_safety mode {value!r}; expected one of: {valid}"
+            ) from None
+
+
+def resolve_effect_safety(override: str | EffectSafety | None = None) -> EffectSafety:
+    """Resolve the effect-safety mode: explicit ``override`` then env var then default.
+
+    The default is :attr:`EffectSafety.WARN` (the dev default, ADR-0006).
+    """
+    if override is not None:
+        return EffectSafety.parse(override)
+    return EffectSafety.parse(os.environ.get(EFFECT_SAFETY_ENV_VAR))
+
 
 #: Filename of the SQLite database inside the data directory (created in V1).
 DB_FILENAME = "satay.db"

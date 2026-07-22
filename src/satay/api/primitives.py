@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING, Any
 from satay.api.run_handle import RunHandle
 
 if TYPE_CHECKING:
+    from satay.config import EffectSafety
     from satay.journal import Store
     from satay.testing.clock import Clock
     from satay.testing.faults import FaultInjector
+    from satay.testing.rng import Rng
 
 
 def start(
@@ -28,21 +30,28 @@ def start(
     store: Store | None = None,
     injector: FaultInjector | None = None,
     clock: Clock | None = None,
+    rng: Rng | None = None,
+    effect_safety: str | EffectSafety | None = None,
 ) -> RunHandle:
     """Create or look up a run and return its handle (N3).
 
     New run (no ``run_id`` or an unknown one): allocate a stable ``run_id``, record
     ``WorkflowCreated``, and drive on ``await handle.result()``. Resume: pass the
-    ``run_id`` of an existing **non-terminal** run to re-drive it (the V1 crash-recovery
-    mechanism — append-only keyed idempotent look-up, N13, is deferred to V2). A
-    terminal ``run_id`` is a no-op that returns the recorded result.
+    ``run_id`` of an existing **non-terminal** run to re-drive it. Keyed idempotent
+    start (N13): pass ``idempotency_key=`` (without a ``run_id``) and a repeated key
+    resolves to the same logical run instead of creating a duplicate.
 
-    ``store`` / ``injector`` / ``clock`` are the injectable test seam (ADR-0011);
-    ``store`` defaults to the project-local ``./.satay`` SQLite database.
+    A terminal run (by id or key) is a no-op that returns the recorded result.
+
+    ``store`` / ``injector`` / ``clock`` / ``rng`` are the injectable test seam
+    (ADR-0011); ``store`` defaults to the project-local ``./.satay`` SQLite database.
+    ``effect_safety`` overrides the project mode (``off``/``warn``/``strict``);
+    unset resolves from ``SATAY_EFFECT_SAFETY`` then the ``warn`` dev default.
     """
     # Imported lazily: the runner pulls in the replay engine, and importing it at
     # module scope would form a cycle through ``satay.api``.
     from satay.api.runner import build_run_handle
+    from satay.config import resolve_effect_safety
 
     resolved_store = store if store is not None else _default_store()
     return build_run_handle(
@@ -53,6 +62,8 @@ def start(
         store=resolved_store,
         injector=injector,
         clock=clock,
+        rng=rng,
+        effect_safety=resolve_effect_safety(effect_safety),
     )
 
 

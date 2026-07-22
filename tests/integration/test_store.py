@@ -10,13 +10,14 @@ from satay.journal.events import Event, EventType, RunRecord, RunStatus
 from satay.journal.store import SQLiteStore
 
 
-def _run(run_id: str) -> RunRecord:
+def _run(run_id: str, *, idempotency_key: str | None = None) -> RunRecord:
     return RunRecord(
         run_id=run_id,
         workflow_name="demo",
         status=RunStatus.RUNNING,
         code_version="dev:test",
         created_at=datetime(2026, 7, 22, tzinfo=UTC),
+        idempotency_key=idempotency_key,
     )
 
 
@@ -73,6 +74,41 @@ async def test_set_status_and_get_run() -> None:
     assert record.status is RunStatus.COMPLETED
     assert await store.get_run("missing") is None
     store.close()
+
+
+async def test_get_run_by_idempotency_key_uses_the_index() -> None:
+    store = SQLiteStore.open(":memory:")
+    await store.create_run(_run("r1", idempotency_key="order-42"))
+    await store.create_run(_run("r2", idempotency_key="order-99"))
+    await store.create_run(_run("r3"))  # no key
+
+    found = await store.get_run_by_idempotency_key("order-42")
+    assert found is not None
+    assert found.run_id == "r1"
+    assert await store.get_run_by_idempotency_key("missing") is None
+    store.close()
+
+
+async def test_v1_database_migrates_to_v2_index(tmp_path: object) -> None:
+    """A v1 database (no index) opens and gains the idempotency index on migration."""
+    from pathlib import Path
+
+    assert isinstance(tmp_path, Path)
+    db = tmp_path / "satay.db"
+    store = SQLiteStore.open(db)
+    store._conn.execute("PRAGMA user_version=1")  # pretend it was written by v1
+    store.close()
+
+    reopened = SQLiteStore.open(db)  # migrates 1 → 2
+    assert reopened._conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    names = {
+        row[0]
+        for row in reopened._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert "idx_runs_idempotency_key" in names
+    reopened.close()
 
 
 async def test_refuses_database_from_newer_satay(tmp_path: object) -> None:

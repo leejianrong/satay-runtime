@@ -11,6 +11,7 @@ parked), so its presence *is* the interruption.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from satay.journal.events import Event, EventType
 
@@ -26,6 +27,19 @@ def interruption_seqs(events: Sequence[Event]) -> set[int]:
     return {e.seq for e in events if e.type is EventType.WORKFLOW_RESUMED}
 
 
+def model_usage(events: Sequence[Event]) -> list[dict[str, Any]]:
+    """Return every recorded model-usage entry across a run's ``TaskCompleted`` events.
+
+    The read path for the generic usage slot written by ``ctx.record_model_usage``
+    (N14); Studio renders these in V6. Empty when no task self-reported usage.
+    """
+    entries: list[dict[str, Any]] = []
+    for event in events:
+        if event.type is EventType.TASK_COMPLETED:
+            entries.extend(event.payload.get("usage", []))
+    return entries
+
+
 def _summarise_payload(event: Event) -> str:
     """Render the key payload fields for one event type as a compact string."""
     p = event.payload
@@ -34,11 +48,19 @@ def _summarise_payload(event: Event) -> str:
     if event.type in (
         EventType.TASK_SCHEDULED,
         EventType.TASK_ATTEMPT_STARTED,
+        EventType.TASK_ATTEMPT_FAILED,
         EventType.TASK_COMPLETED,
     ):
         parts = [f"task={p.get('task_name')}", f"ordinal={p.get('ordinal')}"]
         if event.type is EventType.TASK_ATTEMPT_STARTED:
             parts.append(f"attempt={p.get('attempt')}")
+        if event.type is EventType.TASK_ATTEMPT_FAILED:
+            error = p.get("error", {})
+            parts.append(f"attempt={p.get('attempt')}")
+            parts.append(f"error={error.get('type')}: {error.get('message')}")
+            next_delay = p.get("next_delay")
+            if next_delay is not None:
+                parts.append(f"next_delay={next_delay:.3f}s")
         return " ".join(parts)
     if event.type is EventType.WORKFLOW_FAILED:
         error = p.get("error", {})

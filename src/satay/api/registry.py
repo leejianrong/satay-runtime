@@ -24,8 +24,8 @@ class WorkflowDefinition:
 class TaskDefinition:
     """A registered ``@satay.task``.
 
-    ``retries`` / ``timeout`` / ``side_effect`` are recorded but inert in V1 (the
-    retry loop and effect-safety enforcement land in V2).
+    ``retries`` / ``timeout`` drive the V2 retry loop (N10); ``side_effect`` /
+    ``idempotent`` drive effect-safety enforcement (A10.2).
     """
 
     name: str
@@ -33,6 +33,17 @@ class TaskDefinition:
     retries: int = 0
     timeout: float | None = None
     side_effect: bool = False
+    idempotent: bool = False
+
+    @property
+    def is_effect_guarded(self) -> bool:
+        """Whether a retryable side-effecting task declares an idempotency strategy.
+
+        Guarded means the author flagged ``idempotent=True`` — a promise that the body
+        keys its effect on ``ctx.idempotency_key`` (or otherwise compensates). Unguarded
+        retryable side effects are rejected under ``effect_safety=strict`` (ADR-0006).
+        """
+        return self.idempotent
 
 
 class Registry:
