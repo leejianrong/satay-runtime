@@ -30,15 +30,25 @@ def test_version_is_exposed() -> None:
     assert isinstance(satay.__version__, str)
 
 
-def test_stubs_raise_not_implemented() -> None:
-    async def dummy() -> None: ...
+def test_v1_decorators_are_live() -> None:
+    """V1 implements @workflow/@task; they register rather than raise."""
 
+    @satay.workflow
+    async def wf(value: int) -> int:  # pragma: no cover - not driven here
+        return value
+
+    @satay.task(retries=1)
+    async def tk(value: int) -> int:  # pragma: no cover - not driven here
+        return value
+
+    assert hasattr(wf, "__satay_workflow__")
+    assert hasattr(tk, "__satay_task__")
+
+
+def test_deferred_primitives_still_raise() -> None:
+    """Sync primitives landing in later slices still raise NotImplementedError."""
     with pytest.raises(NotImplementedError):
-        satay.workflow(dummy)
-    with pytest.raises(NotImplementedError):
-        satay.task(retries=1)
-    with pytest.raises(NotImplementedError):
-        satay.start(dummy)
+        satay.send_event("run-1", "event-name")
 
 
 def test_config_data_dir_convention(temp_data_dir: object) -> None:
