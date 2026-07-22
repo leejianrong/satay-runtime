@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "satay"
+version = "0.0.0"
+description = "Satay Runtime — a local-first durable-execution runtime for async Python workflows."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Jian", email = "leejianrong2@gmail.com" }]
+keywords = [
+    "durable-execution",
+    "workflow",
+    "asyncio",
+    "event-sourcing",
+    "replay",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+# Near-zero core dependency surface (ADR-0013, ADR-0016): the runtime core is
+# stdlib-first. Nothing goes here without an ADR.
+dependencies = []
+
+[project.optional-dependencies]
+# The debugger stack (ADR-0013 / ADR-0016). Declared now, wired up in later slices.
+studio = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pydantic>=2.6",
+    "typer>=0.12",
+]
+
+[project.scripts]
+# Core, stdlib-only, read-only CLI (argparse). `satay dev` + Typer live in the
+# studio extra (ADR-0016) and are not wired to this entry point.
+satay = "satay.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/leejianrong/satay-runtime"
+Repository = "https://github.com/leejianrong/satay-runtime"
+
+# uv dev dependency group (PEP 735); installed by default on `uv sync`.
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/satay"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/satay", "README.md", "LICENSE"]
+
+# ---------------------------------------------------------------------------
+# Ruff — lint + format (ADR-0015)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "PTH",  # flake8-use-pathlib
+    "RUF",  # ruff-specific
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert and re-import fixtures freely.
+"tests/**" = ["S101"]
+
+# ---------------------------------------------------------------------------
+# mypy — strict over the runtime core (ADR-0015)
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/satay"]
+warn_unused_configs = true
+show_error_codes = true
+
+# ---------------------------------------------------------------------------
+# pytest (ADR-0015)
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["satay"]
+branch = true
