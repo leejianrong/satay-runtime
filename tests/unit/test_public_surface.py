@@ -54,15 +54,23 @@ def test_v1_decorators_are_live() -> None:
     assert hasattr(tk, "__satay_task__")
 
 
-async def test_deferred_composition_primitives_still_raise() -> None:
-    """Composition primitives landing in V4 still raise NotImplementedError."""
+async def test_v4_composition_primitives_are_live() -> None:
+    """V4 implements map/gather/start_child; called outside a drive they guard, not stub."""
+    import inspect
+
+    assert inspect.iscoroutinefunction(satay.map)
+    assert inspect.iscoroutinefunction(satay.gather)
+    assert inspect.iscoroutinefunction(satay.start_child)
 
     @satay.workflow
     async def _noop(value: int) -> int:  # pragma: no cover - not driven here
         return value
 
-    with pytest.raises(NotImplementedError):
+    # Outside a workflow drive they raise a clear RuntimeError (not NotImplementedError).
+    with pytest.raises(RuntimeError):
         await satay.start_child(_noop)
+    with pytest.raises(RuntimeError):
+        await satay.gather()
 
 
 def test_v3_primitives_are_live() -> None:

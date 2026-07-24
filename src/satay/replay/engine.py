@@ -26,12 +26,14 @@ fails, ``warn`` logs and continues, ``off`` is silent.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import traceback
 import uuid
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import timedelta
-from typing import Any, get_type_hints
+from typing import TYPE_CHECKING, Any, get_type_hints
 
 from satay.api.registry import TaskDefinition, WorkflowDefinition
 from satay.config import EffectSafety
@@ -39,19 +41,32 @@ from satay.executor import LocalTaskExecutor, TaskExecutor
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
 from satay.journal.events import (
+    TERMINAL_STATUSES,
     Event,
     EventType,
+    RunRecord,
     RunStatus,
     TimerKind,
     TimerRecord,
     TimerStatus,
 )
 from satay.replay.driver import CURRENT_DRIVER
-from satay.replay.identity import CallIdentity, IdentityResolver, idempotency_key
+from satay.replay.identity import (
+    CallIdentity,
+    IdentityResolver,
+    idempotency_key,
+    resolve_map_keys,
+)
 from satay.replay.nondeterminism import EffectSafetyError, NondeterminismError
 from satay.testing.clock import Clock, RealClock
 from satay.testing.faults import FaultInjector, SimulatedCrash
 from satay.testing.rng import Rng, SystemRng
+
+if TYPE_CHECKING:
+    from satay.api.run_handle import RunHandle
+
+#: Default in-flight bound for ``satay.map`` when ``concurrency=`` is unspecified.
+DEFAULT_MAP_CONCURRENCY = 8
 
 _LOG = logging.getLogger("satay")
 
@@ -97,10 +112,19 @@ class ReplayEngine:
         )
 
         self._resolver = IdentityResolver()
+        #: Ordinals for child-workflow calls (``satay.start_child``), kept separate from
+        #: task ordinals: a child appends ``ChildWorkflowScheduled`` (not ``TaskScheduled``)
+        #: and is outside the task nondeterminism position check.
+        self._child_resolver = IdentityResolver()
+        #: Per-drive ordinals for ``satay.map`` call sites, used only to group a map's
+        #: items in the journal for the V6 tree (keyed items carry their own identity).
+        self._map_resolver = IdentityResolver()
         self._call_index = 0
         self._completed: dict[CallIdentity, Any] = {}
         self._scheduled: set[CallIdentity] = set()
         self._schedule_order: list[str] = []
+        #: Recorded child runs by their originating call identity → child ``run_id``.
+        self._children_scheduled: dict[CallIdentity, str] = {}
         #: Highest recorded attempt number per identity (continues numbering on resume).
         self._max_attempt: dict[CallIdentity, int] = {}
         #: Recorded ``TaskAttemptFailed`` count per identity (consumes the retry budget).
@@ -131,21 +155,27 @@ class ReplayEngine:
         for event in events:
             payload = event.payload
             if event.type is EventType.TASK_SCHEDULED:
-                identity = CallIdentity(payload["task_name"], payload["ordinal"])
+                identity = CallIdentity.from_payload(payload)
                 self._scheduled.add(identity)
-                self._schedule_order.append(payload["task_name"])
+                # Only ordinal (non-keyed) calls take a slot in the nondeterminism
+                # position list; keyed map items resolve independently of the ordinal.
+                if not identity.is_keyed:
+                    self._schedule_order.append(payload["task_name"])
             elif event.type is EventType.TASK_ATTEMPT_STARTED:
-                identity = CallIdentity(payload["task_name"], payload["ordinal"])
+                identity = CallIdentity.from_payload(payload)
                 attempt = int(payload.get("attempt", 1))
                 self._max_attempt[identity] = max(self._max_attempt.get(identity, 0), attempt)
             elif event.type is EventType.TASK_ATTEMPT_FAILED:
-                identity = CallIdentity(payload["task_name"], payload["ordinal"])
+                identity = CallIdentity.from_payload(payload)
                 attempt = int(payload.get("attempt", 1))
                 self._max_attempt[identity] = max(self._max_attempt.get(identity, 0), attempt)
                 self._failures[identity] = self._failures.get(identity, 0) + 1
             elif event.type is EventType.TASK_COMPLETED:
-                identity = CallIdentity(payload["task_name"], payload["ordinal"])
+                identity = CallIdentity.from_payload(payload)
                 self._completed[identity] = payload["output_ref"]
+            elif event.type is EventType.CHILD_WORKFLOW_SCHEDULED:
+                identity = CallIdentity.from_payload(payload)
+                self._children_scheduled[identity] = payload["child_run_id"]
             elif event.type is EventType.TIMER_CREATED:
                 self._timers_created[payload["identity"]] = TimerKind(payload["kind"])
             elif event.type is EventType.TIMER_FIRED:
@@ -197,7 +227,7 @@ class ReplayEngine:
             )
             self._scheduled.add(identity)
 
-        key = idempotency_key(self._run_id, identity.task_name, identity.ordinal)
+        key = idempotency_key(self._run_id, identity.task_name, identity.key_component)
         return await self._executor.execute(
             run_id=self._run_id,
             definition=definition,
@@ -362,6 +392,266 @@ class ReplayEngine:
             )
         raise WorkflowParked
 
+    # -- composite primitives (V4, N5/A6) ---------------------------------------
+
+    async def durable_map(
+        self,
+        definition: TaskDefinition,
+        items: Iterable[Any],
+        key_fn: Callable[[Any], str] | None,
+        concurrency: int,
+    ) -> list[Any]:
+        """Durable fan-out of ``definition`` over ``items``, keyed by ``key_fn`` (A6.1).
+
+        Each item is a keyed durable call ``(task_name, key)`` that independently
+        consults the journal — a recorded completion is reused, a miss executes — so on
+        resume mid-fan-out only unresolved items re-run (design rule 2). Up to
+        ``concurrency`` items run at once on the asyncio loop (a bounded semaphore), and
+        results rejoin in **input order** regardless of completion order. Fail-fast per
+        ADR-0020: a failed item raises through the ``map`` and in-flight siblings settle
+        with their results discarded.
+        """
+        if concurrency < 1:
+            raise ValueError("satay.map concurrency= must be >= 1")
+        pairs = resolve_map_keys(items, key_fn)  # validates key presence + uniqueness
+        group = f"map:{self._map_resolver.next(definition.name).ordinal}:{definition.name}"
+        semaphore = asyncio.Semaphore(concurrency)
+        #: Set when an item dies from a worker crash: a dead worker starts no new items,
+        #: so queued items still behind the semaphore must not begin (their results would
+        #: never be reachable anyway — the composite is about to raise the crash).
+        aborted = asyncio.Event()
+
+        async def run_item(item: Any, key: str) -> Any:
+            async with semaphore:
+                if aborted.is_set():
+                    return None  # worker already dead — do not start new work.
+                try:
+                    return await self._keyed_call(definition, item, key, group)
+                except _PROPAGATE:
+                    aborted.set()
+                    raise
+
+        tasks = [asyncio.create_task(run_item(item, key)) for item, key in pairs]
+        return await self._settle_composite(tasks)
+
+    async def durable_gather(self, awaitables: Sequence[Awaitable[Any]]) -> list[Any]:
+        """Await heterogeneous durable calls together, rejoining **positionally** (A6.1).
+
+        Members are ordinary durable awaitables — a task call, a nested ``map``, or a
+        ``start_child`` (whose returned handle is transparently resolved to the child's
+        result). Each keeps its own identity; results rejoin in argument order. Fail-fast
+        per ADR-0020: one failing member fails the whole ``gather``.
+        """
+        tasks = [asyncio.create_task(self._resolve_member(a)) for a in awaitables]
+        return await self._settle_composite(tasks)
+
+    async def _resolve_member(self, awaitable: Awaitable[Any]) -> Any:
+        """Await a ``gather`` member; coerce a child :class:`RunHandle` to its result."""
+        from satay.api.run_handle import RunHandle
+
+        value = await awaitable
+        if isinstance(value, RunHandle):
+            return await value.result()
+        return value
+
+    async def _settle_composite(self, tasks: list[asyncio.Task[Any]]) -> list[Any]:
+        """Await fan-out tasks fail-fast (ADR-0020); a crash cancels in-flight siblings.
+
+        Waits for the first exception, then: a :class:`SimulatedCrash` (or dev-time
+        divergence) models worker death — cancel the in-flight siblings so they record
+        nothing more and propagate the crash; an ordinary task failure lets siblings
+        settle (results discarded) then raises the **first failure in input order**.
+        """
+        if not tasks:
+            return []
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+        crash = self._first_exception(tasks, propagate_only=True)
+        if crash is not None:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise crash
+
+        if self._first_exception(tasks) is not None:
+            # An ordinary member failed: let in-flight siblings settle, discard their
+            # results, then raise the first failure in input order (deterministic).
+            await asyncio.gather(*tasks, return_exceptions=True)
+            failure = self._first_exception(tasks)
+            assert failure is not None
+            raise failure
+
+        return [task.result() for task in tasks]
+
+    @staticmethod
+    def _first_exception(
+        tasks: list[asyncio.Task[Any]], *, propagate_only: bool = False
+    ) -> BaseException | None:
+        """The first exception in input order among finished tasks (crashes if asked)."""
+        for task in tasks:
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                if exc is not None and (not propagate_only or isinstance(exc, _PROPAGATE)):
+                    return exc
+        return None
+
+    async def _keyed_call(self, definition: TaskDefinition, item: Any, key: str, group: str) -> Any:
+        """One keyed ``map`` item: reuse a recorded result or schedule + execute it."""
+        identity = CallIdentity(task_name=definition.name, key=key)
+
+        if identity in self._completed:
+            return rehydrate(self._completed[identity], _return_annotation(definition.fn))
+
+        self._enforce_effect_safety(definition)
+        if identity not in self._scheduled:
+            await self._commit(
+                Event(
+                    run_id=self._run_id,
+                    type=EventType.TASK_SCHEDULED,
+                    payload={
+                        **identity.payload_fields(),
+                        "input_ref": encode([item]),
+                        "map_group": group,
+                    },
+                    ts=self._clock.now(),
+                )
+            )
+            self._scheduled.add(identity)
+
+        idem = idempotency_key(self._run_id, identity.task_name, identity.key_component)
+        return await self._executor.execute(
+            run_id=self._run_id,
+            definition=definition,
+            identity=identity,
+            args=(item,),
+            kwargs={},
+            key=idem,
+            prior_attempts=self._max_attempt.get(identity, 0),
+            prior_failures=self._failures.get(identity, 0),
+        )
+
+    async def durable_child(
+        self,
+        workflow_def: WorkflowDefinition,
+        workflow_input: Any,
+        key: str | None,
+    ) -> RunHandle:
+        """Start (or reuse) a linked child run and return its handle (A6.2, design rule 3).
+
+        The child call is a durable call on the parent: on the first miss the parent
+        records ``ChildWorkflowScheduled`` with the child ``run_id`` and this call's
+        identity, and the child's ``WorkflowCreated`` records the reverse ``parent_run_id``
+        + originating identity (so the V6 tree is recoverable both ways). The child is a
+        full run with its own journal, driven to a terminal state here; a child crashed
+        mid-flight is **resumed** (not restarted) on parent replay, and an
+        already-completed child is reused. A failed child surfaces as a raised exception
+        (fail-fast, ADR-0020), re-raised deterministically from the child journal on replay.
+        """
+        if key is not None:
+            identity = CallIdentity(task_name=f"child:{workflow_def.name}", key=key)
+        else:
+            identity = self._child_resolver.next(f"child:{workflow_def.name}")
+
+        child_run_id = self._children_scheduled.get(identity)
+        if child_run_id is None:
+            child_run_id = uuid.uuid4().hex
+            await self._commit(
+                Event(
+                    run_id=self._run_id,
+                    type=EventType.CHILD_WORKFLOW_SCHEDULED,
+                    payload={
+                        **identity.payload_fields(),
+                        "child_run_id": child_run_id,
+                        "workflow_name": workflow_def.name,
+                        "input_ref": encode(workflow_input),
+                    },
+                    ts=self._clock.now(),
+                )
+            )
+            self._children_scheduled[identity] = child_run_id
+
+        await self._drive_child(workflow_def, child_run_id, workflow_input, identity)
+
+        record = await self._store.get_run(child_run_id)
+        if record is not None and record.status is RunStatus.FAILED:
+            # Fail-fast: surface the child's recorded failure as a raised exception.
+            raise _child_failure_error(await self._store.read_events(child_run_id))
+
+        return self._build_child_handle(workflow_def, child_run_id, workflow_input)
+
+    async def _drive_child(
+        self,
+        workflow_def: WorkflowDefinition,
+        child_run_id: str,
+        workflow_input: Any,
+        parent_identity: CallIdentity,
+    ) -> None:
+        """Create/resume the child run and drive it to a terminal (or waiting) state."""
+        from satay.versioning import stamp_code_version
+
+        record = await self._store.get_run(child_run_id)
+        if record is None:
+            code_version = stamp_code_version()
+            await self._store.create_run(
+                RunRecord(
+                    run_id=child_run_id,
+                    workflow_name=workflow_def.name,
+                    status=RunStatus.RUNNING,
+                    code_version=code_version,
+                    created_at=self._clock.now(),
+                )
+            )
+            await self._commit(
+                Event(
+                    run_id=child_run_id,
+                    type=EventType.WORKFLOW_CREATED,
+                    payload={
+                        "workflow_name": workflow_def.name,
+                        "input_ref": encode(workflow_input),
+                        "code_version": code_version,
+                        "parent_run_id": self._run_id,
+                        "parent_call": parent_identity.payload_fields(),
+                    },
+                    ts=self._clock.now(),
+                )
+            )
+        elif record.status in TERMINAL_STATUSES:
+            return  # already terminal: reuse (completed) or surface (failed) upstream.
+        elif record.status is not RunStatus.WAITING:
+            # Non-terminal and not durably parked → crashed mid-flight: resume (⚡).
+            await self._commit(
+                Event(run_id=child_run_id, type=EventType.WORKFLOW_RESUMED, ts=self._clock.now())
+            )
+
+        child_engine = ReplayEngine(
+            store=self._store,
+            run_id=child_run_id,
+            injector=self._injector,
+            clock=self._clock,
+            rng=self._rng,
+            effect_safety=self._effect_safety,
+        )
+        await child_engine.drive(workflow_def, workflow_input)
+
+    def _build_child_handle(
+        self, workflow_def: WorkflowDefinition, child_run_id: str, workflow_input: Any
+    ) -> RunHandle:
+        """A handle to the (now terminal) child run, for the parent to read its result."""
+        from satay.api.runner import build_run_handle
+
+        return build_run_handle(
+            workflow_def.fn,
+            workflow_input,
+            run_id=child_run_id,
+            idempotency_key=None,
+            store=self._store,
+            injector=self._injector,
+            clock=self._clock,
+            rng=self._rng,
+            effect_safety=self._effect_safety,
+        )
+
     # -- policy ------------------------------------------------------------------
 
     def _on_nondeterminism(self, position: int, *, expected: str, actual: str) -> None:
@@ -440,6 +730,22 @@ class ReplayEngine:
             await self._store.set_status(self._run_id, RunStatus.COMPLETED)
         finally:
             CURRENT_DRIVER.reset(token)
+
+
+def _child_failure_error(events: Sequence[Event]) -> Exception:
+    """Build the exception a failed child surfaces to its parent (from the child journal).
+
+    Reconstructs the recorded ``WorkflowFailed`` as a :class:`WorkflowFailedError`, so the
+    parent raises it natively (fail-fast, ADR-0020) and it re-raises identically from the
+    journal on every parent replay.
+    """
+    from satay.api.run_handle import WorkflowFailedError
+
+    for event in reversed(events):
+        if event.type is EventType.WORKFLOW_FAILED:
+            error = event.payload["error"]
+            return WorkflowFailedError(error["type"], error["message"], error["traceback"])
+    return RuntimeError("child workflow failed without a recorded error")  # pragma: no cover
 
 
 def _return_annotation(fn: Any) -> Any:

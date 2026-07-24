@@ -21,7 +21,7 @@ from typing import Any
 
 
 class EventType(StrEnum):
-    """The journal event types active through V3 (a prefix of ADR-0004's full set)."""
+    """The journal event types active through V4 (a prefix of ADR-0004's full set)."""
 
     WORKFLOW_CREATED = "WorkflowCreated"
     WORKFLOW_RESUMED = "WorkflowResumed"
@@ -37,6 +37,10 @@ class EventType(StrEnum):
     EVENT_WAIT_STARTED = "EventWaitStarted"
     EXTERNAL_EVENT_RECEIVED = "ExternalEventReceived"
     WORKFLOW_WAITING = "WorkflowWaiting"
+    # V4 — composite primitives. A parent records this when it schedules a linked child
+    # run (``satay.start_child``); the child's ``WorkflowCreated`` carries the reverse
+    # ``parent_run_id`` + originating call identity, so the tree is recoverable both ways.
+    CHILD_WORKFLOW_SCHEDULED = "ChildWorkflowScheduled"
 
 
 class RunStatus(StrEnum):

@@ -45,13 +45,17 @@ def _summarise_payload(event: Event) -> str:
     p = event.payload
     if event.type is EventType.WORKFLOW_CREATED:
         return f"workflow={p.get('workflow_name')} code_version={p.get('code_version')}"
+    if event.type is EventType.CHILD_WORKFLOW_SCHEDULED:
+        return f"child={p.get('workflow_name')} run_id={p.get('child_run_id')}"
     if event.type in (
         EventType.TASK_SCHEDULED,
         EventType.TASK_ATTEMPT_STARTED,
         EventType.TASK_ATTEMPT_FAILED,
         EventType.TASK_COMPLETED,
     ):
-        parts = [f"task={p.get('task_name')}", f"ordinal={p.get('ordinal')}"]
+        # A keyed fan-out item identifies by its map key; an ordinary call by ordinal.
+        identity = f"key={p['key']}" if "key" in p else f"ordinal={p.get('ordinal')}"
+        parts = [f"task={p.get('task_name')}", identity]
         if event.type is EventType.TASK_ATTEMPT_STARTED:
             parts.append(f"attempt={p.get('attempt')}")
         if event.type is EventType.TASK_ATTEMPT_FAILED:
