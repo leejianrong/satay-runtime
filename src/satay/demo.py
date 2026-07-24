@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 from satay.api.context import task_context
 from satay.api.decorators import task, workflow
+from satay.api.primitives import sleep, wait_for_event
 
 #: In-process execution counts, keyed by task name.
 EXECUTIONS: dict[str, int] = {}
@@ -213,3 +216,46 @@ async def quiet_task(value: int) -> int:
 async def quiet_demo(value: int) -> int:
     """A one-task workflow whose task reports no model usage."""
     return await quiet_task(value)
+
+
+# -- V3 demo: timers and events --------------------------------------------------
+
+#: The event key the review workflows wait on (a single, deterministic value).
+REVIEW_KEY = "review-1"
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    """An external decision delivered via ``satay.send_event`` (V3 demo event type)."""
+
+    approved: bool
+    reviewer: str = ""
+
+
+@workflow
+async def sleep_demo(value: int) -> int:
+    """Run ``step_one``, durably sleep, then ``step_two`` — parks across the sleep.
+
+    Proves the release-while-waiting path: after ``step_one`` the run parks on the
+    ``sleep`` timer (no live frame) and resumes when the worker fires it, reusing the
+    recorded ``step_one`` result on the wake.
+    """
+    first = await step_one(value)
+    await sleep(timedelta(hours=1))
+    return await step_two(first)
+
+
+@workflow
+async def review_demo(value: int) -> str:
+    """Block on ``wait_for_event(ReviewDecision, key=…)`` and act on the delivery."""
+    decision = await wait_for_event(ReviewDecision, key=REVIEW_KEY)
+    return "approved" if decision.approved else "rejected"
+
+
+@workflow
+async def review_timeout_demo(value: int) -> str:
+    """Wait for a ``ReviewDecision`` bounded by a timeout; ``None`` means it timed out."""
+    decision = await wait_for_event(ReviewDecision, key=REVIEW_KEY, timeout=timedelta(hours=2))
+    if decision is None:
+        return "timed_out"
+    return "approved" if decision.approved else "rejected"

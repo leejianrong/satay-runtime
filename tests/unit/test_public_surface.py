@@ -54,10 +54,24 @@ def test_v1_decorators_are_live() -> None:
     assert hasattr(tk, "__satay_task__")
 
 
-def test_deferred_primitives_still_raise() -> None:
-    """Sync primitives landing in later slices still raise NotImplementedError."""
+async def test_deferred_composition_primitives_still_raise() -> None:
+    """Composition primitives landing in V4 still raise NotImplementedError."""
+
+    @satay.workflow
+    async def _noop(value: int) -> int:  # pragma: no cover - not driven here
+        return value
+
     with pytest.raises(NotImplementedError):
-        satay.send_event("run-1", "event-name")
+        await satay.start_child(_noop)
+
+
+def test_v3_primitives_are_live() -> None:
+    """V3 implements sleep/wait_for_event/send_event as coroutine functions."""
+    import inspect
+
+    assert inspect.iscoroutinefunction(satay.sleep)
+    assert inspect.iscoroutinefunction(satay.wait_for_event)
+    assert inspect.iscoroutinefunction(satay.send_event)
 
 
 def test_config_data_dir_convention(temp_data_dir: object) -> None:

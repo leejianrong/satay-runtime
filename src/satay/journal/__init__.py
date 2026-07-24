@@ -12,14 +12,19 @@ later (ARCHITECTURE §9).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
 from satay.journal.events import (
     TERMINAL_STATUSES,
     Event,
     EventType,
+    InboxEventRecord,
     RunRecord,
     RunStatus,
+    TimerKind,
+    TimerRecord,
+    TimerStatus,
     new_event_id,
     utc_now,
 )
@@ -65,14 +70,50 @@ class Store(Protocol):
         """List known run ids."""
         ...
 
+    # -- timers and events (V3, ADR-0007/0021) -----------------------------------
+
+    async def add_timer(self, timer: TimerRecord) -> None:
+        """Persist a timer row (idempotent on ``timer_id``)."""
+        ...
+
+    async def due_timers(self, now: datetime) -> Sequence[TimerRecord]:
+        """Return ``pending`` timers with ``fire_at <= now``, earliest ``fire_at`` first."""
+        ...
+
+    async def set_timer_status(self, timer_id: str, status: TimerStatus) -> None:
+        """Update a timer's status (the firing-idempotency guard)."""
+        ...
+
+    async def add_inbox_event(self, event: InboxEventRecord) -> InboxEventRecord:
+        """Persist an inbox event; returns it stamped with its assigned ``row_id``."""
+        ...
+
+    async def match_inbox_event(self, event_type: str, key: str | None) -> InboxEventRecord | None:
+        """Return the earliest unconsumed event matching ``(event_type, key)`` (FIFO)."""
+        ...
+
+    async def consume_inbox_event(self, row_id: int) -> None:
+        """Mark an inbox event consumed so it is never delivered twice."""
+        ...
+
+    async def list_inbox_events(
+        self, *, event_type: str | None = None, include_consumed: bool = True
+    ) -> Sequence[InboxEventRecord]:
+        """List inbox events (for disposition assertions at run end, V3 design rule 3)."""
+        ...
+
 
 __all__ = [
     "TERMINAL_STATUSES",
     "Event",
     "EventType",
+    "InboxEventRecord",
     "RunRecord",
     "RunStatus",
     "Store",
+    "TimerKind",
+    "TimerRecord",
+    "TimerStatus",
     "new_event_id",
     "utc_now",
 ]

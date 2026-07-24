@@ -89,8 +89,8 @@ async def test_get_run_by_idempotency_key_uses_the_index() -> None:
     store.close()
 
 
-async def test_v1_database_migrates_to_v2_index(tmp_path: object) -> None:
-    """A v1 database (no index) opens and gains the idempotency index on migration."""
+async def test_v1_database_migrates_forward(tmp_path: object) -> None:
+    """A v1 database opens and gains the idempotency index plus the V3 tables."""
     from pathlib import Path
 
     assert isinstance(tmp_path, Path)
@@ -99,8 +99,8 @@ async def test_v1_database_migrates_to_v2_index(tmp_path: object) -> None:
     store._conn.execute("PRAGMA user_version=1")  # pretend it was written by v1
     store.close()
 
-    reopened = SQLiteStore.open(db)  # migrates 1 → 2
-    assert reopened._conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    reopened = SQLiteStore.open(db)  # migrates 1 → 3
+    assert reopened._conn.execute("PRAGMA user_version").fetchone()[0] == 3
     names = {
         row[0]
         for row in reopened._conn.execute(
@@ -108,6 +108,28 @@ async def test_v1_database_migrates_to_v2_index(tmp_path: object) -> None:
         ).fetchall()
     }
     assert "idx_runs_idempotency_key" in names
+    reopened.close()
+
+
+async def test_v2_database_migrates_to_v3_tables(tmp_path: object) -> None:
+    """A v2 database opens and gains the ``timers`` and ``event_inbox`` tables (V3)."""
+    from pathlib import Path
+
+    assert isinstance(tmp_path, Path)
+    db = tmp_path / "satay.db"
+    store = SQLiteStore.open(db)
+    store._conn.execute("PRAGMA user_version=2")  # pretend it was written by v2
+    store.close()
+
+    reopened = SQLiteStore.open(db)  # migrates 2 → 3
+    assert reopened._conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    tables = {
+        row[0]
+        for row in reopened._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert {"timers", "event_inbox"} <= tables
     reopened.close()
 
 

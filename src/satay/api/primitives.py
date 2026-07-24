@@ -12,6 +12,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from satay.api.run_handle import RunHandle
+from satay.journal.codec import encode
+from satay.replay.driver import CURRENT_DRIVER
 
 if TYPE_CHECKING:
     from satay.config import EffectSafety
@@ -76,23 +78,89 @@ def _default_store() -> Store:
     return SQLiteStore.open(db_path(data_dir))
 
 
+def _as_timedelta(duration: float | timedelta) -> timedelta:
+    """Coerce a ``float`` (seconds) or ``timedelta`` to a ``timedelta``."""
+    return duration if isinstance(duration, timedelta) else timedelta(seconds=duration)
+
+
+def event_type_name(event_type: type[Any] | str) -> str:
+    """The stable inbox key for an event type: ``module.qualname`` (or a string as-is).
+
+    ``wait_for_event(Type)`` and ``send_event(event=Type(...))`` must derive the *same*
+    string so a wait and a send match by ``(event_type, key)`` (V3 design rule 3).
+    """
+    if isinstance(event_type, str):
+        return event_type
+    return f"{event_type.__module__}.{event_type.__qualname__}"
+
+
 async def sleep(duration: float | timedelta) -> None:
-    """Durably sleep for ``duration`` (N5, lands in V3)."""
-    raise NotImplementedError("satay.sleep lands in V3")
+    """Durably sleep for ``duration`` (N5).
+
+    A durable call: on the first miss it records a timer and parks the run (releasing it
+    from memory); it resumes when the worker fires the timer. Survives a crash because
+    the timer row and journal are durable. Must be called inside a running workflow.
+    """
+    driver = CURRENT_DRIVER.get()
+    if driver is None:
+        raise RuntimeError("satay.sleep() must be called inside a @satay.workflow body")
+    await driver.durable_sleep(_as_timedelta(duration))
 
 
 async def wait_for_event(
-    name: str,
+    event_type: type[Any] | str,
     *,
+    key: str | None = None,
     timeout: float | timedelta | None = None,
 ) -> Any:
-    """Durably wait for a named external event, optionally with a timeout (N5, lands in V3)."""
-    raise NotImplementedError("satay.wait_for_event lands in V3")
+    """Durably wait for an external event of ``event_type``, matched by ``key`` (N5).
+
+    Matches an inbox event by ``(event_type, key)`` — an event delivered *before* the
+    wait is still matched. With a ``timeout`` the wait resolves to ``None`` if no event
+    arrives by then (a delivered event always wins a simultaneously-due timeout,
+    ADR-0021). Returns the delivered event, rehydrated to ``event_type`` when a class is
+    given. Must be called inside a running workflow.
+    """
+    driver = CURRENT_DRIVER.get()
+    if driver is None:
+        raise RuntimeError("satay.wait_for_event() must be called inside a @satay.workflow body")
+    annotation = None if isinstance(event_type, str) else event_type
+    return await driver.durable_wait_for_event(
+        event_type_name(event_type),
+        key,
+        None if timeout is None else _as_timedelta(timeout),
+        annotation,
+    )
 
 
-def send_event(run_id: str, name: str, payload: Any = None) -> None:
-    """Deliver a named external event to a run (control-plane write, lands in V3)."""
-    raise NotImplementedError("satay.send_event lands in V3")
+async def send_event(
+    event: Any,
+    *,
+    key: str | None = None,
+    run_id: str | None = None,
+    store: Store | None = None,
+) -> None:
+    """Deliver an external ``event`` to the inbox (control-plane write, N5).
+
+    The event is encoded via the V1 codec and buffered in the inbox keyed by
+    ``(type(event), key)``; the poll loop delivers it to a run waiting on that pair, or
+    it waits in the inbox until matched (an event may arrive before the wait). This is
+    the Python-API entry point; the HTTP ``send_event`` route lands in V5 and writes to
+    the same inbox. ``store`` is the injectable test seam; it defaults to the
+    project-local database.
+    """
+    from satay.journal.events import InboxEventRecord, utc_now
+
+    resolved_store = store if store is not None else _default_store()
+    await resolved_store.add_inbox_event(
+        InboxEventRecord(
+            event_type=event_type_name(type(event)),
+            key=key,
+            payload_ref=encode(event),
+            received_at=utc_now(),
+            run_id=run_id,
+        )
+    )
 
 
 async def map(
