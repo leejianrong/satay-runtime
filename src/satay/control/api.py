@@ -92,9 +92,25 @@ class ControlAPI:
             commands.SendEvent(event_type=event_type, key=key, payload=payload, run_id=run_id)
         )
 
-    async def validate_fork(self, source_run_id: str, fork_point_seq: int) -> None:
-        """Validate a fork request now; execution is deferred to V7 (N15 stub)."""
+    async def fork(self, source_run_id: str, fork_point_seq: int) -> str:
+        """Validate a fork request, enqueue it, and return the new run id (N15, V7).
+
+        Validation is synchronous (an unknown/non-terminal source or a bad fork point
+        raises :class:`~satay.control.commands.ForkValidationError` → HTTP 400 before
+        anything is enqueued). The new run id is allocated here so the HTTP caller can
+        navigate to it immediately; the worker seeds and drives it on its next poll tick
+        (write-then-poll, single writer, ADR-0012).
+        """
         await commands.validate_fork_request(self._store, source_run_id, fork_point_seq)
+        new_run_id = uuid.uuid4().hex
+        self._queue.submit(
+            commands.ForkRun(
+                source_run_id=source_run_id,
+                fork_point_seq=fork_point_seq,
+                run_id=new_run_id,
+            )
+        )
+        return new_run_id
 
 
 __all__ = ["ControlAPI", "ReadAPI"]

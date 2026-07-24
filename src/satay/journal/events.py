@@ -44,6 +44,12 @@ class EventType(StrEnum):
     # V5 — control API. The worker appends this (via a queued ``cancel`` command, or a
     # direct ``RunHandle.cancel()``) to durably record a cancellation and halt the run.
     WORKFLOW_CANCELLED = "WorkflowCancelled"
+    # V7 — fork. The worker appends this to a newly-forked run, right after seeding its
+    # journal from the source's prefix, to record lineage: the ``source_run_id`` it was
+    # branched from and the ``fork_point_seq`` (the last source event copied). A
+    # fork-of-a-fork carries the ancestor's copied ``RunForked`` in its prefix; the
+    # run's *own* fork record is the ``RunForked`` with the greatest ``seq`` (ADR-0004).
+    RUN_FORKED = "RunForked"
 
 
 class RunStatus(StrEnum):

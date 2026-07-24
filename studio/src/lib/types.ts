@@ -13,6 +13,19 @@ export interface Extensible {
 
 export type RunStatus = "running" | "waiting" | "completed" | "failed" | "cancelled" | string;
 
+/** V7 additive field: a run's stamped code version vs the current one (N17, ADR-0018). */
+export interface VersionMismatch extends Extensible {
+  stamped: string;
+  current: string;
+  mismatch: boolean;
+}
+
+/** V7 additive field: the run's own fork lineage, or null when it was not forked (N15). */
+export interface ForkLineage extends Extensible {
+  source_run_id: string;
+  fork_point_seq: number;
+}
+
 export interface RunSummary extends Extensible {
   run_id: string;
   workflow_name: string;
@@ -20,6 +33,9 @@ export interface RunSummary extends Extensible {
   code_version: string;
   created_at: string;
   idempotency_key: string | null;
+  interrupted?: boolean;
+  version_mismatch?: VersionMismatch;
+  forked_from?: ForkLineage | null;
 }
 
 export interface RunList extends Extensible {
@@ -41,6 +57,8 @@ export interface Timeline extends Extensible {
   status: RunStatus;
   interrupted: boolean;
   events: TimelineEvent[];
+  version_mismatch?: VersionMismatch;
+  forked_from?: ForkLineage | null;
 }
 
 export interface TaskNode extends Extensible {
@@ -108,4 +126,29 @@ export interface TaskDetail extends Extensible {
   usage: UsageEntry[];
   attempts: Attempt[];
   error?: { type: string; message: string; traceback?: string } & Extensible;
+}
+
+// ---- Run comparison (N16/U7): two runs aligned by durable-call identity ----
+
+export interface CompareCall extends Extensible {
+  task_name: string;
+  status: RunStatus;
+  input: Json;
+  output: Json;
+  attempts: number;
+  duration_seconds: number | null;
+}
+
+export interface CompareRow extends Extensible {
+  identity: string;
+  task_name: string | null;
+  a: CompareCall | null;
+  b: CompareCall | null;
+  aligned: boolean;
+}
+
+export interface Compare extends Extensible {
+  a: RunSummary;
+  b: RunSummary;
+  rows: CompareRow[];
 }

@@ -59,8 +59,51 @@ def call_identity(payload: Mapping[str, Any]) -> str:
     return f"{task_name}:{payload.get('ordinal')}"
 
 
-def _run_summary(record: RunRecord) -> dict[str, Any]:
-    """The run-list / compare-side summary fields for a run record."""
+def _version_mismatch(record: RunRecord, current_version: str) -> dict[str, Any]:
+    """The additive version-mismatch field the U8 banner reads (N17, ADR-0018).
+
+    Compares a run's *stamped* code version against the *current* process version; the
+    banner renders when ``mismatch`` is true. Additive and tolerated by existing
+    view-models (ADR-0018).
+    """
+    from satay.versioning import is_version_mismatch
+
+    return {
+        "stamped": record.code_version,
+        "current": current_version,
+        "mismatch": is_version_mismatch(record.code_version, current_version),
+    }
+
+
+def _fork_lineage(events: Sequence[Event]) -> dict[str, Any] | None:
+    """The run's own fork record, or ``None`` if it was not forked (N15, ADR-0004).
+
+    A run's *own* lineage is the ``RunForked`` event with the greatest ``seq``: a
+    fork-of-a-fork copies its ancestor's ``RunForked`` into its seeded prefix (lower
+    ``seq``), while the fork operation appends this run's own record last, so following
+    ``source_run_id`` from the max-``seq`` ``RunForked`` walks a correct lineage chain.
+    """
+    forked = [e for e in events if e.type is EventType.RUN_FORKED]
+    if not forked:
+        return None
+    own = max(forked, key=lambda e: e.seq)
+    return {
+        "source_run_id": own.payload.get("source_run_id"),
+        "fork_point_seq": own.payload.get("fork_point_seq"),
+    }
+
+
+def _run_summary(
+    record: RunRecord,
+    current_version: str,
+    *,
+    forked_from: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The run-list / compare-side summary fields for a run record.
+
+    Carries the V7 additive fields (``version_mismatch``, ``forked_from``) alongside the
+    V1 summary; consumers read only what they need and tolerate the extras (ADR-0018).
+    """
     return {
         "run_id": record.run_id,
         "workflow_name": record.workflow_name,
@@ -68,16 +111,22 @@ def _run_summary(record: RunRecord) -> dict[str, Any]:
         "code_version": record.code_version,
         "created_at": record.created_at.isoformat(),
         "idempotency_key": record.idempotency_key,
+        "version_mismatch": _version_mismatch(record, current_version),
+        "forked_from": forked_from,
     }
 
 
 async def run_list(store: Store) -> dict[str, Any]:
-    """``GET /runs`` — id, status, code version, workflow, and start time per run."""
+    """``GET /runs`` — id, status, code version, start time, and V7 lineage per run."""
+    from satay import versioning
+
+    current = versioning.current_code_version()
     runs: list[dict[str, Any]] = []
     for run_id in await store.list_runs():
         record = await store.get_run(run_id)
         if record is not None:
-            runs.append(_run_summary(record))
+            events = await store.read_events(run_id)
+            runs.append(_run_summary(record, current, forked_from=_fork_lineage(events)))
     return {"runs": runs}
 
 
@@ -94,7 +143,13 @@ def _is_interruption(event: Event) -> bool:
 
 
 async def timeline(store: Store, run_id: str) -> dict[str, Any]:
-    """``GET /runs/{id}/timeline`` — the ordered event stream as JSON."""
+    """``GET /runs/{id}/timeline`` — the ordered event stream as JSON.
+
+    Carries the V7 additive fields ``version_mismatch`` (the U8 banner's data source)
+    and ``forked_from`` (this run's lineage) alongside the V3 event stream (ADR-0018).
+    """
+    from satay import versioning
+
     record = await _require_run(store, run_id)
     events = await store.read_events(run_id)
     return {
@@ -102,6 +157,8 @@ async def timeline(store: Store, run_id: str) -> dict[str, Any]:
         "workflow_name": record.workflow_name,
         "status": record.status.value,
         "interrupted": any(_is_interruption(e) for e in events),
+        "version_mismatch": _version_mismatch(record, versioning.current_code_version()),
+        "forked_from": _fork_lineage(events),
         "events": [
             {
                 "seq": e.seq,
@@ -339,11 +396,14 @@ async def compare(store: Store, run_id: str, other_run_id: str) -> dict[str, Any
     that call's status and recorded output (or ``null`` when the identity is absent on
     that side), so a diverging run is read off directly.
     """
+    from satay import versioning
+
     record_a = await _require_run(store, run_id)
     record_b = await _require_run(store, other_run_id)
+    current = versioning.current_code_version()
 
-    side_a = await _compare_side(store, run_id, record_a)
-    side_b = await _compare_side(store, other_run_id, record_b)
+    side_a = await _compare_side(store, run_id, record_a, current)
+    side_b = await _compare_side(store, other_run_id, record_b, current)
 
     identities = sorted(set(side_a["calls"]) | set(side_b["calls"]))
     rows: list[dict[str, Any]] = []
@@ -366,26 +426,52 @@ async def compare(store: Store, run_id: str, other_run_id: str) -> dict[str, Any
     }
 
 
-async def _compare_side(store: Store, run_id: str, record: RunRecord) -> dict[str, Any]:
+async def _compare_side(
+    store: Store, run_id: str, record: RunRecord, current_version: str
+) -> dict[str, Any]:
     events = await store.read_events(run_id)
     tasks = _scan_tasks(events)
     completed = {i for i, t in tasks.items() if t["completed"]}
     exhausted = {i for i, t in tasks.items() if t["exhausted"]}
     run_failed = record.status.value == "failed"
 
+    # Per-call input / output / timing, so the side-by-side view can mark exactly what a
+    # change did (inputs, outputs, attempts, or duration). Additive to the compare
+    # contract; the V5 alignment (identity → row, aligned flag) is unchanged.
+    inputs: dict[str, Any] = {}
     outputs: dict[str, Any] = {}
+    first_start: dict[str, Any] = {}
+    last_end: dict[str, Any] = {}
     for e in events:
+        if e.type not in _TASK_EVENTS:
+            continue
+        identity = call_identity(e.payload)
+        if e.type is EventType.TASK_SCHEDULED and "input_ref" in e.payload:
+            inputs[identity] = decode(e.payload["input_ref"])
+        elif e.type is EventType.TASK_ATTEMPT_STARTED:
+            first_start.setdefault(identity, e.ts)
+        if e.type in (EventType.TASK_COMPLETED, EventType.TASK_ATTEMPT_FAILED):
+            last_end[identity] = e.ts
         if e.type is EventType.TASK_COMPLETED and "output_ref" in e.payload:
-            outputs[call_identity(e.payload)] = decode(e.payload["output_ref"])
+            outputs[identity] = decode(e.payload["output_ref"])
 
     calls: dict[str, dict[str, Any]] = {}
     for identity, info in tasks.items():
+        duration: float | None = None
+        if identity in first_start and identity in last_end:
+            duration = (last_end[identity] - first_start[identity]).total_seconds()
         calls[identity] = {
             "task_name": info["task_name"],
             "status": _task_status(identity, completed, exhausted, run_failed),
+            "input": inputs.get(identity),
             "output": outputs.get(identity),
+            "attempts": info["attempts"],
+            "duration_seconds": duration,
         }
-    return {"summary": _run_summary(record), "calls": calls}
+    return {
+        "summary": _run_summary(record, current_version, forked_from=_fork_lineage(events)),
+        "calls": calls,
+    }
 
 
 def _duration(start_iso: str, end_iso: str) -> float:

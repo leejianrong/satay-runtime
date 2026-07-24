@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCompare,
   buildTimeline,
+  canForkBefore,
   collectChildRunIds,
   eventKind,
+  forkedFrom,
+  forkPointBefore,
+  hasVersionMismatch,
   isInterruption,
+  isTerminalStatus,
   mapSummary,
   taskView,
+  versionMismatch,
 } from "./viewmodels";
-import type { MapNode, TaskDetail, Timeline, Tree } from "./types";
+import type { Compare, MapNode, RunSummary, TaskDetail, Timeline, Tree } from "./types";
 
 // Minimal timeline fixtures. View-models assert on the fields they need and MUST tolerate
 // extra/unknown contract fields (ADR-0018) so V7 additions don't break them.
@@ -145,5 +152,113 @@ describe("task-detail view-model — logical task vs attempts + usage (U5)", () 
     expect(vm.attempts[0].exhausted).toBe(true);
     expect(vm.hasTraceback).toBe(true);
     expect(taskView(failThriceSucceed).hasTraceback).toBe(false);
+  });
+});
+
+// ---- V7 view-models: fork control, compare, mismatch banner (U6/U7/U8) ----
+
+describe("fork-control view-model — 'fork from before this event' (U6)", () => {
+  it("only offers the control on a terminal run and never before creation (seq 1)", () => {
+    // Terminal run: forkable from before any event after the first.
+    expect(canForkBefore({ seq: 4 }, "completed")).toBe(true);
+    expect(canForkBefore({ seq: 4 }, "failed")).toBe(true);
+    expect(canForkBefore({ seq: 4 }, "cancelled")).toBe(true);
+    // Never before WorkflowCreated (seq 1) — nothing to seed.
+    expect(canForkBefore({ seq: 1 }, "completed")).toBe(false);
+    // Non-terminal runs are not forkable in the MVP (ADR-0004/Q53).
+    expect(canForkBefore({ seq: 4 }, "running")).toBe(false);
+    expect(canForkBefore({ seq: 4 }, "waiting")).toBe(false);
+  });
+
+  it("maps 'before this event' to the inclusive fork_point_seq just before it", () => {
+    expect(forkPointBefore({ seq: 5 })).toBe(4);
+    expect(isTerminalStatus("completed")).toBe(true);
+    expect(isTerminalStatus("running")).toBe(false);
+  });
+
+  it("tolerates extra event fields when computing the fork point (ADR-0018)", () => {
+    const event = { seq: 6, event_id: "e6", type: "TaskScheduled", extra_v7: true } as unknown as { seq: number };
+    expect(forkPointBefore(event)).toBe(5);
+    expect(canForkBefore(event, "completed")).toBe(true);
+  });
+});
+
+describe("mismatch-banner + lineage view-model (U8/N17)", () => {
+  it("reads the additive version_mismatch field and flags a real mismatch", () => {
+    const run = {
+      run_id: "r1", workflow_name: "wf", status: "running", code_version: "git:old", created_at: "x", idempotency_key: null,
+      version_mismatch: { stamped: "git:old", current: "git:new", mismatch: true },
+    } as unknown as RunSummary;
+    expect(hasVersionMismatch(run)).toBe(true);
+    expect(versionMismatch(run)).toEqual({ stamped: "git:old", current: "git:new", mismatch: true });
+  });
+
+  it("shows no banner when versions match or the field is absent (older API)", () => {
+    const matched = { version_mismatch: { stamped: "git:x", current: "git:x", mismatch: false } } as unknown as RunSummary;
+    expect(hasVersionMismatch(matched)).toBe(false);
+    expect(hasVersionMismatch({} as unknown as RunSummary)).toBe(false);
+    expect(versionMismatch(null)).toBe(null);
+    expect(hasVersionMismatch(undefined)).toBe(false);
+  });
+
+  it("reads fork lineage defensively; null when the run was not forked", () => {
+    const forked = { forked_from: { source_run_id: "src", fork_point_seq: 4 } } as unknown as RunSummary;
+    expect(forkedFrom(forked)).toEqual({ source_run_id: "src", fork_point_seq: 4 });
+    expect(forkedFrom({ forked_from: null } as unknown as RunSummary)).toBe(null);
+    expect(forkedFrom({} as unknown as RunSummary)).toBe(null);
+  });
+});
+
+describe("compare view-model — align by identity, mark what a change did (U7)", () => {
+  const cmp = {
+    a: { run_id: "orig", workflow_name: "wf", status: "completed", code_version: "git:1", created_at: "x", idempotency_key: null },
+    b: { run_id: "fork", workflow_name: "wf", status: "completed", code_version: "git:2", created_at: "y", idempotency_key: null },
+    rows: [
+      // Reused upstream: identical input+output → unchanged (timing differs, not counted).
+      { identity: "step_one:0", task_name: "step_one", aligned: true,
+        a: { task_name: "step_one", status: "completed", input: [1], output: 2, attempts: 1, duration_seconds: 0.10 },
+        b: { task_name: "step_one", status: "completed", input: [1], output: 2, attempts: 1, duration_seconds: 0.31 } },
+      // Re-run downstream under changed code: same input, different output → changed.
+      { identity: "fork_step:0", task_name: "fork_step", aligned: true,
+        a: { task_name: "fork_step", status: "completed", input: [2], output: 3, attempts: 1, duration_seconds: 0.05 },
+        b: { task_name: "fork_step", status: "completed", input: [2], output: 102, attempts: 1, duration_seconds: 0.06 } },
+      // Present on one side only → changed / one-side.
+      { identity: "extra:0", task_name: "extra", aligned: false,
+        a: null,
+        b: { task_name: "extra", status: "completed", input: [9], output: 9, attempts: 2, duration_seconds: 0.2 } },
+    ],
+  } as unknown as Compare;
+
+  it("marks a changed output as a difference and leaves a reused call unchanged", () => {
+    const vm = buildCompare(cmp);
+    const byId = Object.fromEntries(vm.rows.map((r) => [r.identity, r]));
+    expect(byId["step_one:0"].changed).toBe(false);
+    expect(byId["step_one:0"].diffs.duration).toBe(true); // timing surfaced but not "changed"
+    expect(byId["fork_step:0"].changed).toBe(true);
+    expect(byId["fork_step:0"].diffs.output).toBe(true);
+    expect(byId["fork_step:0"].diffs.input).toBe(false);
+  });
+
+  it("treats an identity present on only one side as changed and not aligned", () => {
+    const vm = buildCompare(cmp);
+    const extra = vm.rows.find((r) => r.identity === "extra:0")!;
+    expect(extra.aligned).toBe(false);
+    expect(extra.changed).toBe(true);
+    expect(extra.a).toBe(null);
+  });
+
+  it("counts how many calls differ (the 'what did my change do' headline)", () => {
+    expect(buildCompare(cmp).changedCount).toBe(2); // fork_step + extra
+  });
+
+  it("tolerates unknown added row/summary fields (ADR-0018)", () => {
+    const withExtra = {
+      ...cmp,
+      version_note: "future field",
+      rows: [{ ...cmp.rows[0], surprise_v8: true, a: { ...(cmp.rows[0] as any).a, spilled: true } }],
+    } as unknown as Compare;
+    const vm = buildCompare(withExtra);
+    expect(vm.rows[0].identity).toBe("step_one:0");
+    expect(vm.rows[0].changed).toBe(false);
   });
 });
