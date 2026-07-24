@@ -163,19 +163,47 @@ async def send_event(
     )
 
 
+#: In-flight bound for ``satay.map`` when ``concurrency=`` is unspecified.
+DEFAULT_MAP_CONCURRENCY = 8
+
+
 async def map(
     task: Callable[..., Awaitable[Any]],
     items: Iterable[Any],
     *,
     key: Callable[[Any], str] | None = None,
+    concurrency: int = DEFAULT_MAP_CONCURRENCY,
 ) -> list[Any]:
-    """Durable fan-out of ``task`` over ``items``; fail-fast (N5, D21, lands in V4)."""
-    raise NotImplementedError("satay.map lands in V4")
+    """Durable fan-out of ``task`` over ``items``, keyed by ``key=`` (N5, A6.1).
+
+    Each item is a keyed durable call ``(task_name, key(item))`` that independently
+    consults the journal, so on resume mid-fan-out completed items are reused and only
+    unresolved items re-run (the signature demo). Up to ``concurrency`` items run at once
+    on the asyncio loop; results rejoin in **input order** regardless of completion order.
+    ``key=`` is required and must return a unique, stable, non-empty string per item
+    (ADR-0002); a missing or duplicate key is a usage error raised at schedule time.
+    Fail-fast (ADR-0020): a failed item raises through the ``map``, in-flight siblings
+    settle but their results are discarded. Must be called inside a running workflow.
+    """
+    driver = CURRENT_DRIVER.get()
+    if driver is None:
+        raise RuntimeError("satay.map() must be called inside a @satay.workflow body")
+    return await driver.durable_map(_resolve_task(task), items, key, concurrency)
 
 
 async def gather(*awaitables: Awaitable[Any]) -> list[Any]:
-    """Durably await several durable calls concurrently; fail-fast (N5, D21, lands in V4)."""
-    raise NotImplementedError("satay.gather lands in V4")
+    """Durably await several durable calls concurrently; fail-fast (N5, A6.1).
+
+    Awaits heterogeneous durable calls together — task calls, nested ``map`` calls, and
+    ``start_child`` calls (whose returned handle is resolved to the child's result) — each
+    keeping its own identity, and rejoins results **positionally** in argument order. Per
+    ADR-0020 a single failed member fails the whole ``gather``. Must be called inside a
+    running workflow.
+    """
+    driver = CURRENT_DRIVER.get()
+    if driver is None:
+        raise RuntimeError("satay.gather() must be called inside a @satay.workflow body")
+    return await driver.durable_gather(awaitables)
 
 
 async def start_child(
@@ -184,5 +212,39 @@ async def start_child(
     *,
     key: str | None = None,
 ) -> RunHandle:
-    """Start a durable child workflow (N5, lands in V4)."""
-    raise NotImplementedError("satay.start_child lands in V4")
+    """Start a durable child workflow linked to the current run (N5, A6.2).
+
+    Creates a full child run with its own journal, linked to its parent (the parent
+    records ``ChildWorkflowScheduled``; the child records ``parent_run_id`` + the
+    originating call identity). Returns a :class:`RunHandle` to the child — ``await
+    handle.result()`` yields its result, reused as a durable-call hit on parent replay.
+    A child crashed mid-flight resumes (not restarts) on parent resume; a failed child
+    raises (fail-fast, ADR-0020). ``key=`` gives the child call an explicit stable
+    identity (otherwise it is identified by call ordinal). Must be called inside a
+    running workflow.
+    """
+    driver = CURRENT_DRIVER.get()
+    if driver is None:
+        raise RuntimeError("satay.start_child() must be called inside a @satay.workflow body")
+    return await driver.durable_child(_resolve_workflow_def(workflow), workflow_input, key)
+
+
+def _resolve_task(task: Callable[..., Awaitable[Any]]) -> Any:
+    """Resolve a ``@satay.task``-decorated callable to its registered definition."""
+    from satay.api.decorators import TASK_ATTR
+    from satay.api.registry import TaskDefinition
+
+    definition = getattr(task, TASK_ATTR, None)
+    if isinstance(definition, TaskDefinition):
+        return definition
+    raise TypeError(
+        f"{getattr(task, '__name__', task)!r} is not a @satay.task; decorate it with "
+        f"@satay.task before passing it to satay.map"
+    )
+
+
+def _resolve_workflow_def(workflow: Callable[..., Awaitable[Any]]) -> Any:
+    """Resolve a ``@satay.workflow``-decorated callable to its registered definition."""
+    from satay.api.runner import _resolve_workflow
+
+    return _resolve_workflow(workflow)

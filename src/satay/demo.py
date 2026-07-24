@@ -10,6 +10,7 @@ processes can still observe counts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass
@@ -18,7 +19,8 @@ from pathlib import Path
 
 from satay.api.context import task_context
 from satay.api.decorators import task, workflow
-from satay.api.primitives import sleep, wait_for_event
+from satay.api.primitives import gather, sleep, start_child, wait_for_event
+from satay.api.primitives import map as satay_map
 
 #: In-process execution counts, keyed by task name.
 EXECUTIONS: dict[str, int] = {}
@@ -34,6 +36,15 @@ SIDE_EFFECTS_DONE: set[str] = set()
 
 #: Physical-attempt counter for the fail-twice-then-succeed demo task.
 FLAKY_ATTEMPTS: dict[str, int] = {}
+
+#: Live/peak in-flight gauge for the V4 ``map`` concurrency-bound demo (ADR-0007).
+CONCURRENCY_GAUGE: dict[str, int] = {"current": 0, "peak": 0}
+
+
+def reset_concurrency_gauge() -> None:
+    """Reset the map concurrency gauge (called from :func:`reset_executions`)."""
+    CONCURRENCY_GAUGE["current"] = 0
+    CONCURRENCY_GAUGE["peak"] = 0
 
 
 def _marker_path() -> Path | None:
@@ -64,6 +75,7 @@ def reset_executions() -> None:
     EXECUTIONS.clear()
     SIDE_EFFECTS_DONE.clear()
     FLAKY_ATTEMPTS.clear()
+    reset_concurrency_gauge()
     path = _marker_path()
     if path is not None and path.exists():
         path.unlink()
@@ -259,3 +271,158 @@ async def review_timeout_demo(value: int) -> str:
     if decision is None:
         return "timed_out"
     return "approved" if decision.approved else "rejected"
+
+
+# -- V4 demo: composite primitives and parallel crash-recovery -------------------
+
+
+def item_key(value: int) -> str:
+    """The stable fan-out key for a mapped integer item (its own value, ``item-N``)."""
+    return f"item-{value}"
+
+
+@task()
+async def square_item(value: int) -> int:
+    """Square one mapped item, marking a per-key real execution (reuse vs re-run marker)."""
+    record_execution(item_key(value))
+    return value * value
+
+
+@workflow
+async def map_square_demo(values: list[int]) -> list[int]:
+    """Fan out ``square_item`` over keyed items (sequential bound for a deterministic crash).
+
+    The signature demo: crash mid-fan-out, then on restart only unresolved items re-run.
+    ``concurrency=1`` makes the crash point deterministic (exactly the items whose
+    ``TaskCompleted`` was recorded survive); the parallel bound is proven separately.
+    """
+    return await satay_map(square_item, values, key=item_key, concurrency=1)
+
+
+@task()
+async def gauge_item(value: int) -> int:
+    """Bump a live in-flight gauge, yield a few times, then return — proves the bound (N5)."""
+    CONCURRENCY_GAUGE["current"] += 1
+    CONCURRENCY_GAUGE["peak"] = max(CONCURRENCY_GAUGE["peak"], CONCURRENCY_GAUGE["current"])
+    for _ in range(3):
+        await asyncio.sleep(0)  # force interleaving so concurrent items overlap
+    CONCURRENCY_GAUGE["current"] -= 1
+    return value + 1
+
+
+@workflow
+async def bounded_map_demo(values: list[int]) -> list[int]:
+    """Fan out ``gauge_item`` with an explicit ``concurrency=2`` bound."""
+    return await satay_map(gauge_item, values, key=item_key, concurrency=2)
+
+
+@workflow
+async def default_bound_map_demo(values: list[int]) -> list[int]:
+    """Fan out ``gauge_item`` with the default (unspecified) concurrency bound."""
+    return await satay_map(gauge_item, values, key=item_key)
+
+
+@task()
+async def add_hundred(value: int) -> int:
+    """A plain durable task (a heterogeneous ``gather`` member alongside a ``map``)."""
+    record_execution("add_hundred")
+    return value + 100
+
+
+@workflow
+async def gather_demo(value: int) -> list[object]:
+    """Gather a scalar task result and a nested map result, rejoined **positionally**."""
+    results = await gather(
+        add_hundred(value),
+        satay_map(square_item, [1, 2, 3], key=item_key, concurrency=3),
+    )
+    return results
+
+
+@task()
+async def maybe_boom(value: int) -> int:
+    """Fail fast on item ``2``; other items mark a real execution and return (ADR-0020)."""
+    record_execution(item_key(value))
+    if value == 2:
+        raise RuntimeError("map item 2 boom")
+    return value
+
+
+@workflow
+async def failing_map_demo(values: list[int]) -> list[int]:
+    """A ``map`` where one item fails — the whole map raises (fail-fast, ADR-0020)."""
+    return await satay_map(maybe_boom, values, key=item_key, concurrency=3)
+
+
+# -- V4 demo: child workflows ----------------------------------------------------
+
+
+@task()
+async def child_task(value: int) -> int:
+    """The child workflow's single task (marks a real execution)."""
+    record_execution("child_task")
+    return value * 10
+
+
+@workflow
+async def child_workflow(value: int) -> int:
+    """A simple child workflow: one task, ``value * 10``."""
+    return await child_task(value)
+
+
+@workflow
+async def parent_workflow(value: int) -> int:
+    """Start a linked child, await its result, and add one (proves child linkage + reuse)."""
+    handle = await start_child(child_workflow, value)
+    child_result: int = await handle.result()
+    return child_result + 1
+
+
+@task()
+async def child_boom(value: int) -> int:
+    """A child task that always fails (marks a real execution before raising)."""
+    record_execution("child_boom")
+    raise RuntimeError("child workflow boom")
+
+
+@workflow
+async def failing_child_workflow(value: int) -> int:
+    """A child workflow whose task fails — surfaces to the parent as a raised error."""
+    return await child_boom(value)
+
+
+@workflow
+async def parent_of_failing_child(value: int) -> int:
+    """Start a child that fails; the failure surfaces here as a raised exception (ADR-0020)."""
+    handle = await start_child(failing_child_workflow, value)
+    result: int = await handle.result()
+    return result
+
+
+@task()
+async def child_step_a(value: int) -> int:
+    """First task of the two-step child (marks a real execution)."""
+    record_execution("child_step_a")
+    return value + 1
+
+
+@task()
+async def child_step_b(value: int) -> int:
+    """Second task of the two-step child (marks a real execution)."""
+    record_execution("child_step_b")
+    return value * 2
+
+
+@workflow
+async def two_step_child(value: int) -> int:
+    """A two-task child, so a crash between its tasks leaves it resumable mid-flight."""
+    first = await child_step_a(value)
+    return await child_step_b(first)
+
+
+@workflow
+async def parent_of_two_step_child(value: int) -> int:
+    """Start a two-step child; a crash mid-child resumes (not restarts) on parent resume."""
+    handle = await start_child(two_step_child, value)
+    result: int = await handle.result()
+    return result

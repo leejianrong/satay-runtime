@@ -144,11 +144,7 @@ class LocalTaskExecutor:
                 Event(
                     run_id=run_id,
                     type=EventType.TASK_ATTEMPT_STARTED,
-                    payload={
-                        "task_name": identity.task_name,
-                        "ordinal": identity.ordinal,
-                        "attempt": attempt,
-                    },
+                    payload={**identity.payload_fields(), "attempt": attempt},
                     ts=self._clock.now(),
                 )
             )
@@ -177,8 +173,7 @@ class LocalTaskExecutor:
                         run_id=run_id,
                         type=EventType.TASK_ATTEMPT_FAILED,
                         payload={
-                            "task_name": identity.task_name,
-                            "ordinal": identity.ordinal,
+                            **identity.payload_fields(),
                             "attempt": attempt,
                             "error": _error_payload(exc),
                             "next_delay": next_delay,
@@ -198,8 +193,7 @@ class LocalTaskExecutor:
 
             usage = ctx.recorded_usage
             payload: dict[str, Any] = {
-                "task_name": identity.task_name,
-                "ordinal": identity.ordinal,
+                **identity.payload_fields(),
                 "output_ref": encode(result),
             }
             if usage:

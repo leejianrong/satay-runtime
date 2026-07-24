@@ -9,12 +9,14 @@ without threading a handle through user signatures.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from satay.api.registry import TaskDefinition
+    from satay.api.registry import TaskDefinition, WorkflowDefinition
+    from satay.api.run_handle import RunHandle
 
 
 class Driver(Protocol):
@@ -41,6 +43,29 @@ class Driver(Protocol):
         annotation: Any,
     ) -> Any:
         """Durably wait for an external event; hit returns it/resolves the timeout (V3)."""
+        ...
+
+    async def durable_map(
+        self,
+        definition: TaskDefinition,
+        items: Iterable[Any],
+        key_fn: Callable[[Any], str] | None,
+        concurrency: int,
+    ) -> list[Any]:
+        """Durable keyed fan-out over ``items``, bounded by ``concurrency`` (V4, A6.1)."""
+        ...
+
+    async def durable_gather(self, awaitables: Sequence[Awaitable[Any]]) -> list[Any]:
+        """Await heterogeneous durable calls, rejoining positionally (V4, A6.1)."""
+        ...
+
+    async def durable_child(
+        self,
+        workflow_def: WorkflowDefinition,
+        workflow_input: Any,
+        key: str | None,
+    ) -> RunHandle:
+        """Start/resume a linked child run and return its handle (V4, A6.2)."""
         ...
 
 
