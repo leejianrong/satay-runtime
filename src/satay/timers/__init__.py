@@ -27,6 +27,7 @@ from typing import Any, get_type_hints
 
 from satay.api.registry import REGISTRY, WorkflowDefinition
 from satay.config import EffectSafety
+from satay.control.commands import CommandQueue, apply_command
 from satay.journal import Store
 from satay.journal.codec import rehydrate
 from satay.journal.events import (
@@ -60,6 +61,7 @@ class TimerEventWorker:
         injector: FaultInjector | None = None,
         effect_safety: EffectSafety = EffectSafety.WARN,
         interval: float = 1.0,
+        commands: CommandQueue | None = None,
     ) -> None:
         self._store = store
         self._clock = clock or RealClock()
@@ -68,6 +70,9 @@ class TimerEventWorker:
         self._effect_safety = effect_safety
         self._interval = interval
         self._running = False
+        #: The control-write command queue the worker drains each tick (V5, ADR-0012).
+        #: ``None`` in a pure timer/event context (V1-V4 tests pass no queue).
+        self._commands = commands
 
     # -- loop control ------------------------------------------------------------
 
@@ -85,12 +90,32 @@ class TimerEventWorker:
     async def tick(self) -> int:
         """Run one poll iteration; return the number of runs re-driven this tick.
 
-        Delivers events before firing timers so a delivered event wins a
-        simultaneously-due timeout (ADR-0021).
+        Applies queued control writes first (so an HTTP ``cancel``/``send_event`` lands
+        before delivery), then delivers events before firing timers so a delivered event
+        wins a simultaneously-due timeout (ADR-0021). The return count is the runs
+        re-driven by event delivery + timer firing (V1-V4 semantics unchanged); a
+        control write's effect is observed through those same paths.
         """
+        await self._apply_commands()
         resumed = await self._deliver_events()
         resumed += await self._fire_timers()
         return resumed
+
+    # -- control writes (V5, ADR-0012) -------------------------------------------
+
+    async def _apply_commands(self) -> None:
+        """Drain and apply queued control writes; the worker is the sole writer."""
+        if self._commands is None:
+            return
+        for command in self._commands.drain():
+            await apply_command(
+                command,
+                store=self._store,
+                clock=self._clock,
+                rng=self._rng,
+                injector=self._injector,
+                effect_safety=self._effect_safety,
+            )
 
     # -- event delivery ----------------------------------------------------------
 

@@ -129,6 +129,20 @@ class RunController:
             return RunStatus.RUNNING.value
         return record.status.value
 
+    async def cancel(self) -> None:
+        """Append ``WorkflowCancelled`` and halt the run (N4, V5).
+
+        Delegates to the shared :func:`~satay.control.commands.append_cancellation`, so
+        the in-process handle path and the HTTP ``cancel`` command reach the identical
+        journal transition. Imported lazily to avoid a package import cycle.
+        """
+        from satay.control.commands import append_cancellation
+
+        await self._resolve_keyed_run()
+        await append_cancellation(
+            self._store, self._run_id, now=self._now(), injector=self._injector
+        )
+
     # -- internals ---------------------------------------------------------------
 
     async def _create(self) -> None:

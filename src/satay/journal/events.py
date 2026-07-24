@@ -41,6 +41,9 @@ class EventType(StrEnum):
     # run (``satay.start_child``); the child's ``WorkflowCreated`` carries the reverse
     # ``parent_run_id`` + originating call identity, so the tree is recoverable both ways.
     CHILD_WORKFLOW_SCHEDULED = "ChildWorkflowScheduled"
+    # V5 — control API. The worker appends this (via a queued ``cancel`` command, or a
+    # direct ``RunHandle.cancel()``) to durably record a cancellation and halt the run.
+    WORKFLOW_CANCELLED = "WorkflowCancelled"
 
 
 class RunStatus(StrEnum):
@@ -53,9 +56,13 @@ class RunStatus(StrEnum):
     WAITING = "waiting"
     COMPLETED = "completed"
     FAILED = "failed"
+    #: Terminally cancelled via the control API (V5). The worker appends
+    #: ``WorkflowCancelled`` and stops driving the run; a cancelled run is never
+    #: re-driven by the poll loop nor woken by a later timer/event.
+    CANCELLED = "cancelled"
 
 
-TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED})
+TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 
 
 def new_event_id() -> str:

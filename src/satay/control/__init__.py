@@ -1,15 +1,108 @@
 """Control and read API (A7/A8, N15/N16/N18).
 
-An HTTP server on its **own thread** exposing write endpoints (start, status, cancel,
-send_event, fork) and read endpoints (run list, timeline, tree, task/attempt detail,
-compare). Reads hit SQLite directly over read-only connections; writes are enqueued on
-the in-process command queue and applied by the worker, which stays the single writer
-(ADR-0012). The redactor is a read-time transform, guarded by a per-session token and
-an Origin/Host allow-list (ADR-0014).
+The write surface (start / cancel / send_event / fork) and the read surface (run list,
+timeline, tree, task/attempt detail, compare), plus the read-time redactor. Reads hit
+SQLite directly through the journal store; writes are enqueued on an in-process command
+queue and applied by the worker, which stays the single writer (ADR-0012). Security is
+the ADR-0014 guard: a per-session token and an ``Origin``/``Host`` allow-list, loopback
+bind only.
 
-This whole stack (FastAPI + uvicorn + Pydantic response models) ships **only in the
-``satay[studio]`` extra**, never the core (ADR-0013). Scaffold only: the API lands in
-V5. Do not import FastAPI/uvicorn/Pydantic at core import time.
+**Core-dependency boundary (ADR-0013).** Everything re-exported here is **pure Python**
+— the read-view builders, the redactor, the command queue and applier, and the security
+policy — so ``import satay.control`` pulls none of FastAPI/uvicorn/Pydantic. The HTTP
+server assembly lives in the sibling :mod:`satay.control.server` module and imports
+FastAPI at *its* module load; the core never imports it. Build (or serve) the app via
+:func:`create_app` / :func:`serve`, which import the server lazily so this guarantee
+holds even for callers that go through the package.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from satay.control.api import ControlAPI, ReadAPI
+from satay.control.commands import (
+    CancelRun,
+    Command,
+    CommandQueue,
+    ForkValidationError,
+    SendEvent,
+    StartRun,
+    UnknownWorkflowError,
+    append_cancellation,
+    apply_command,
+    validate_fork_request,
+)
+from satay.control.redaction import DEFAULT_REDACTION_PATTERNS, REDACTED, Redactor
+from satay.control.security import (
+    TOKEN_HEADER,
+    AuthError,
+    NonLoopbackBindError,
+    SecurityPolicy,
+    ensure_loopback_bind,
+    generate_token,
+    is_loopback_host,
+)
+from satay.control.views import (
+    RunNotFoundError,
+    call_identity,
+    compare,
+    run_list,
+    task_detail,
+    timeline,
+    tree,
+)
+
+if TYPE_CHECKING:
+    # Imported for typing only — never at runtime module load, to keep FastAPI out of
+    # the core import (the studio stack lives behind the lazy factory below).
+    from fastapi import FastAPI
+
+
+def create_app(*args: Any, **kwargs: Any) -> FastAPI:
+    """Build the FastAPI control/read app (studio-only; imports FastAPI lazily)."""
+    from satay.control.server import create_app as _create_app
+
+    return _create_app(*args, **kwargs)
+
+
+def serve(*args: Any, **kwargs: Any) -> None:
+    """Run the embedded HTTP server (studio-only; imports uvicorn lazily)."""
+    from satay.control.server import serve as _serve
+
+    _serve(*args, **kwargs)
+
+
+__all__ = [
+    "DEFAULT_REDACTION_PATTERNS",
+    "REDACTED",
+    "TOKEN_HEADER",
+    "AuthError",
+    "CancelRun",
+    "Command",
+    "CommandQueue",
+    "ControlAPI",
+    "ForkValidationError",
+    "NonLoopbackBindError",
+    "ReadAPI",
+    "Redactor",
+    "RunNotFoundError",
+    "SecurityPolicy",
+    "SendEvent",
+    "StartRun",
+    "UnknownWorkflowError",
+    "append_cancellation",
+    "apply_command",
+    "call_identity",
+    "compare",
+    "create_app",
+    "ensure_loopback_bind",
+    "generate_token",
+    "is_loopback_host",
+    "run_list",
+    "serve",
+    "task_detail",
+    "timeline",
+    "tree",
+    "validate_fork_request",
+]

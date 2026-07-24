@@ -33,7 +33,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync --frozen
+      # The studio extra is installed so FastAPI/uvicorn/Pydantic types resolve for the
+      # V5 control server (satay.control.server), which mypy type-checks under src/ (V5).
+      - run: uv sync --extra studio --frozen
       - name: mypy --strict
         run: uv run mypy src
 
@@ -50,9 +52,20 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --frozen
+      # The studio extra is installed so the V5 HTTP-surface tests (FastAPI TestClient)
+      # can run; the pure unit tiers do not need it (V5).
+      - run: uv sync --extra studio --frozen
       - name: pytest (unit)
         run: uv run pytest tests/unit -q
       # Import-hygiene guard: the integration tier must import without any infra.
       - name: import-hygiene guard
         run: uv run pytest tests/integration --collect-only -q
+      # V5 control/read API tests: the pure boundary tier + the HTTP-surface E2E tier,
+      # plus the import-hygiene assertions (subprocess-based, so they run even here where
+      # sibling tests import FastAPI) — proving the core-dependency boundary holds.
+      - name: control API tests (V5)
+        run: >-
+          uv run pytest -q
+          tests/integration/test_import_hygiene.py
+          tests/integration/test_control_readapi.py
+          tests/e2e/test_control_http.py
