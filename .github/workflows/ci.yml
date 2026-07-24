@@ -67,3 +67,33 @@ jobs:
       # contract; it gates the whole suite.
       - name: pytest (full suite)
         run: uv run pytest -q
+
+  # Studio frontend (ADR-0013/0018): builds and verifies the Svelte + Vite bundle with a
+  # pinned Node + pnpm. This is the "prebuilt in CI" step — svelte-check, the Vitest
+  # view-model unit tests, and `vite build`. It does NOT run a browser smoke test:
+  # ADR-0011 verifies Studio through the JSON read API / view-models, not UI rendering.
+  # New, independent job — it does not touch the four required Python checks above.
+  frontend:
+    name: Studio (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: studio/.nvmrc
+      # Enable corepack AFTER Node is installed so the pnpm shim (pinned by the
+      # packageManager field) is provisioned for this Node — avoids the cache/PATH
+      # chicken-and-egg of setup-node's built-in pnpm cache.
+      - name: Enable corepack (pnpm from packageManager field)
+        run: corepack enable
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: svelte-check (typecheck)
+        run: pnpm check
+      - name: Vitest (view-model unit tests)
+        run: pnpm test
+      - name: Vite build (prebuilt bundle)
+        run: pnpm build

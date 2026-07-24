@@ -65,6 +65,10 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/satay"]
+# The built Studio bundle is vendored under the package and shipped in the wheel
+# (ADR-0013: prebuilt in CI, never at pip install). `artifacts` guarantees it is
+# included even though it is build output rather than hand-written source.
+artifacts = ["src/satay/_studio_assets/**"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/satay", "README.md", "LICENSE"]

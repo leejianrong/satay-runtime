@@ -16,6 +16,8 @@ a non-loopback bind.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -34,6 +36,18 @@ from satay.control.security import (
 )
 from satay.control.views import RunNotFoundError
 from satay.journal import Store
+
+_LOG = logging.getLogger(__name__)
+
+#: The built Studio SPA bundle, vendored into the package by CI (ADR-0013): source lives
+#: in ``studio/`` and Vite emits here. Absent in a bundle-less checkout — serving is then
+#: skipped and the process is API-only.
+STUDIO_ASSETS_DIR = Path(__file__).resolve().parent.parent / "_studio_assets"
+
+
+def studio_index() -> Path:
+    """Path to the built Studio ``index.html`` (may not exist without a CI build)."""
+    return STUDIO_ASSETS_DIR / "index.html"
 
 
 class StartBody(BaseModel):
@@ -135,7 +149,23 @@ def create_app(
     async def run_compare(run_id: str, to: str = Query(...)) -> dict[str, Any]:
         return await _read(reads.compare(run_id, to))
 
+    # Serve the built Studio SPA last, so every API route above wins the path match; the
+    # bundle is a pure read-API consumer (V6). Mounted as a Starlette sub-app, so the
+    # app-level auth dependency does NOT wrap it: the browser loads the static SPA
+    # unauthenticated, then the SPA presents the ADR-0014 session token on its API calls.
+    _mount_studio(app)
+
     return app
+
+
+def _mount_studio(app: FastAPI) -> None:
+    """Mount the built Studio SPA at ``/`` when the vendored bundle is present."""
+    if not studio_index().is_file():
+        _LOG.info("Studio bundle not found at %s — serving API only.", STUDIO_ASSETS_DIR)
+        return
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=STUDIO_ASSETS_DIR, html=True), name="studio")
 
 
 async def _read(awaitable: Any) -> dict[str, Any]:
@@ -165,4 +195,12 @@ def serve(
     uvicorn.run(app, host=host, port=port, log_level=log_level)
 
 
-__all__ = ["ForkBody", "SendEventBody", "StartBody", "create_app", "serve"]
+__all__ = [
+    "STUDIO_ASSETS_DIR",
+    "ForkBody",
+    "SendEventBody",
+    "StartBody",
+    "create_app",
+    "serve",
+    "studio_index",
+]
