@@ -21,7 +21,7 @@ from typing import Any
 
 
 class EventType(StrEnum):
-    """The journal event types active through V2 (a prefix of ADR-0004's full set)."""
+    """The journal event types active through V3 (a prefix of ADR-0004's full set)."""
 
     WORKFLOW_CREATED = "WorkflowCreated"
     WORKFLOW_RESUMED = "WorkflowResumed"
@@ -31,12 +31,22 @@ class EventType(StrEnum):
     TASK_COMPLETED = "TaskCompleted"
     WORKFLOW_COMPLETED = "WorkflowCompleted"
     WORKFLOW_FAILED = "WorkflowFailed"
+    # V3 — timers and events (durable waits, ADR-0007/0021).
+    TIMER_CREATED = "TimerCreated"
+    TIMER_FIRED = "TimerFired"
+    EVENT_WAIT_STARTED = "EventWaitStarted"
+    EXTERNAL_EVENT_RECEIVED = "ExternalEventReceived"
+    WORKFLOW_WAITING = "WorkflowWaiting"
 
 
 class RunStatus(StrEnum):
     """Lifecycle status of a run, derived from its journal head."""
 
     RUNNING = "running"
+    #: Durably parked on a ``sleep`` / ``wait_for_event`` — released from memory, no
+    #: live frame (V3, ADR-0007). Non-terminal: the poll loop wakes it. A graceful wake
+    #: writes no ``WorkflowResumed`` and carries no ⚡ (ADR-0009/Q52).
+    WAITING = "waiting"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -91,3 +101,58 @@ class RunRecord:
     code_version: str
     created_at: datetime
     idempotency_key: str | None = None
+
+
+class TimerKind(StrEnum):
+    """What a timer row resolves when it fires (V3, ADR-0007)."""
+
+    SLEEP = "sleep"
+    EVENT_TIMEOUT = "event_timeout"
+
+
+class TimerStatus(StrEnum):
+    """Lifecycle of a timer row; the firing-idempotency guard keys on it (V3)."""
+
+    PENDING = "pending"
+    FIRED = "fired"
+    #: The wait resolved by a delivered event before the timeout fired, so its timeout
+    #: timer is dropped (ADR-0021 event-wins).
+    DISCARDED = "discarded"
+
+
+@dataclass(frozen=True, slots=True)
+class TimerRecord:
+    """A ``timers``-table row: a due-time the worker polls (V3, ADR-0007).
+
+    ``identity`` is the durable-call identity string the timer resolves (a ``sleep``
+    call site, or the ``wait_for_event`` whose timeout this bounds), tying the row to
+    the ``TimerCreated`` / ``TimerFired`` journal events for replay.
+    """
+
+    timer_id: str
+    run_id: str
+    kind: TimerKind
+    identity: str
+    fire_at: datetime
+    status: TimerStatus
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class InboxEventRecord:
+    """An ``event_inbox``-table row: an external event awaiting a matching wait (V3).
+
+    ``run_id`` is optional (``None`` = deliverable to any run); matching is by
+    ``(event_type, key)`` (V3 design rule 3). ``payload_ref`` is the codec-encoded
+    event structure (the same indirection as ``input_ref`` / ``output_ref``). Buffered
+    matches are consumed FIFO by ``(received_at, row_id)`` (ADR-0021). ``row_id`` is
+    assigned by the store on insert (``0`` before insertion).
+    """
+
+    event_type: str
+    key: str | None
+    payload_ref: Any
+    received_at: datetime
+    run_id: str | None = None
+    consumed: bool = False
+    row_id: int = 0
