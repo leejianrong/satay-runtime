@@ -1,0 +1,5 @@
+# esbuild (a Vite/Vitest dependency) ships a small install script that links its
+# platform binary; pnpm 11 blocks build scripts by default, so it is allowlisted here
+# to keep `pnpm install --frozen-lockfile` non-interactive in CI.
+allowBuilds:
+  esbuild: true

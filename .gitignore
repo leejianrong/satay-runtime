@@ -23,6 +23,14 @@ coverage.xml
 # Satay project-local data dir (ADR-0017)
 .satay/
 
+# Studio frontend (ADR-0013/0018): source lives in studio/; the built bundle is
+# vendored to src/satay/_studio_assets/ and IS committed (served by the V5 process).
+studio/node_modules/
+studio/dist/
+studio/.svelte-kit/
+studio/*.tsbuildinfo
+studio/vite.config.ts.timestamp-*
+
 # Editor / OS
 .DS_Store
 *.swp
