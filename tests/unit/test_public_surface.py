@@ -23,6 +23,8 @@ def test_public_surface_is_exported() -> None:
         # V2 public error types (N9/A10.2).
         "NondeterminismError",
         "EffectSafetyError",
+        # V7 public error type (N17): version mismatch on resume under strict.
+        "VersionMismatchError",
     }
     assert expected <= set(satay.__all__)
     for name in expected:
@@ -33,6 +35,11 @@ def test_v2_error_types_are_public() -> None:
     """NondeterminismError/EffectSafetyError are public runtime errors (V2)."""
     assert issubclass(satay.NondeterminismError, RuntimeError)
     assert issubclass(satay.EffectSafetyError, RuntimeError)
+
+
+def test_v7_version_mismatch_error_is_public() -> None:
+    """VersionMismatchError is a public runtime error, mirroring the V2 policy errors."""
+    assert issubclass(satay.VersionMismatchError, RuntimeError)
 
 
 def test_version_is_exposed() -> None:

@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { Timeline, TimelineEvent } from "../lib/types";
-  import { buildTimeline, type EventKind } from "../lib/viewmodels";
+  import { buildTimeline, canForkBefore, forkPointBefore, type EventKind } from "../lib/viewmodels";
   import { fmtClock, fmtGap } from "../lib/format";
   import JsonView from "./JsonView.svelte";
 
-  let { data }: { data: Timeline } = $props();
+  let { data, onfork }: { data: Timeline; onfork?: (forkPointSeq: number) => void } = $props();
   const vm = $derived(buildTimeline(data));
   let open = $state<Record<number, boolean>>({});
 
@@ -86,6 +86,13 @@
         </span>
         <span class="ev-ts">{fmtClock(row.event.ts)} <span class="ev-caret">&#9656;</span></span>
       </button>
+      {#if onfork && canForkBefore(row.event, vm.status)}
+        <button
+          class="ev-fork"
+          title="Fork a new run from before this event — the original is left untouched (ADR-0004)"
+          onclick={() => onfork?.(forkPointBefore(row.event))}
+        >&#9887; fork from before</button>
+      {/if}
       {#if open[row.event.seq]}
         <div class="ev-payload">
           <div class="payload-box">
@@ -131,6 +138,10 @@
   .ev-ts { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
   .ev-caret { color: var(--text-faint); font-size: 10px; transition: transform 0.15s; display: inline-block; }
   .ev.is-open .ev-caret { transform: rotate(90deg); }
+
+  .ev-fork { position: absolute; right: 8px; top: 8px; z-index: 3; display: none; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.3px; padding: 4px 9px; border-radius: var(--radius); cursor: pointer; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-ring); }
+  .ev-fork:hover { background: var(--accent); color: #fff; }
+  .ev:hover .ev-fork { display: inline-flex; }
 
   .ev-payload { margin: 2px 0 8px 0; }
   .payload-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }

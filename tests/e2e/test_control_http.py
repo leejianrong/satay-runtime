@@ -206,19 +206,43 @@ def test_unknown_run_returns_404() -> None:
     store.close()
 
 
-# -- fork route exists and validates, deferring execution to V7 ------------------
+# -- fork route creates and drives a new run over HTTP (N15, V7) -----------------
 
 
-async def test_fork_route_validates_and_defers_to_v7() -> None:
+async def test_fork_over_http_creates_drives_and_leaves_source_unchanged() -> None:
+    store = SQLiteStore.open(":memory:")
+    queue = CommandQueue()
+    worker = TimerEventWorker(store=store, commands=queue)
+    await start(demo.demo, 1, store=store, run_id="src").result()
+    source_before = [(e.seq, e.event_id, e.type.value) for e in await store.read_events("src")]
+
+    with _client(_app(store, queue)) as client:
+        # Fork keeping through step_one's completion (seq 4), dropping step_two onward.
+        resp = client.post("/runs/src/fork", json={"fork_point_seq": 4})
+        assert resp.status_code == 202
+        new_run_id = resp.json()["run_id"]
+        assert resp.json()["source_run_id"] == "src"
+        assert new_run_id != "src"
+
+        await worker.tick()  # the worker seeds + drives the fork on its poll tick
+
+        fork_tl = client.get(f"/runs/{new_run_id}/timeline").json()
+        assert fork_tl["status"] == "completed"
+        assert "RunForked" in [e["type"] for e in fork_tl["events"]]
+        assert fork_tl["forked_from"] == {"source_run_id": "src", "fork_point_seq": 4}
+
+    # The source run's journal is byte-for-byte unchanged after the fork (the key property).
+    source_after = [(e.seq, e.event_id, e.type.value) for e in await store.read_events("src")]
+    assert source_after == source_before
+    store.close()
+
+
+async def test_fork_route_rejects_invalid_requests() -> None:
     store = SQLiteStore.open(":memory:")
     queue = CommandQueue()
     await start(demo.demo, 1, store=store, run_id="src").result()
 
     with _client(_app(store, queue)) as client:
-        ok = client.post("/runs/src/fork", json={"fork_point_seq": 1})
-        assert ok.status_code == 202
-        assert ok.json()["deferred"] == "v7"
-
         # Malformed / invalid fork requests are rejected on the stable surface.
         assert client.post("/runs/src/fork", json={"fork_point_seq": 9999}).status_code == 400
         assert client.post("/runs/nope/fork", json={"fork_point_seq": 1}).status_code == 400

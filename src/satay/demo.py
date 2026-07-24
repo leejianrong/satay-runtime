@@ -75,6 +75,7 @@ def reset_executions() -> None:
     EXECUTIONS.clear()
     SIDE_EFFECTS_DONE.clear()
     FLAKY_ATTEMPTS.clear()
+    FORK_STEP_BUMP["amount"] = 1
     reset_concurrency_gauge()
     path = _marker_path()
     if path is not None and path.exists():
@@ -108,6 +109,32 @@ async def demo(value: int) -> int:
     first = await step_one(value)
     second = await step_two(first)
     return second
+
+
+# -- V7 demo: fork under a changed task impl -------------------------------------
+
+#: The "changed code" knob for the fork demo. ``fork_step`` reads it, so a test (or the
+#: demo) can flip it between the source run and its fork to prove the fork re-runs the
+#: downstream under new behaviour while the source stays byte-for-byte unchanged.
+FORK_STEP_BUMP: dict[str, int] = {"amount": 1}
+
+
+@task()
+async def fork_step(value: int) -> int:
+    """Add the current ``FORK_STEP_BUMP`` amount (marks a real execution).
+
+    The downstream task the fork re-runs: change ``FORK_STEP_BUMP`` and re-run under a
+    fork to see a different result, with ``step_one`` reused as a journal hit.
+    """
+    record_execution("fork_step")
+    return value + FORK_STEP_BUMP["amount"]
+
+
+@workflow
+async def fork_demo(value: int) -> int:
+    """``step_one`` (reused across a fork) then ``fork_step`` (re-run under changed code)."""
+    first = await step_one(value)
+    return await fork_step(first)
 
 
 # -- V2 demo tasks ---------------------------------------------------------------

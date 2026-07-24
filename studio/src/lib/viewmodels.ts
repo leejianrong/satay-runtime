@@ -7,12 +7,16 @@
 import type {
   Attempt,
   ChildNode,
+  Compare,
+  CompareCall,
+  ForkLineage,
   MapNode,
   TaskDetail,
   Timeline,
   TimelineEvent,
   Tree,
   TreeNode,
+  VersionMismatch,
 } from "./types";
 
 // ---- Timeline: event-kind coding + interruption-marker surfacing (U3) ----
@@ -183,4 +187,98 @@ export function taskView(detail: TaskDetail): TaskView {
     hasTraceback: Boolean(traceback),
     traceback,
   };
+}
+
+// ---- Fork control: "fork from before this event" (U6) ----
+
+/** A run is forkable only once it is settled — the MVP forks terminal runs (ADR-0004/Q53). */
+export function isTerminalStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+/** The API's inclusive fork_point_seq for "fork from before this event": keep everything
+ *  strictly before it, i.e. up to (and including) the event just prior. */
+export function forkPointBefore(event: { seq: number }): number {
+  return event.seq - 1;
+}
+
+/** Whether a "fork from before this event" control should be offered: the run must be
+ *  terminal and there must be at least one earlier event to keep (never before creation). */
+export function canForkBefore(event: { seq: number }, status: string): boolean {
+  return event.seq > 1 && isTerminalStatus(status);
+}
+
+// ---- Version-mismatch banner + fork lineage (U8/N17, additive fields ADR-0018) ----
+
+/** Read the additive version-mismatch field defensively; null when absent (older API). */
+export function versionMismatch(
+  run: { version_mismatch?: VersionMismatch } | null | undefined,
+): VersionMismatch | null {
+  const vm = run?.version_mismatch;
+  if (!vm || typeof vm !== "object") return null;
+  return { stamped: String(vm.stamped ?? ""), current: String(vm.current ?? ""), mismatch: vm.mismatch === true };
+}
+
+/** The U8 banner shows only when the read API reports an actual mismatch. */
+export function hasVersionMismatch(run: { version_mismatch?: VersionMismatch } | null | undefined): boolean {
+  return versionMismatch(run)?.mismatch === true;
+}
+
+/** Read the additive fork-lineage field defensively; null when the run was not forked. */
+export function forkedFrom(run: { forked_from?: ForkLineage | null } | null | undefined): ForkLineage | null {
+  const f = run?.forked_from;
+  if (!f || typeof f !== "object") return null;
+  return { source_run_id: String(f.source_run_id ?? ""), fork_point_seq: Number(f.fork_point_seq) };
+}
+
+// ---- Run comparison: align by identity, mark what a change did (U7) ----
+
+export interface CompareRowView {
+  identity: string;
+  taskName: string | null;
+  a: CompareCall | null;
+  b: CompareCall | null;
+  /** Present on both sides (a shared durable call). */
+  aligned: boolean;
+  /** A substantive difference: absent on one side, or differing input/output/attempts. */
+  changed: boolean;
+  /** Per-field flags for rendering (timing surfaced but not counted as a substantive change). */
+  diffs: { input: boolean; output: boolean; attempts: boolean; duration: boolean };
+}
+
+export interface CompareView {
+  a: Compare["a"];
+  b: Compare["b"];
+  rows: CompareRowView[];
+  /** How many aligned/diverging rows differ — the "what did my change do" headline. */
+  changedCount: number;
+}
+
+function sameJson(x: unknown, y: unknown): boolean {
+  return JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
+}
+
+export function buildCompare(cmp: Compare): CompareView {
+  const rows = (cmp.rows ?? []).map((row): CompareRowView => {
+    const a = row.a ?? null;
+    const b = row.b ?? null;
+    const both = a !== null && b !== null;
+    const input = both && !sameJson(a.input, b.input);
+    const output = both && !sameJson(a.output, b.output);
+    const attempts = both && a.attempts !== b.attempts;
+    const duration = both && a.duration_seconds !== b.duration_seconds;
+    const aligned = row.aligned === true && both;
+    // Absent-on-one-side is itself a change; timing jitter alone is not counted.
+    const changed = !aligned || input || output || attempts;
+    return {
+      identity: row.identity,
+      taskName: row.task_name ?? null,
+      a,
+      b,
+      aligned,
+      changed,
+      diffs: { input, output, attempts, duration },
+    };
+  });
+  return { a: cmp.a, b: cmp.b, rows, changedCount: rows.filter((r) => r.changed).length };
 }

@@ -3,21 +3,53 @@
 Stamps each run with a code version resolved once at creation, in fallback order:
 a **git commit** (via the ``git`` binary — no ``dulwich``, ADR-0015), else a
 developer-provided **dev string**, else a **source hash** of the registered
-definitions. Recorded on ``WorkflowCreated`` so V7 has the data; **V1 stamps only** —
-the mismatch check on resume is V7.
+definitions. Recorded on ``WorkflowCreated`` (V1 stamped only).
+
+**V7 turns the stamp into a policy (N17, ADR-0010).** On resume, the worker compares
+the run's *stamped* version against the *current* one; on a mismatch it applies the
+**same dev-warn / strict-reject split** already used for nondeterminism (V2) and
+effect safety — one mental model, not three. ``strict`` raises
+:class:`VersionMismatchError` (the resume is rejected); ``warn`` logs and continues,
+pointing at the fork as the offered path; ``off`` is silent. There is **no automatic
+migration** (ADR-0010) — the developer forks (ADR-0004) to continue under new code.
+The read API surfaces the mismatch so Studio can show a banner (ADR-0018).
 """
 
 from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import os
 import subprocess
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from satay.config import EffectSafety
+
+_LOG = logging.getLogger("satay")
+
 #: Environment variable providing an explicit dev version string (second fallback).
 DEV_VERSION_ENV_VAR = "SATAY_CODE_VERSION"
+
+
+class VersionMismatchError(RuntimeError):
+    """Raised on resume under strict mode when the code version has changed (N17).
+
+    Mirrors :class:`~satay.replay.nondeterminism.NondeterminismError` and
+    :class:`~satay.replay.nondeterminism.EffectSafetyError`: a strict-mode policy
+    failure the developer resolves (here, by forking to continue under new code —
+    ADR-0004/0010), never an automatic migration.
+    """
+
+    def __init__(self, stamped: str, current: str) -> None:
+        super().__init__(
+            f"code version mismatch on resume: run was stamped {stamped!r} but the current "
+            f"code version is {current!r}; strict mode rejects the resume — fork the run to "
+            f"continue under the new code (ADR-0004/0010, no automatic migration)"
+        )
+        self.stamped = stamped
+        self.current = current
 
 
 def stamp_code_version(
@@ -43,6 +75,50 @@ def stamp_code_version(
 
         source_targets = REGISTRY.iter_source_targets()
     return f"src:{_source_hash(source_targets)}"
+
+
+def current_code_version(
+    *,
+    dev_string: str | None = None,
+    source_targets: list[Callable[..., Awaitable[Any]]] | None = None,
+) -> str:
+    """The code version of the *running* process, resolved the same way as the stamp.
+
+    A thin, intention-revealing alias of :func:`stamp_code_version` used by the resume
+    check and the read API to compare a run's recorded version against "now". Kept as a
+    separate name so callers (and tests) can target the current-version resolution
+    without re-reading the whole stamping doc; not cached, so a fresh git commit is
+    reflected immediately.
+    """
+    return stamp_code_version(dev_string=dev_string, source_targets=source_targets)
+
+
+def is_version_mismatch(stamped: str, current: str) -> bool:
+    """Whether a run's ``stamped`` version differs from the ``current`` one (N17)."""
+    return stamped != current
+
+
+def check_resume_version(stamped: str, current: str, effect_safety: EffectSafety) -> None:
+    """Apply the mismatch policy on resume, reusing the dev-warn / strict split (N17).
+
+    No mismatch is a no-op. On a mismatch: ``strict`` raises
+    :class:`VersionMismatchError` (rejecting the resume); ``warn`` logs and returns
+    (the resume proceeds, but the developer is pointed at forking); ``off`` is silent.
+    The identical shape to nondeterminism and effect-safety enforcement (ADR-0003/0006).
+    """
+    if not is_version_mismatch(stamped, current):
+        return
+    if effect_safety is EffectSafety.STRICT:
+        raise VersionMismatchError(stamped, current)
+    if effect_safety is EffectSafety.WARN:
+        _LOG.warning(
+            "code version mismatch on resume: run stamped %s, current %s; resuming under "
+            "changed code may diverge — consider forking to continue under the new code "
+            "(ADR-0004/0010)",
+            stamped,
+            current,
+        )
+    # off: silent — the resume proceeds unremarked.
 
 
 def _git_commit() -> str | None:

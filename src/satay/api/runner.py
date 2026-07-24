@@ -106,8 +106,14 @@ class RunController:
             # wake, so it writes NO WorkflowResumed and carries no ⚡ (ADR-0009/Q52).
             await self._drive()
         else:
-            # Resume a run interrupted mid-execution (not durably parked): the
-            # WorkflowResumed event is what renders the ⚡ marker (ADR-0009/Q52).
+            # Resume a run interrupted mid-execution (not durably parked). Before
+            # re-driving, apply the version-mismatch policy (N17): strict rejects the
+            # resume, dev warns and continues (offering a fork). The WorkflowResumed
+            # event is what renders the ⚡ marker (ADR-0009/Q52), appended only once the
+            # resume is allowed to proceed.
+            from satay.versioning import check_resume_version, current_code_version
+
+            check_resume_version(record.code_version, current_code_version(), self._effect_safety)
             await self._commit(
                 Event(run_id=self._run_id, type=EventType.WORKFLOW_RESUMED, ts=self._now())
             )

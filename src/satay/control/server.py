@@ -121,11 +121,12 @@ def create_app(
     @app.post("/runs/{run_id}/fork", status_code=202)
     async def fork_run(run_id: str, body: ForkBody) -> dict[str, Any]:
         try:
-            await writes.validate_fork(run_id, body.fork_point_seq)
+            new_run_id = await writes.fork(run_id, body.fork_point_seq)
         except ForkValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        # Route exists and validates; creating the forked run is deferred to V7.
-        return {"source_run_id": run_id, "status": "accepted", "deferred": "v7"}
+        # Validated + enqueued; the worker seeds and drives the fork on its next tick
+        # (write-then-poll, ADR-0012). The new run id is returned so Studio navigates to it.
+        return {"run_id": new_run_id, "source_run_id": run_id, "status": "accepted"}
 
     # -- reads (direct to the store; redaction enforced; never block on the worker) ---
 
