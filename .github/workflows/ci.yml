@@ -53,19 +53,17 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       # The studio extra is installed so the V5 HTTP-surface tests (FastAPI TestClient)
-      # can run; the pure unit tiers do not need it (V5).
+      # can run alongside the core suite.
       - run: uv sync --extra studio --frozen
-      - name: pytest (unit)
-        run: uv run pytest tests/unit -q
-      # Import-hygiene guard: the integration tier must import without any infra.
+      # Cheap fast-fail: the integration tier must import without any infra before the
+      # full run (the subprocess-based import-hygiene assertion also runs below).
       - name: import-hygiene guard
         run: uv run pytest tests/integration --collect-only -q
-      # V5 control/read API tests: the pure boundary tier + the HTTP-surface E2E tier,
-      # plus the import-hygiene assertions (subprocess-based, so they run even here where
-      # sibling tests import FastAPI) — proving the core-dependency boundary holds.
-      - name: control API tests (V5)
-        run: >-
-          uv run pytest -q
-          tests/integration/test_import_hygiene.py
-          tests/integration/test_control_readapi.py
-          tests/e2e/test_control_http.py
+      # Full test suite on both 3.12 and 3.13 (unit + integration + e2e): the V1-V4
+      # end-to-end acceptance tests (crash-recovery, guarantees, timers, composite) plus
+      # the V5 HTTP surface. The studio extra is installed so the HTTP tests run and the
+      # subprocess-based import-hygiene test runs as part of the integration tier. The
+      # job keeps the "Unit tests" name only for the branch-protection required-check
+      # contract; it gates the whole suite.
+      - name: pytest (full suite)
+        run: uv run pytest -q
