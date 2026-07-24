@@ -101,6 +101,10 @@ class RunController:
         elif record.status in TERMINAL_STATUSES:
             # Terminal no-op: return the recorded outcome without re-driving.
             pass
+        elif record.status is RunStatus.WAITING:
+            # A durably parked run (sleep / wait_for_event): re-driving is a graceful
+            # wake, so it writes NO WorkflowResumed and carries no ⚡ (ADR-0009/Q52).
+            await self._drive()
         else:
             # Resume a run interrupted mid-execution (not durably parked): the
             # WorkflowResumed event is what renders the ⚡ marker (ADR-0009/Q52).
@@ -109,6 +113,12 @@ class RunController:
             )
             await self._drive()
 
+        # A run still parked (WAITING) has no terminal outcome yet: return None. The
+        # worker's poll loop drives it to completion when its timer/event resolves; a
+        # later result() then returns the recorded outcome (terminal no-op above).
+        record = await self._store.get_run(self._run_id)
+        if record is not None and record.status is RunStatus.WAITING:
+            return None
         return await self._outcome()
 
     async def status(self) -> str:

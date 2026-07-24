@@ -10,6 +10,7 @@ without threading a handle through user signatures.
 from __future__ import annotations
 
 from contextvars import ContextVar
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class Driver(Protocol):
-    """What a ``@satay.task`` call delegates to during a workflow drive."""
+    """What a ``@satay.task`` call or a durable primitive delegates to during a drive."""
 
     async def durable_call(
         self,
@@ -26,6 +27,20 @@ class Driver(Protocol):
         kwargs: dict[str, Any],
     ) -> Any:
         """Resolve identity, consult the journal (hit → reuse, miss → execute)."""
+        ...
+
+    async def durable_sleep(self, duration: timedelta) -> None:
+        """Durably sleep: hit (``TimerFired``) returns; miss parks the run (V3, N5)."""
+        ...
+
+    async def durable_wait_for_event(
+        self,
+        event_type: str,
+        key: str | None,
+        timeout: timedelta | None,
+        annotation: Any,
+    ) -> Any:
+        """Durably wait for an external event; hit returns it/resolves the timeout (V3)."""
         ...
 
 
