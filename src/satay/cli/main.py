@@ -10,11 +10,18 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 _STUDIO_HINT = (
     "`satay dev` is provided by the studio extra. Install it with:\n    pip install 'satay[studio]'"
 )
+
+
+def _load_dev_cli() -> Callable[[list[str]], int]:
+    """Import the studio ``satay dev`` runner, raising ``ImportError`` if not installed."""
+    from satay.devstack.cli import run_dev_cli
+
+    return run_dev_cli
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,27 +42,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the data directory (default: ./.satay).",
     )
 
-    # `dev` is declared only so the core can emit a helpful error; the real command
-    # lives in the studio extra (ADR-0016).
-    subcommands.add_parser("dev", help="(studio extra) Boot the full local dev stack.")
+    # `dev` is declared so it shows in `satay --help`; its options are owned by the Typer
+    # command in the studio extra (ADR-0016), so `main` intercepts the verb before argparse
+    # parses it and forwards the remaining args to that command.
+    subcommands.add_parser(
+        "dev", help="(studio extra) Boot the full local dev stack.", add_help=False
+    )
 
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the core CLI. Returns a process exit code."""
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args_list = list(sys.argv[1:] if argv is None else argv)
 
-    if args.command == "dev":
-        print(_STUDIO_HINT, file=sys.stderr)
-        return 2
+    # `satay dev` is a Typer command in the studio extra (ADR-0016). Intercept it before
+    # argparse so the extra owns its --data-dir/--port options; fall back to a clear
+    # install hint when the extra is not present.
+    if args_list and args_list[0] == "dev":
+        return _dispatch_dev(args_list[1:])
+
+    parser = build_parser()
+    args = parser.parse_args(args_list)
 
     if args.command == "runs" and args.runs_command == "show":
         return _runs_show(args.run_id, args.data_dir)
 
     parser.error(f"unknown command: {args.command}")
     return 2  # pragma: no cover - parser.error raises SystemExit
+
+
+def _dispatch_dev(dev_argv: list[str]) -> int:
+    """Dispatch ``satay dev`` to the studio Typer command, or print the install hint."""
+    try:
+        run_dev_cli = _load_dev_cli()
+    except ImportError:
+        print(_STUDIO_HINT, file=sys.stderr)
+        return 2
+    return run_dev_cli(dev_argv)
 
 
 def _runs_show(run_id: str, data_dir: str | None) -> int:

@@ -17,11 +17,14 @@ import asyncio
 import json
 import sqlite3
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from satay.journal.codec import from_json, to_json
+from satay.blobs import BlobStore, rehydrate_encoded, spill_encoded
+from satay.config import BLOB_DIR_NAME
+from satay.journal.codec import decode, encode
 from satay.journal.events import (
     Event,
     EventType,
@@ -102,13 +105,23 @@ class SQLiteStore:
     manager.
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, blobs: BlobStore | None = None) -> None:
         self._conn = connection
         self._run_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        #: Where over-threshold payloads spill (N19). ``None`` disables spill entirely,
+        #: which is the case for a purely in-memory store; a file-backed store derives a
+        #: sibling ``blobs/`` directory automatically so spill "just works" (ADR-0004).
+        self._blobs = blobs
 
     @classmethod
-    def open(cls, path: str | Path) -> SQLiteStore:
-        """Open (creating if needed) a store at ``path`` (a file path or ``":memory:"``)."""
+    def open(cls, path: str | Path, *, blobs: BlobStore | None = None) -> SQLiteStore:
+        """Open (creating if needed) a store at ``path`` (a file path or ``":memory:"``).
+
+        A file-backed store auto-attaches a :class:`~satay.blobs.BlobStore` in a sibling
+        ``blobs/`` directory (so spilled payloads survive across processes and rehydrate
+        transparently on read); ``":memory:"`` stays spill-free. Pass ``blobs`` to
+        override.
+        """
         conn = sqlite3.connect(
             str(path),
             isolation_level=None,  # explicit transaction control
@@ -117,7 +130,9 @@ class SQLiteStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        store = cls(conn)
+        if blobs is None and str(path) != ":memory:":
+            blobs = BlobStore(Path(path).parent / BLOB_DIR_NAME)
+        store = cls(conn, blobs)
         store._migrate()
         return store
 
@@ -190,7 +205,7 @@ class SQLiteStore:
                         event.event_id,
                         event.type.value,
                         event.ts.isoformat(),
-                        to_json(dict(event.payload)),
+                        self._encode_payload(event.payload),
                     ),
                 )
                 conn.execute("COMMIT")
@@ -198,6 +213,19 @@ class SQLiteStore:
                 conn.execute("ROLLBACK")
                 raise
             return event.with_seq(seq)
+
+    def _encode_payload(self, payload: object) -> str:
+        """Encode an event payload to JSON, spilling over-threshold values to blobs (N19).
+
+        Below the threshold the payload serializes inline exactly as before; above it, an
+        over-threshold value is written to the blob store and replaced by a reference, so
+        the journal never inlines a large payload (ADR-0004). Spill is disabled (always
+        inline) when no blob store is attached.
+        """
+        encoded = encode(dict(payload) if isinstance(payload, Mapping) else payload)
+        if self._blobs is not None:
+            encoded = spill_encoded(encoded, self._blobs)
+        return json.dumps(encoded, separators=(",", ":"))
 
     async def set_status(self, run_id: str, status: RunStatus) -> None:
         """Update a run's denormalised status."""
@@ -217,6 +245,19 @@ class SQLiteStore:
             (run_id,),
         ).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    def _decode_payload(self, payload_json: str) -> Any:
+        """Decode a stored payload, rehydrating any spilled blob references first (N19).
+
+        Blob references are resolved back to their inline encoded form *before* the codec
+        decodes, so a spilled payload yields exactly the value an inline one would — the
+        rehydration is invisible to every reader above the store (replay, read API,
+        Studio), and redaction (which runs later, on the read view) therefore scrubs a
+        spilled field identically to an inline one (ADR-0004/ADR-0014).
+        """
+        raw = json.loads(payload_json)
+        raw = rehydrate_encoded(raw, self._blobs)
+        return decode(raw)
 
     async def get_run(self, run_id: str) -> RunRecord | None:
         """Return the run record, or ``None`` if unknown."""
@@ -398,12 +439,11 @@ class SQLiteStore:
             row_id=int(row["row_id"]),
         )
 
-    @staticmethod
-    def _row_to_event(row: sqlite3.Row) -> Event:
+    def _row_to_event(self, row: sqlite3.Row) -> Event:
         return Event(
             run_id=row["run_id"],
             type=EventType(row["type"]),
-            payload=from_json(row["payload_json"]),
+            payload=self._decode_payload(row["payload_json"]),
             ts=datetime.fromisoformat(row["ts"]),
             event_id=row["event_id"],
             seq=int(row["seq"]),

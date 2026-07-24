@@ -90,7 +90,39 @@ def test_runs_show_missing_run_returns_error(
     assert "not found" in capsys.readouterr().err
 
 
-def test_dev_command_points_at_studio_extra(capsys: pytest.CaptureFixture[str]) -> None:
+def test_dev_dispatches_to_the_studio_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`satay dev` forwards its --data-dir/--port to the studio Typer command (V8, ADR-0016)."""
+    captured: dict[str, object] = {}
+
+    def _fake_run_dev(**kwargs: object) -> int:
+        captured.update(kwargs)
+        return 0
+
+    # The Typer command calls run_dev in its own module namespace; patch it there.
+    import satay.devstack.cli as devstack_cli
+
+    monkeypatch.setattr(devstack_cli, "run_dev", _fake_run_dev)
+
+    code = main(["dev", "--port", "9999", "--data-dir", str(tmp_path)])
+    assert code == 0
+    assert captured["port"] == 9999
+    assert captured["data_dir"] == str(tmp_path)
+
+
+def test_dev_without_studio_extra_prints_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without the studio extra, `satay dev` fails with a clear install hint (ADR-0016)."""
+    import importlib
+
+    cli_main = importlib.import_module("satay.cli.main")
+
+    def _raise_import_error() -> object:
+        raise ImportError("no studio extra")
+
+    monkeypatch.setattr(cli_main, "_load_dev_cli", _raise_import_error)
     code = main(["dev"])
     assert code == 2
     assert "satay[studio]" in capsys.readouterr().err
