@@ -33,6 +33,8 @@ class RunController(Protocol):
 
     async def status(self) -> str: ...
 
+    async def cancel(self) -> None: ...
+
     def current_run_id(self) -> str: ...
 
 
@@ -63,5 +65,11 @@ class RunHandle:
         return await self._controller.status()
 
     async def cancel(self) -> None:
-        """Request cancellation of the run (lands in V5)."""
-        raise NotImplementedError("RunHandle.cancel lands in V5")
+        """Cancel the run: append ``WorkflowCancelled`` and halt it (N4, V5).
+
+        Reaches the *same* journal transition as the HTTP cancel endpoint. A no-op for
+        an unknown or already-terminal run.
+        """
+        if self._controller is None:  # pragma: no cover - defensive
+            raise RuntimeError("run handle is not attached to a controller")
+        await self._controller.cancel()
