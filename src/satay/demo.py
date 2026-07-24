@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 from satay.api.context import task_context
 from satay.api.decorators import task, workflow
@@ -135,6 +136,39 @@ async def fork_demo(value: int) -> int:
     """``step_one`` (reused across a fork) then ``fork_step`` (re-run under changed code)."""
     first = await step_one(value)
     return await fork_step(first)
+
+
+# -- V8 demo: a large task output that spills to a blob --------------------------
+
+#: Size of the V8 large-output payload — comfortably over the 262144-byte spill
+#: threshold, so its ``output_ref`` spills to a blob while the journal keeps a reference.
+BIG_OUTPUT_SIZE = 300_000
+
+
+@task()
+async def big_output_task(value: int) -> dict[str, Any]:
+    """Return a large document (>256 KiB encoded) so its output spills to a blob (N19)."""
+    record_execution("big_output_task")
+    return {"n": value, "blob": "x" * BIG_OUTPUT_SIZE}
+
+
+@workflow
+async def big_output_demo(value: int) -> dict[str, Any]:
+    """A one-task workflow whose task returns a spilled-to-blob large output."""
+    return await big_output_task(value)
+
+
+@task()
+async def big_secret_task(value: int) -> dict[str, Any]:
+    """Return a large output that also carries a sensitive field (redaction-after-spill)."""
+    record_execution("big_secret_task")
+    return {"n": value, "padding": "y" * BIG_OUTPUT_SIZE, "api_key": "super-secret-in-a-blob"}
+
+
+@workflow
+async def big_secret_demo(value: int) -> dict[str, Any]:
+    """A one-task workflow whose spilled output contains a sensitive ``api_key`` field."""
+    return await big_secret_task(value)
 
 
 # -- V2 demo tasks ---------------------------------------------------------------
