@@ -47,16 +47,19 @@ Same form at <https://test.pypi.org/manage/account/publishing/>, identical value
 This one only gates the rehearsal path. Skip it and `target=testpypi` will fail while real
 releases still work — but then you cannot rehearse the upload, which is the point.
 
-### 1c. Create the two GitHub environments
+### 1c. Create the two GitHub environments — **done, do not redo**
 
-In **Settings → Environments** on `leejianrong/satay-runtime`, create:
+Both environments now exist in **Settings → Environments** on `leejianrong/satay-runtime`,
+configured as follows:
 
-- **`pypi`** — add yourself under **Required reviewers** so every real upload pauses for a
-  human click, and restrict **Deployment branches and tags** to the tag pattern `v*`.
-- **`testpypi`** — no reviewers needed.
+- **`pypi`** — required reviewer set, so every real upload pauses for a human click.
+  **Deployment branches and tags** restricted to the tag pattern `v*`.
+- **`testpypi`** — **no protection rules, deliberately.** Its publish job runs from branch
+  `main` via `workflow_dispatch`, so a tag-only deployment policy would block every
+  rehearsal. Leave it open.
 
-The environment names must match §1a/§1b exactly. Creating them is not optional: a job
-referencing a nonexistent environment fails to start.
+The environment names match §1a/§1b exactly. A job referencing a nonexistent environment
+fails to start, which is why this was the blocking step.
 
 ### 1d. Confirm the names are still free
 
@@ -68,6 +71,10 @@ together.
 ---
 
 ## 2. Rehearse before you release
+
+**Both rehearsal paths have been run green, and `v0.1.0a1` is published on PyPI.** The
+pipeline is proven end to end; this section is the procedure for the *next* version, not
+outstanding work.
 
 Two rehearsal paths, both via **Actions → Release → Run workflow**. Neither needs a tag,
 so you can point them at a branch.
