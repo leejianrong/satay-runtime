@@ -18,6 +18,11 @@ A ``SimulatedCrash``, ``NondeterminismError``, or ``EffectSafetyError`` is allow
 propagate unrecorded — a crash models worker death; the latter two are dev-time
 divergence/policy failures the developer resolves before re-driving.
 
+The terminal append is **idempotent**: a journal that already carries a terminal event
+short-circuits the drive (the workflow is not re-run and no second terminal event is
+appended), because the terminal event commits *before* the run status flips and a crash
+in that window would otherwise duplicate it (ADR-0004).
+
 **Nondeterminism (N9).** If a durable call's task name does not match the journal
 entry at that global position, the engine raises :class:`NondeterminismError`
 (expected-vs-actual). Policy follows the effect-safety mode (ADR-0003): ``strict``
@@ -85,6 +90,23 @@ class WorkflowParked(BaseException):
 
 #: Errors that model an out-of-band stop, propagated unrecorded from ``drive``.
 _PROPAGATE = (SimulatedCrash, NondeterminismError, EffectSafetyError)
+
+#: Terminal journal event → the run status it records. The journal is the source of
+#: truth for terminality (ADR-0004); ``runs.status`` is a denormalisation of it.
+_TERMINAL_EVENT_STATUS: dict[EventType, RunStatus] = {
+    EventType.WORKFLOW_COMPLETED: RunStatus.COMPLETED,
+    EventType.WORKFLOW_FAILED: RunStatus.FAILED,
+    EventType.WORKFLOW_CANCELLED: RunStatus.CANCELLED,
+}
+
+
+def _recorded_terminal_status(events: Sequence[Event]) -> RunStatus | None:
+    """The terminal status already recorded in this journal, or ``None`` if non-terminal."""
+    for event in reversed(events):
+        status = _TERMINAL_EVENT_STATUS.get(event.type)
+        if status is not None:
+            return status
+    return None
 
 
 class ReplayEngine:
@@ -659,7 +681,7 @@ class ReplayEngine:
         if self._effect_safety is EffectSafety.STRICT:
             raise error
         if self._effect_safety is EffectSafety.WARN:
-            # Dev warns; the offer-to-fork recovery path lands in V7.
+            # Dev warns; the developer recovers by forking the run at a chosen point.
             _LOG.warning("%s", error)
         # off: silent. Fall through — the divergent call proceeds as a fresh miss.
 
@@ -685,6 +707,17 @@ class ReplayEngine:
     async def drive(self, workflow_def: WorkflowDefinition, workflow_input: Any) -> None:
         """Re-run the workflow to a terminal state, reconciling with the journal."""
         events = list(await self._store.read_events(self._run_id))
+
+        # Idempotent terminal append (ADR-0004). The terminal event is committed before
+        # the run's status flips, so a crash in that window leaves a journal that is
+        # already terminal on a run that still reads non-terminal. Re-running the
+        # workflow here would append a SECOND terminal event; the journal is the source
+        # of truth, so short-circuit and only reconcile the denormalised status.
+        recorded = _recorded_terminal_status(events)
+        if recorded is not None:
+            await self._store.set_status(self._run_id, recorded)
+            return
+
         self._load_journal(events)
 
         token = CURRENT_DRIVER.set(self)
