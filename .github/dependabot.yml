@@ -1,0 +1,111 @@
+# Dependabot — keep dependencies and action pins from drifting (KAN-400).
+#
+# Grouping is the point of this file. Ungrouped, three ecosystems on a weekly
+# cadence produce a steady drip of single-dependency PRs that nobody reviews.
+# Each ecosystem below collapses its safe bumps (minor + patch) into one PR and
+# splits majors out on their own, so a breaking change is never buried inside a
+# grouped diff.
+#
+# Note on lockfiles: CI installs with `uv sync --frozen` and
+# `pnpm install --frozen-lockfile`, so a dependency bump is only mergeable if the
+# lockfile moved with it. Both ecosystems below update the lockfile in the same
+# PR, which is what keeps those frozen installs green.
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # Python. The `uv` ecosystem reads uv.lock + pyproject.toml natively (the
+  # older `pip` ecosystem does not understand uv.lock and would leave it stale).
+  #
+  # The runtime core is deliberately near-zero-dependency (ADR-0013/0016), so
+  # almost everything Dependabot finds here is dev or `satay[studio]` tooling.
+  # That boundary is a review rule, not something Dependabot enforces: a PR that
+  # adds a *new* runtime dependency to the core still has to be refused by a
+  # human.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Singapore
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      prefix-development: chore(deps-dev)
+    labels:
+      - dependencies
+      - python
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      python-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
+
+  # ---------------------------------------------------------------------------
+  # Studio frontend (ADR-0013/0018). The `npm` ecosystem covers pnpm — it reads
+  # studio/pnpm-lock.yaml and the pnpm workspace. Kept on the same day as the
+  # Python group so the weekly review is one sitting.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /studio
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Singapore
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+      prefix-development: chore(deps-dev)
+    labels:
+      - dependencies
+      - studio
+    groups:
+      studio-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      studio-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions. This is the ecosystem that had actually drifted — the pins
+  # sat on majors that were several releases stale until KAN-400 bumped them.
+  #
+  # Dependabot understands both pin styles used in this repo: it moves the
+  # moving-major tags (`@v7`) and it rewrites SHA pins *along with their trailing
+  # `# vX.Y.Z` comment*, so the SHA-pinned entries stay both current and
+  # readable. Everything lands in one PR per week; there is no value in a
+  # separate PR per action.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Singapore
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        patterns:
+          - "*"

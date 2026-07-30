@@ -61,7 +61,7 @@ jobs:
       target: ${{ steps.plan.outputs.target }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -165,13 +165,13 @@ jobs:
     needs: guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Mirrors ci.yml's `frontend` job: pinned Node from studio/.nvmrc, pnpm via
       # corepack from the packageManager field. Building here (rather than trusting the
       # bundle committed under src/) guarantees the shipped SPA is built from the
       # tagged studio/ source and can never be stale.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: studio/.nvmrc
 
@@ -209,7 +209,7 @@ jobs:
             echo "committed bundle matches a fresh build of studio/"
           fi
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
 
@@ -349,7 +349,7 @@ jobs:
         with:
           name: dist
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
           # Rehearsals get re-run; a version already on TestPyPI is not a failure.
@@ -374,4 +374,4 @@ jobs:
         with:
           name: dist
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

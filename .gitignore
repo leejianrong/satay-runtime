@@ -27,6 +27,11 @@ coverage.xml
 # Agent worktrees land in .claude/worktrees/ and must never be committed.
 .claude/
 
+# Scratch space for throwaway working files. Nothing in the build references it,
+# and an unignored scratch dir is a well-worn route for stray output — or a
+# credential pasted somewhere "temporary" — to reach a commit.
+scratchpad/
+
 # Studio frontend (ADR-0013/0018): source lives in studio/; the built bundle is
 # vendored to src/satay/_studio_assets/ and IS committed (served by the V5 process).
 studio/node_modules/
