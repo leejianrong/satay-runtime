@@ -1,0 +1,124 @@
+# Security — dependency vulnerability scan + secret scan (KAN-400).
+#
+# Deliberately a separate workflow from ci.yml. Branch protection requires four
+# check names from CI (`Lint (ruff)`, `Type-check (mypy --strict)`,
+# `Unit tests (py3.12)`, `Unit tests (py3.13)`) and adding jobs to that workflow
+# risks disturbing them. The jobs here introduce new, independent check names.
+#
+# Why it also runs on a schedule: a vulnerability disclosure is not an event in
+# this repository. Nothing here changes when a CVE lands against a pinned
+# transitive dependency, so a PR-only scan would stay green for as long as the
+# repo is quiet. The weekly run is what actually catches those.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays, shortly after the Dependabot window in .github/dependabot.yml, so
+    # a fresh advisory and the PR that fixes it show up together.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+# Both jobs only read the repository. Neither needs a token that can write.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Dependency vulnerabilities, audited against the FROZEN lockfile.
+  #
+  # Tool choice — pip-audit over uv-secure:
+  #   * It is maintained by PyPA, the same org as the release workflow's publish
+  #     action, and resolves against the PyPI advisory database and OSV.
+  #   * `uv-secure` reads uv.lock natively, which is convenient, but it is a
+  #     single-maintainer project. For the tool whose whole job is telling us
+  #     whether to trust our dependencies, the more boring and more widely
+  #     audited option wins.
+  #   * pip-audit not reading uv.lock directly costs one `uv export` step, and
+  #     that step is arguably a feature: `--frozen` makes uv refuse to
+  #     re-resolve, so the audited set is provably the locked set.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      # `--frozen` is the whole point: uv errors out rather than re-resolving, so
+      # this cannot silently audit versions other than the ones CI installs and
+      # the release ships. `--all-extras` covers satay[studio] as well as the
+      # core, and the dev group rides along by default — dev dependencies run in
+      # CI with repository access, so they are in scope for this scan too.
+      - name: Export the frozen lockfile
+        run: |
+          set -euo pipefail
+          uv export --frozen --all-extras --no-emit-project -o requirements-audit.txt
+          echo "audited packages: $(grep -cE '^[A-Za-z0-9._-]+==' requirements-audit.txt)"
+
+      # `--disable-pip` keeps pip-audit from invoking a resolver at all; it audits
+      # exactly the hash-pinned lines exported above. `--strict` turns a
+      # dependency that could not be audited into a failure rather than a silently
+      # skipped line.
+      #
+      # `uvx` runs pip-audit in a throwaway tool environment. It is deliberately
+      # NOT a project dependency — adding an audit tool to pyproject.toml would
+      # cross the core-dependency boundary (ADR-0013/0016) for no reason.
+      - name: pip-audit (frozen lockfile)
+        run: uvx pip-audit --requirement requirements-audit.txt --disable-pip --strict
+
+  # ---------------------------------------------------------------------------
+  # Secrets, over the full history.
+  #
+  # `fetch-depth: 0` is load-bearing. Git history is permanent: a credential
+  # committed and then "removed" in a later commit is still published and still
+  # needs rotating. Scanning only the tip would report clean on exactly the case
+  # that matters most.
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    env:
+      # Bump together. The checksum is from the release's own
+      # gitleaks_<version>_checksums.txt.
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The upstream release binary rather than gitleaks/gitleaks-action: the
+      # action gates organisation use behind GITLEAKS_LICENSE, and this repo
+      # should not acquire a licence-key dependency in its security workflow just
+      # to move an org later. Verifying the checksum makes this download a
+      # stronger supply-chain link than an unpinned action reference would be.
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL --retry 3 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}" \
+            -o "$tarball"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar xzf "$tarball" gitleaks
+          ./gitleaks version
+
+      # `--redact` matters on a public repository: CI logs are public, so printing
+      # a discovered secret in full would widen the leak it is reporting.
+      # Non-zero exit on findings is what fails the job.
+      - name: gitleaks (full history)
+        run: ./gitleaks git --no-banner --redact --verbose .
+
+      # The working tree as well as the history — catches a secret staged in this
+      # PR's diff that history-walking rules might treat differently.
+      - name: gitleaks (working tree)
+        run: ./gitleaks dir --no-banner --redact --verbose .
