@@ -1,5 +1,9 @@
 .DEFAULT_GOAL := help
-.PHONY: help dev check lint type test ci install-hooks
+.PHONY: help dev check lint type test ci install-hooks demo demo-clean
+
+# Data directory for `make demo`. Kept separate from ./.satay so the demo never
+# disturbs a real project journal you might be working against.
+DEMO_DIR ?= .satay-demo
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -25,3 +29,15 @@ ci: check test ## Everything CI runs (lint + type + unit tests + import-hygiene)
 
 install-hooks: ## Install the pre-push git hook
 	./scripts/install-hooks.sh
+
+demo: ## Run the crash-recovery demo, then browse it in Satay Studio (Ctrl-C to stop)
+	@rm -rf $(DEMO_DIR)
+	@echo "==> crash-recovery demo (data dir: $(DEMO_DIR))"
+	@SATAY_DATA_DIR=$(DEMO_DIR) uv run --extra studio python examples/crash_recovery_demo.py
+	@echo
+	@echo "==> starting Satay Studio — open the printed URL (the ?token= is required)"
+	@echo "    the run above is on the run list; open it for the timeline and the tree"
+	@SATAY_DATA_DIR=$(DEMO_DIR) uv run --extra studio satay dev
+
+demo-clean: ## Delete the demo data directory
+	rm -rf $(DEMO_DIR)

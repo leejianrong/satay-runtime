@@ -20,8 +20,12 @@ venv/
 htmlcov/
 coverage.xml
 
-# Satay project-local data dir (ADR-0017)
+# Satay project-local data dir (ADR-0017), and the one `make demo` writes to
 .satay/
+.satay-demo/
+
+# Agent worktrees land in .claude/worktrees/ and must never be committed.
+.claude/
 
 # Studio frontend (ADR-0013/0018): source lives in studio/; the built bundle is
 # vendored to src/satay/_studio_assets/ and IS committed (served by the V5 process).
