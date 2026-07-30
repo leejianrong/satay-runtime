@@ -6,8 +6,8 @@ consults the journal: a hit returns the recorded result, a miss schedules execut
 Raises ``NondeterminismError`` on divergence. Pure Python asyncio, no external
 dependency by design (ARCHITECTURE §3.2).
 
-The engine lands in V1 (sequential calls, hit/miss reconciliation, the lightweight
-determinism guard); full ``NondeterminismError`` enforcement is V2, fan-out V4.
+Sequential calls, hit/miss reconciliation, ``NondeterminismError`` enforcement under the
+effect-safety policy, durable primitives, and keyed fan-out are all in place.
 """
 
 from __future__ import annotations
