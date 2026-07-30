@@ -7,10 +7,14 @@ no external infra. The debugger (Studio) ships in the optional `satay[studio]` e
 
 ## Build status — trust the code over the docs
 
-**V1–V8 are merged; the MVP is built and green at 246 tests.** Nothing in `src/` raises
-`NotImplementedError` any more. The `docs/` describe the *intended* full system; where
-docs and code disagree, the code is the truth for what exists today — verify before you
-believe a docstring, including this section.
+**V1–V8 are merged; the MVP is built and the full suite is green.** Nothing in `src/`
+raises `NotImplementedError` any more. The `docs/` describe the *intended* full system;
+where docs and code disagree, the code is the truth for what exists today — verify before
+you believe a docstring, including this section.
+
+Deliberately no test count here: it goes stale on the next PR that adds one. Run
+`uv run pytest -q` for the real number, and treat a red suite (not a changed count) as the
+signal that something is wrong.
 
 What is real now:
 
@@ -32,8 +36,8 @@ What is real now:
 - **Fork, compare, versioning** (`control/commands.py`, `versioning/`): prefix fork, run
   comparison by durable-call identity, code-version stamp + mismatch policy on resume.
 - **`satay dev`** (`devstack/`): lock → store → worker → server, torn down in reverse.
-- **Payload spill** (`blobs/`): `SPILL_THRESHOLD_BYTES = 262144`; payloads over 256 KiB
-  go to content-addressed blob files, transparent on write and read.
+- **Payload spill** (`blobs/`): payloads larger than `SPILL_THRESHOLD_BYTES` (256 KiB) go
+  to content-addressed blob files, transparent on write and read.
 - **Test seam** (`testing/`): `ManualClock`, `SeededRng`, `FaultInjector`, pytest fixtures.
 
 Deliberate MVP gaps — do not "fix" these without a card:
@@ -60,11 +64,11 @@ uv run ruff format .           # format (add --check in CI/hooks)
 uv run mypy src                # type-check, strict
 uv run pytest tests/unit -q    # unit tests
 uv run pytest tests/integration --collect-only -q   # import-hygiene guard
-uv sync --extra studio && uv run pytest -q          # full suite: 246 passed
+uv sync --extra studio && uv run pytest -q          # full suite
 ```
 
 The full suite needs the `studio` extra — without it the FastAPI/Studio tests
-`importorskip` themselves away and the count silently drops.
+`importorskip` themselves away and the reported count silently drops.
 
 Shortcuts: `make check` (ruff + mypy), `make test` (unit), `make ci` (all).
 Install the pre-push hook with `make install-hooks`; bypass with `git push --no-verify`.
@@ -128,7 +132,8 @@ in `satay.testing.fixtures` (loaded as a pytest plugin from `tests/conftest.py`)
 Data lives under a project-local `./.satay/` (override `--data-dir` /
 `SATAY_DATA_DIR`); schema is versioned with `PRAGMA user_version`, forward-only
 migrations. See `satay/config.py` for the layout and `satay/journal/store.py` for the
-live `SQLiteStore` (schema v3, WAL, refuses a DB newer than the code).
+live `SQLiteStore`, whose `SCHEMA_VERSION` is the authoritative current version (WAL; it
+refuses a DB newer than the code).
 
 ## Pointers
 

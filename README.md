@@ -24,8 +24,9 @@ FastAPI/uvicorn/JS stack into production.
 
 ## Status
 
-**The MVP is built and green (V1–V8, 246 tests).** Trust the code over the docs: `docs/`
-describes the intended full system, and where docs and code disagree the code wins.
+**The MVP is built and the full suite is green (V1–V8).** Trust the code over the docs:
+`docs/` describes the intended full system, and where docs and code disagree the code
+wins. `uv run pytest -q` prints the current test count.
 
 What works today:
 
@@ -89,10 +90,10 @@ uv run pytest tests/unit -q          # unit tests
 ```
 
 The integration and e2e tests that cover Studio and the HTTP API need the `studio` extra;
-without it they skip themselves and the count silently drops:
+without it they skip themselves and the reported count silently drops:
 
 ```bash
-uv sync --extra studio               # then the full suite: 246 passed
+uv sync --extra studio               # then run the full suite
 uv run pytest -q
 ```
 
