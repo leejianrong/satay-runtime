@@ -1,0 +1,78 @@
+name: Docs
+
+# Docs-as-code: the user-facing site in `docsite/` is built on every pull request and
+# published to GitHub Pages on merge to `main`. A broken docs build fails the PR.
+#
+# There are deliberately NO path filters. The site links out to files in `docs/` (the
+# ADRs, the planning documents), so a PR that renames or deletes one of those breaks the
+# published site without touching `docsite/` at all. The build is a couple of seconds, so
+# running it on every PR is cheaper than reasoning about which paths matter. It also means
+# this job can be a required status check that always reports.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One in-flight run per ref; new pushes cancel the previous run. Not cancel-in-progress
+# for `main`, because cancelling a half-finished Pages deployment is worse than queueing.
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Read-only by default. Only the deploy job asks for more.
+permissions:
+  contents: read
+
+env:
+  # Pinned so an upstream release cannot turn an unrelated PR red. Bump deliberately.
+  ZENSICAL_VERSION: "0.0.52"
+
+jobs:
+  build:
+    name: Build docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Links from the site into the repository (the ADR index on the Decisions page)
+      # leave the site, so Zensical cannot validate them. This does.
+      - name: Check links into the repository
+        run: python3 docsite/check_repo_links.py
+
+      # --strict turns Zensical's link and anchor warnings into a non-zero exit, which is
+      # what makes a broken internal link fail the PR rather than ship a 404.
+      - name: Build (strict)
+        working-directory: docsite
+        run: uv tool run --from "zensical==${ZENSICAL_VERSION}" zensical build --strict --clean
+
+      # No actions/configure-pages step: its job is to inject the Pages base URL into the
+      # generator's config, and `site_url` is already set explicitly in zensical.toml. One
+      # less action, and no `pages: write` needed outside the deploy job.
+      - name: Upload site artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docsite/site
+
+  # Publish only from `main`. Pull requests build above and stop there, so a fork PR can
+  # never reach the Pages environment.
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,3 @@
+# Zensical build output and cache. Both are generated; CI rebuilds them from scratch.
+site/
+.cache/

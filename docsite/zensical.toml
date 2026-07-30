@@ -1,0 +1,129 @@
+# Zensical configuration for the user-facing Satay Runtime docs site.
+#
+# The site source lives here in `docsite/` so the planning artefacts in `docs/`
+# (PRD, REQS, SHAPING, BREADBOARD, the ADRs, the slice specs) keep the paths that
+# CLAUDE.md and the ADRs cross-reference.
+#
+# Build it with:   uvx zensical build --strict --clean   (run from this directory)
+# Preview it with: uvx zensical serve
+#
+# `--strict` turns the link and anchor warnings into a failure, which is what the
+# PR build-check in .github/workflows/docs.yml relies on.
+
+[project]
+site_name = "Satay Runtime"
+site_description = """
+Local-first durable execution for async Python: workflows that replay from the top \
+after a crash and reuse the work that already finished.
+"""
+site_url = "https://leejianrong.github.io/satay-runtime/"
+site_author = "Jian"
+copyright = "Apache-2.0 licensed. Built from the satay-runtime repository."
+
+docs_dir = "docs"
+site_dir = "site"
+
+repo_url = "https://github.com/leejianrong/satay-runtime"
+repo_name = "leejianrong/satay-runtime"
+edit_uri = "edit/main/docsite/docs"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Learn" = [
+    { "Quickstart" = "quickstart.md" },
+    { "The determinism rule" = "determinism.md" },
+    { "Concepts" = "concepts.md" },
+  ] },
+  { "Reference" = [
+    { "The five primitives" = "primitives.md" },
+    { "Guarantees" = "guarantees.md" },
+    { "Studio and satay dev" = "studio.md" },
+  ] },
+  { "Project" = [
+    { "Limits" = "limits.md" },
+    { "Decisions" = "decisions.md" },
+  ] },
+]
+
+# Fail the build on a link to a page that does not exist, or to an anchor that does
+# not exist on the target page. Both default to on; stated here so nobody has to
+# guess what --strict is actually enforcing.
+[project.validation]
+invalid_links = true
+invalid_link_anchors = true
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.annotate",
+  "content.code.copy",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "deep orange"
+accent = "amber"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "deep orange"
+accent = "amber"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/leejianrong/satay-runtime"
+name = "satay-runtime on GitHub"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/python"
+link = "https://pypi.org/project/satay/"
+name = "satay on PyPI"
+
+[project.markdown_extensions.abbr]
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.def_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.tables]
+[project.markdown_extensions.toc]
+permalink = true
+[project.markdown_extensions.pymdownx.betterem]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.emoji]
+emoji_generator = "zensical.extensions.emoji.to_svg"
+emoji_index = "zensical.extensions.emoji.twemoji"
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.keys]
+[project.markdown_extensions.pymdownx.magiclink]
+[project.markdown_extensions.pymdownx.mark]
+[project.markdown_extensions.pymdownx.smartsymbols]
+[project.markdown_extensions.pymdownx.superfences]
+custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+combine_header_slug = true
+[project.markdown_extensions.pymdownx.tasklist]
+custom_checkbox = true
+[project.markdown_extensions.pymdownx.tilde]
