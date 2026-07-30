@@ -145,9 +145,9 @@ async def send_event(
     The event is encoded via the V1 codec and buffered in the inbox keyed by
     ``(type(event), key)``; the poll loop delivers it to a run waiting on that pair, or
     it waits in the inbox until matched (an event may arrive before the wait). This is
-    the Python-API entry point; the HTTP ``send_event`` route lands in V5 and writes to
-    the same inbox. ``store`` is the injectable test seam; it defaults to the
-    project-local database.
+    the Python-API entry point; the HTTP route ``POST /runs/{run_id}/events`` writes to the
+    same inbox. ``store`` is the injectable test seam; it defaults to the project-local
+    database.
     """
     from satay.journal.events import InboxEventRecord, utc_now
 

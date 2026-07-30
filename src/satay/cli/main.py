@@ -1,9 +1,11 @@
 """Entry point for the core ``satay`` CLI (argparse, stdlib only).
 
-``satay runs show <id>`` prints a run's timeline as text (behaviour lands in V1;
-frozen at the V1 event subset per ADR-0016 Q50). ``satay dev`` is not part of the
-core CLI: it lives in the ``satay[studio]`` extra, so the core surfaces a clear
-message pointing at the install.
+``satay runs show <id>`` prints a run's timeline as text. It is deliberately **frozen at
+the V1 event subset** (ADR-0016 Q50): every event gets a ``seq/type`` line, but only the
+V1 workflow/task events get their payloads summarised. Timer, event-wait, cancellation,
+and fork events render as bare type lines — Studio covers the rest, and widening this
+renderer is out of MVP scope. ``satay dev`` is not part of the core CLI: it lives in the
+``satay[studio]`` extra, so the core surfaces a clear message pointing at the install.
 """
 
 from __future__ import annotations

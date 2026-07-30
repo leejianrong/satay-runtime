@@ -1,8 +1,9 @@
 """Satay Runtime — local-first durable execution for async Python.
 
-Early scaffold (Epic 0): the public surface below is declared and typed, but most
-behaviour raises ``NotImplementedError`` with a "lands in Vn" note until the slice
-that implements it. Trust the code over the docs. See ``CLAUDE.md`` and ``docs/``.
+The public surface below is implemented and exercised end-to-end: durable calls are
+recorded to a SQLite journal and workflows replay from the top on resume, reusing
+recorded results. Async workflows and tasks only. See ``CLAUDE.md`` for the shipped
+feature set and the deliberate MVP gaps, and ``docs/`` for the specs.
 
 The public surface (ARCHITECTURE §1):
 
