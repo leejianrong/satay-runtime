@@ -1,0 +1,377 @@
+# Release — build and publish satay to PyPI via OIDC trusted publishing (ADR-0019).
+#
+# There are no API tokens anywhere in this workflow. Each publish job requests a
+# short-lived OIDC token (`permissions: id-token: write`) that PyPI exchanges for an
+# upload token, which is why the trusted publisher must be registered in the PyPI web
+# UI first — see docs/RELEASING.md. Until that registration exists this workflow
+# cannot publish at all.
+#
+# The gate that matters: we never publish a commit CI has not already proven green.
+# The `guard` job resolves the tagged SHA, waits for the CI workflow run for *that
+# exact SHA*, and refuses to continue unless it succeeded. Publishing targets must
+# additionally be an ancestor of `main`.
+#
+# Rehearsal paths (prove the pipeline before the irreversible run):
+#   * workflow_dispatch, target=dry-run  — gate + build + verify, publishes nothing
+#   * workflow_dispatch, target=testpypi — the same, then uploads to TestPyPI
+#   * push of a `v*` tag                 — the real thing, publishes to PyPI
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish. dry-run builds and verifies without uploading anywhere."
+        type: choice
+        required: true
+        default: dry-run
+        options:
+          - dry-run
+          - testpypi
+          - pypi
+
+# Least privilege by default; the publish jobs opt into id-token individually.
+permissions:
+  contents: read
+
+# Never let two releases of the same ref race, and never cancel one mid-upload.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The CI workflow whose green run gates this release.
+  CI_WORKFLOW_FILE: ci.yml
+  # Where Vite emits the Studio SPA inside the package (ADR-0013). Kept in one place
+  # because both the pre-build check and the built-artifact assertions reference it.
+  STUDIO_ASSETS_SRC: src/satay/_studio_assets
+  STUDIO_ASSETS_PKG: satay/_studio_assets
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Gate. Resolve the target, match tag to version, and refuse to proceed
+  #    unless CI is green for this exact SHA.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Gate (CI green for this SHA)
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.plan.outputs.target }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve publish target
+        id: plan
+        env:
+          # Empty on a tag push; a tag push always means the real PyPI release.
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          target="${INPUT_TARGET:-pypi}"
+          case "$target" in
+            dry-run|testpypi|pypi) ;;
+            *) echo "::error::unknown target '$target'"; exit 1 ;;
+          esac
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "Target: $target (ref ${GITHUB_REF}, sha ${GITHUB_SHA})"
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(python3 -c '
+          import pathlib, tomllib
+          print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])
+          ')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pyproject version: $version"
+
+      - name: Tag must match the pyproject version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::tag '$TAG' does not match pyproject version '$VERSION'." \
+                 "Bump pyproject.toml or retag; a release must be unambiguous."
+            exit 1
+          fi
+          echo "tag $TAG matches version $VERSION"
+
+      # The core principle from ADR-0019: ship the validated SHA. CI runs on pushes to
+      # main and on pull requests, so a tag cut from merged main already has a run. We
+      # poll rather than fail fast so a tag pushed straight after a merge still works.
+      - name: CI must be green for this exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            runs="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_FILE}/runs?head_sha=${SHA}&per_page=100" \
+              --jq '[.workflow_runs[] | {status, conclusion, html_url}]')"
+            total=$(printf '%s' "$runs" | jq 'length')
+            green=$(printf '%s' "$runs" | jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length')
+            pending=$(printf '%s' "$runs" | jq '[.[] | select(.status != "completed")] | length')
+
+            if [ "$green" -gt 0 ]; then
+              echo "CI is green for ${SHA}:"
+              printf '%s' "$runs" | jq -r '.[] | "  \(.status)/\(.conclusion // "-")  \(.html_url)"'
+              exit 0
+            fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              echo "::error::CI ran for ${SHA} and did not succeed. Refusing to publish an untested commit."
+              printf '%s' "$runs" | jq -r '.[] | "  \(.status)/\(.conclusion // "-")  \(.html_url)"'
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::timed out waiting for a green CI run for ${SHA} (found ${total} run(s), ${pending} still running)."
+              exit 1
+            fi
+            echo "waiting for CI on ${SHA}: ${total} run(s), ${pending} in progress..."
+            sleep 20
+          done
+
+      # A publishable commit must live on main. Stops a tag on a stray branch from
+      # shipping even if that branch happened to have a green PR run.
+      - name: Commit must be an ancestor of main
+        if: steps.plan.outputs.target != 'dry-run'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --force origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/main; then
+            echo "::error::${SHA} is not an ancestor of origin/main. Release from merged main only."
+            exit 1
+          fi
+          echo "${SHA} is on main"
+
+  # ---------------------------------------------------------------------------
+  # 2. Build. Prebuild the Studio bundle (ADR-0013: in CI, never at pip install),
+  #    package, then assert the bundle actually made it into both artifacts.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build + verify artifacts
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mirrors ci.yml's `frontend` job: pinned Node from studio/.nvmrc, pnpm via
+      # corepack from the packageManager field. Building here (rather than trusting the
+      # bundle committed under src/) guarantees the shipped SPA is built from the
+      # tagged studio/ source and can never be stale.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: studio/.nvmrc
+
+      - name: Enable corepack (pnpm from packageManager field)
+        run: corepack enable
+
+      - name: Install Studio deps (frozen lockfile)
+        working-directory: studio
+        run: pnpm install --frozen-lockfile
+
+      - name: Vite build (emits into ${{ env.STUDIO_ASSETS_SRC }})
+        working-directory: studio
+        run: pnpm build
+
+      - name: Studio bundle must exist before packaging
+        run: |
+          set -euo pipefail
+          test -f "${STUDIO_ASSETS_SRC}/index.html"
+          ls -1 "${STUDIO_ASSETS_SRC}"/assets/*.js  >/dev/null
+          ls -1 "${STUDIO_ASSETS_SRC}"/assets/*.css >/dev/null
+          find "${STUDIO_ASSETS_SRC}" -type f | sort
+
+      # The bundle is also committed under src/ so a plain checkout can serve Studio.
+      # Vite's output is reproducible from the lockfile, so a rebuild should be a no-op;
+      # if it isn't, the committed bundle the e2e tests ran against is stale. A warning,
+      # not a failure — the freshly built bundle is the one we ship either way, and
+      # toolchain nondeterminism must never be able to block a release.
+      - name: Notice if the committed bundle drifted from studio/ source
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain -- "${STUDIO_ASSETS_SRC}")" ]; then
+            echo "::warning::rebuilding studio/ changed ${STUDIO_ASSETS_SRC} — the committed bundle is stale. Shipping the fresh build."
+            git status --porcelain -- "${STUDIO_ASSETS_SRC}"
+          else
+            echo "committed bundle matches a fresh build of studio/"
+          fi
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: uv build (sdist + wheel)
+        run: uv build
+
+      - name: twine check --strict
+        run: uvx twine check --strict dist/*
+
+      # The regression guard the packaging needs. `satay[studio]` is worthless without
+      # the SPA, and the e2e serving tests *skip* when the bundle is missing rather
+      # than fail — so nothing else would catch a wheel that lost its assets. These
+      # assertions turn that into a failed release instead of a broken extra on PyPI.
+      - name: Wheel must contain the Studio bundle
+        run: |
+          set -euo pipefail
+          whl="$(ls -1 dist/*.whl)"
+          python3 -m zipfile -l "$whl" | tee wheel-contents.txt
+          grep -q "${STUDIO_ASSETS_PKG}/index.html" wheel-contents.txt
+          grep -qE "${STUDIO_ASSETS_PKG}/assets/.*\.js"  wheel-contents.txt
+          grep -qE "${STUDIO_ASSETS_PKG}/assets/.*\.css" wheel-contents.txt
+          echo "OK: Studio bundle present in $whl"
+
+      - name: Sdist must contain the Studio bundle
+        run: |
+          set -euo pipefail
+          sdist="$(ls -1 dist/*.tar.gz)"
+          tar -tzf "$sdist" | tee sdist-contents.txt
+          grep -q "${STUDIO_ASSETS_SRC}/index.html" sdist-contents.txt
+          grep -qE "${STUDIO_ASSETS_SRC}/assets/.*\.js"  sdist-contents.txt
+          grep -qE "${STUDIO_ASSETS_SRC}/assets/.*\.css" sdist-contents.txt
+          echo "OK: Studio bundle present in $sdist"
+
+      # Clean-venv installs of the real artifact, one per install shape. The core
+      # install also re-asserts the ADR-0013/0016 lean-core promise at the artifact
+      # level: no FastAPI/uvicorn/pydantic/typer ride along without the extra.
+      - name: Smoke — clean venv, core install
+        run: |
+          set -euo pipefail
+          whl="$(ls -1 dist/*.whl)"
+          uv venv .venv-core
+          uv pip install --python ./.venv-core/bin/python "$whl"
+          ./.venv-core/bin/satay --help
+          ./.venv-core/bin/python - <<'PY'
+          import importlib.util
+          import satay
+
+          print("satay", satay.__file__)
+          leaked = [m for m in ("fastapi", "uvicorn", "pydantic", "typer", "click")
+                    if importlib.util.find_spec(m) is not None]
+          assert not leaked, f"core install pulled in {leaked} (ADR-0013/0016)"
+          print("core install is lean")
+          PY
+
+      - name: Smoke — clean venv, satay[studio] install serves the bundle
+        run: |
+          set -euo pipefail
+          whl="$(ls -1 dist/*.whl)"
+          uv venv .venv-studio
+          uv pip install --python ./.venv-studio/bin/python "satay[studio] @ file://${PWD}/${whl}"
+          ./.venv-studio/bin/python - <<'PY'
+          from satay.control.server import studio_index
+
+          index = studio_index()
+          assert index.is_file(), f"no Studio index.html in the installed package: {index}"
+          html = index.read_text()
+          assert "Satay Studio" in html, html[:400]
+          assets = sorted(p.name for p in (index.parent / "assets").iterdir())
+          assert any(n.endswith(".js") for n in assets), assets
+          assert any(n.endswith(".css") for n in assets), assets
+          print("installed Studio bundle:", index)
+          print("assets:", assets)
+          PY
+
+      - name: Job summary
+        env:
+          TARGET: ${{ needs.guard.outputs.target }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release build"
+            echo
+            echo "- version: \`${VERSION}\`"
+            echo "- target: \`${TARGET}\`"
+            echo "- sha: \`${GITHUB_SHA}\`"
+            echo
+            echo "<details><summary>Wheel contents</summary>"
+            echo
+            echo '```'
+            cat wheel-contents.txt
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3a. Rehearsal. Publishes nothing; exists so a dry-run reports a clear result.
+  # ---------------------------------------------------------------------------
+  dry-run:
+    name: Dry run (no upload)
+    needs: [guard, build]
+    if: needs.guard.outputs.target == 'dry-run'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          echo "Dry run complete for ${VERSION} @ ${GITHUB_SHA}."
+          echo "Gate passed, artifacts built and verified, nothing was uploaded."
+          echo "Re-run with target=testpypi to rehearse the upload, or push a v* tag to release."
+
+  # ---------------------------------------------------------------------------
+  # 3b. TestPyPI rehearsal. Same publish action and same OIDC path as production,
+  #     against a throwaway index. Requires its own trusted publisher on TestPyPI.
+  # ---------------------------------------------------------------------------
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [guard, build]
+    if: needs.guard.outputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/satay
+    permissions:
+      contents: read
+      id-token: write # OIDC — the only credential. No API token anywhere.
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # Rehearsals get re-run; a version already on TestPyPI is not a failure.
+          skip-existing: true
+
+  # ---------------------------------------------------------------------------
+  # 3c. The real thing. Irreversible — a PyPI version can never be reused.
+  # ---------------------------------------------------------------------------
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [guard, build]
+    if: needs.guard.outputs.target == 'pypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/satay
+    permissions:
+      contents: read
+      id-token: write # OIDC — the only credential. No API token anywhere.
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
