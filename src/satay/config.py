@@ -3,9 +3,9 @@
 Establishes the persistence-layout convention from ADR-0017: durable state lives
 under a project-local ``./.satay/`` directory, overridable with ``--data-dir`` (or
 the ``SATAY_DATA_DIR`` environment variable). The SQLite database and blob-spill
-directory live inside it. No database or schema exists yet (that lands in V1); this
-module only fixes the paths and the migration-version convention so later slices
-agree on where things go.
+directory live inside it. This module owns only the path and mode conventions; the
+live schema, its ``PRAGMA user_version`` migrations, and the connection settings live
+in :mod:`satay.journal.store`.
 """
 
 from __future__ import annotations
@@ -65,14 +65,16 @@ def resolve_effect_safety(override: str | EffectSafety | None = None) -> EffectS
     return EffectSafety.parse(os.environ.get(EFFECT_SAFETY_ENV_VAR))
 
 
-#: Filename of the SQLite database inside the data directory (created in V1).
+#: Filename of the SQLite database inside the data directory.
 DB_FILENAME = "satay.db"
 
-#: Subdirectory holding spilled payload blobs (used from V8).
+#: Subdirectory holding spilled payload blobs (see :mod:`satay.blobs`).
 BLOB_DIR_NAME = "blobs"
 
-#: Schema version this build of satay understands. Migrations are forward-only and
-#: keyed on SQLite ``PRAGMA user_version`` (ADR-0017). ``0`` means "no schema yet".
+#: Superseded — do not read this as the schema version. The authoritative value is
+#: ``satay.journal.store.SCHEMA_VERSION``, which the store migrates to via forward-only
+#: steps keyed on SQLite ``PRAGMA user_version`` (ADR-0017). This constant is retained
+#: only as the "empty data dir" sentinel that predates the store.
 SCHEMA_USER_VERSION = 0
 
 

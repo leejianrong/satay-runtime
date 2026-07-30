@@ -31,7 +31,9 @@ from satay.journal.events import (
 
 
 class Store(Protocol):
-    """Durable-store seam (ARCHITECTURE §9). Concrete ``SQLiteStore`` lands in V1.
+    """Durable-store seam (ARCHITECTURE §9); :class:`satay.journal.store.SQLiteStore` is
+    the only implementation today, and the PostgreSQL backend the seam anticipates is
+    out of MVP scope.
 
     The worker is the sole writer; ``seq`` is allocated inside the append
     transaction under a per-run async writer lock (ADR-0012). One event is one

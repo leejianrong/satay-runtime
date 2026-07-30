@@ -7,15 +7,53 @@ no external infra. The debugger (Studio) ships in the optional `satay[studio]` e
 
 ## Build status — trust the code over the docs
 
-**Early scaffold (Epic 0).** The public surface is declared and typed, but most
-behaviour raises `NotImplementedError("... lands in Vn")`. The `docs/` describe the
-*intended* full system; where docs and code disagree, the code is the truth for what
-exists today. What is real now:
+**V1–V8 are merged; the MVP is built and the full suite is green.** Nothing in `src/`
+raises `NotImplementedError` any more. The `docs/` describe the *intended* full system;
+where docs and code disagree, the code is the truth for what exists today — verify before
+you believe a docstring, including this section.
 
-- The full package skeleton imports cleanly and passes `mypy --strict`.
-- The `testing/` module is real and unit-tested: `ManualClock`, `SeededRng`,
-  `FaultInjector`, and pytest fixtures.
-- Everything else is a typed stub marked with the slice it lands in.
+Deliberately no test count here: it goes stale on the next PR that adds one. Run
+`uv run pytest -q` for the real number, and treat a red suite (not a changed count) as the
+signal that something is wrong.
+
+What is real now:
+
+- **Durable core + replay** (`replay/`): replay from the top over an append-only journal,
+  reusing recorded results; identity resolution and nondeterminism detection.
+- **SQLite journal** (`journal/`): `SQLiteStore` on raw stdlib `sqlite3`, versioned by
+  `PRAGMA user_version` with forward-only migrations, WAL, per-run async writer lock.
+- **Execution guarantees** (`executor/`): retries with capped exponential backoff and
+  full-jitter delays off the injected clock and RNG, at-least-once execution,
+  runtime-derived idempotency keys, and `effect_safety` (strict/warn/off) guarding
+  retryable `side_effect=True` tasks that are not declared `idempotent=True`.
+- **Time and events** (`timers/`): durable `sleep`, `wait_for_event`/`send_event` over a
+  persistent inbox, and the timer + event poll loop (FIFO, event-wins-over-timeout).
+- **Composition** (`api/primitives.py`): `map`/`gather`/`start_child` as keyed durable
+  calls, with partial-completion recovery mid-fan-out.
+- **Control plane** (`control/`): HTTP control + read API, a `Redactor` forced on every
+  read, and a loopback/token `SecurityPolicy`; writes serialize through a `CommandQueue`.
+- **Studio** (`_studio_assets/`): the built SPA bundle, served at `/` by the V5 process.
+- **Fork, compare, versioning** (`control/commands.py`, `versioning/`): prefix fork, run
+  comparison by durable-call identity, code-version stamp + mismatch policy on resume.
+- **`satay dev`** (`devstack/`): lock → store → worker → server, torn down in reverse.
+- **Payload spill** (`blobs/`): payloads larger than `SPILL_THRESHOLD_BYTES` (256 KiB) go
+  to content-addressed blob files, transparent on write and read.
+- **Test seam** (`testing/`): `ManualClock`, `SeededRng`, `FaultInjector`, pytest fixtures.
+
+Deliberate MVP gaps — do not "fix" these without a card:
+
+- **No blob GC**, no run deletion, no compaction (ADR-0004). Forks share blobs with their
+  source run, so any future GC must be reference-aware.
+- **Fan-out is fail-fast only** — no collect / `return_exceptions` mode (ADR-0020).
+- **`satay runs show` is frozen at the V1 event subset** (ADR-0016); Studio covers the
+  rest. Post-V1 events render as bare type lines by design.
+- **Fork accepts terminal runs only** (ADR-0004).
+- **No PostgreSQL, no multi-worker, no distributed execution.** One process, one writer.
+- **Async only** — no sync workflows/tasks.
+- **Nondeterminism detection is runtime-only** and compares the durable-call schedule, not
+  arguments; no static analysis, no automatic cross-version workflow migration.
+- **Windows is best-effort** (the cross-process data-dir lock is POSIX `flock` and
+  degrades to a no-op elsewhere); SQLite on network filesystems is unsupported (ADR-0019).
 
 ## Commands
 
@@ -26,7 +64,11 @@ uv run ruff format .           # format (add --check in CI/hooks)
 uv run mypy src                # type-check, strict
 uv run pytest tests/unit -q    # unit tests
 uv run pytest tests/integration --collect-only -q   # import-hygiene guard
+uv sync --extra studio && uv run pytest -q          # full suite
 ```
+
+The full suite needs the `studio` extra — without it the FastAPI/Studio tests
+`importorskip` themselves away and the reported count silently drops.
 
 Shortcuts: `make check` (ruff + mypy), `make test` (unit), `make ci` (all).
 Install the pre-push hook with `make install-hooks`; bypass with `git push --no-verify`.
@@ -37,7 +79,7 @@ Install the pre-push hook with `make install-hooks`; bypass with `git push --no-
 - **Branch per slice:** `git switch -c feat/<slice>` off `origin/main`; open a PR.
 - Run the cheap gates locally (`make ci`) before pushing; the pre-push hook mirrors
   them.
-- Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- Commit trailer: `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 
 ## Module map (mirrors ARCHITECTURE §1)
 
@@ -89,7 +131,9 @@ in `satay.testing.fixtures` (loaded as a pytest plugin from `tests/conftest.py`)
 
 Data lives under a project-local `./.satay/` (override `--data-dir` /
 `SATAY_DATA_DIR`); schema is versioned with `PRAGMA user_version`, forward-only
-migrations. See `satay/config.py`. No DB exists yet (lands in V1).
+migrations. See `satay/config.py` for the layout and `satay/journal/store.py` for the
+live `SQLiteStore`, whose `SCHEMA_VERSION` is the authoritative current version (WAL; it
+refuses a DB newer than the code).
 
 ## Pointers
 

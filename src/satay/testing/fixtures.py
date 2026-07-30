@@ -4,10 +4,11 @@ Importable as a pytest plugin: add ``pytest_plugins = ["satay.testing.fixtures"]
 ``conftest.py``. These provide the temp-store scaffolding and the determinism controls
 (manual clock, seeded RNG, fault injector) that the public-API E2E seam is driven with.
 
-The database itself lands in V1; the temp-store fixtures here only provide the *paths*
-(a temp-file path and the ``:memory:`` path) laid out per ADR-0017, not a schema. This
-module imports ``pytest`` and so is not imported by ``satay.testing`` at package import
-time — the runtime affordances (clock, RNG, faults) stay import-clean without pytest.
+The temp-store fixtures hand out *paths* only (a temp-file path and the ``:memory:``
+path) laid out per ADR-0017; tests open a real ``SQLiteStore`` on them, which creates and
+migrates the schema on connect. This module imports ``pytest`` and so is not imported by
+``satay.testing`` at package import time — the runtime affordances (clock, RNG, faults)
+stay import-clean without pytest.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def temp_data_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def temp_db_path(temp_data_dir: Path) -> Path:
-    """Path to a temp-file SQLite database (no schema yet; created in V1)."""
+    """Path to a temp-file SQLite database; the store creates and migrates it on connect."""
     return temp_data_dir / DB_FILENAME
 
 
