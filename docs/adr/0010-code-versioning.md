@@ -20,10 +20,17 @@ Every run records a **code version**, resolved by a fallback chain:
 may explicitly **fork** (ADR-0004) to continue under new code. No automatic
 migration; no management of historical deployment artifacts in the MVP.
 
+> **Amended by [ADR-0023](0023-version-mismatch-policy-split.md).** "Dev mode" and
+> "strict mode" here are no longer modes of the shared `effect_safety` setting: the
+> mismatch policy is its own knob, `version_mismatch` ∈ `off`/`warn`/`strict`, still
+> defaulting to `warn`. The behaviour of each mode, the fallback chain, and the
+> no-automatic-migration stance are unchanged.
+
 ## Consequences
 
 - A run always carries an honest version stamp with zero required configuration.
-- Version-mismatch handling reuses the dev-warn / strict-reject split shared with
-  nondeterminism detection (ADR-0003) and effect safety (ADR-0006), and the fork
-  mechanism (ADR-0004).
+- Version-mismatch handling shares the dev-warn / strict-reject *shape* with
+  nondeterminism detection (ADR-0003) and effect safety (ADR-0006), and offers the fork
+  mechanism (ADR-0004) as the way forward. Per ADR-0023 the shape is shared but the
+  **setting is not**: `version_mismatch` is resolved independently of the other two.
 - Studio surfaces code-version mismatch warnings on affected runs.

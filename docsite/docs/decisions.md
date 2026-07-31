@@ -33,6 +33,7 @@ If you read four, read these.
 | [0020](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0020-composite-failure-semantics.md) | Failure semantics of `map`, `gather`, and child workflows |
 | [0021](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0021-event-ordering-and-timeout-race.md) | Event delivery ordering and the `wait_for_event` timeout race |
 | [0022](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0022-nondeterminism-policy-split.md) | Splitting the nondeterminism policy out of `effect_safety`, strict by default |
+| [0023](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0023-version-mismatch-policy-split.md) | Splitting the code-version mismatch policy out of `effect_safety` |
 
 ## Storage and the local surface
 

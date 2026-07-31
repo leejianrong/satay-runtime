@@ -52,7 +52,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, get_type_hints
 
 from satay.api.registry import TaskDefinition, WorkflowDefinition
-from satay.config import EffectSafety, NondeterminismPolicy
+from satay.config import EffectSafety, NondeterminismPolicy, VersionMismatchPolicy
 from satay.executor import LocalTaskExecutor, TaskExecutor
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
@@ -134,6 +134,7 @@ class ReplayEngine:
         executor: TaskExecutor | None = None,
         effect_safety: EffectSafety = EffectSafety.WARN,
         nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
+        version_mismatch: VersionMismatchPolicy = VersionMismatchPolicy.WARN,
     ) -> None:
         self._store = store
         self._run_id = run_id
@@ -142,6 +143,10 @@ class ReplayEngine:
         self._rng = rng or SystemRng()
         self._effect_safety = effect_safety
         self._nondeterminism = nondeterminism
+        #: Carried, not consulted here: the engine never resumes a run itself, but its
+        #: child runs go through the resume path, and a child must not inherit a
+        #: different default from its parent (ADR-0022/0023).
+        self._version_mismatch = version_mismatch
         self._executor = executor or LocalTaskExecutor(
             self._commit, clock=self._clock, rng=self._rng
         )
@@ -711,6 +716,7 @@ class ReplayEngine:
             rng=self._rng,
             effect_safety=self._effect_safety,
             nondeterminism=self._nondeterminism,
+            version_mismatch=self._version_mismatch,
         )
         await child_engine.drive(workflow_def, workflow_input)
 
@@ -731,6 +737,7 @@ class ReplayEngine:
             rng=self._rng,
             effect_safety=self._effect_safety,
             nondeterminism=self._nondeterminism,
+            version_mismatch=self._version_mismatch,
         )
 
     # -- policy ------------------------------------------------------------------

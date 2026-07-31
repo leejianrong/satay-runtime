@@ -22,7 +22,7 @@ from typing import Any
 
 from satay.api.registry import WorkflowDefinition
 from satay.api.run_handle import RunHandle, WorkflowFailedError
-from satay.config import EffectSafety, NondeterminismPolicy
+from satay.config import EffectSafety, NondeterminismPolicy, VersionMismatchPolicy
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
 from satay.journal.events import (
@@ -57,6 +57,7 @@ class RunController:
         rng: Rng | None,
         effect_safety: EffectSafety,
         nondeterminism: NondeterminismPolicy,
+        version_mismatch: VersionMismatchPolicy,
     ) -> None:
         self._store = store
         self._run_id = run_id
@@ -69,6 +70,7 @@ class RunController:
         self._rng = rng
         self._effect_safety = effect_safety
         self._nondeterminism = nondeterminism
+        self._version_mismatch = version_mismatch
 
     def current_run_id(self) -> str:
         """The resolved run id (may change once a keyed start resolves, N13)."""
@@ -110,12 +112,15 @@ class RunController:
         else:
             # Resume a run interrupted mid-execution (not durably parked). Before
             # re-driving, apply the version-mismatch policy (N17): strict rejects the
-            # resume, dev warns and continues (offering a fork). The WorkflowResumed
-            # event is what renders the ⚡ marker (ADR-0009/Q52), appended only once the
-            # resume is allowed to proceed.
+            # resume, warn (the default) continues and offers a fork. It is its own
+            # setting, not ``effect_safety`` (ADR-0023). The WorkflowResumed event is
+            # what renders the ⚡ marker (ADR-0009/Q52), appended only once the resume is
+            # allowed to proceed.
             from satay.versioning import check_resume_version, current_code_version
 
-            check_resume_version(record.code_version, current_code_version(), self._effect_safety)
+            check_resume_version(
+                record.code_version, current_code_version(), self._version_mismatch
+            )
             await self._commit(
                 Event(run_id=self._run_id, type=EventType.WORKFLOW_RESUMED, ts=self._now())
             )
@@ -221,6 +226,7 @@ def build_run_handle(
     rng: Rng | None,
     effect_safety: EffectSafety,
     nondeterminism: NondeterminismPolicy,
+    version_mismatch: VersionMismatchPolicy,
 ) -> RunHandle:
     """Resolve the workflow definition and return a handle wired to a controller."""
     workflow_def = _resolve_workflow(workflow)
@@ -240,6 +246,7 @@ def build_run_handle(
         rng=rng,
         effect_safety=effect_safety,
         nondeterminism=nondeterminism,
+        version_mismatch=version_mismatch,
     )
     return RunHandle(resolved_run_id, controller)
 
