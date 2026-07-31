@@ -143,10 +143,16 @@ safe under at-least-once execution. That is covered on the [guarantees page](gua
 ## Runs, handles, and status
 
 `satay.start(...)` returns a `RunHandle` and does no work. `await handle.result()` drives the
-run and returns its outcome, or raises `WorkflowFailedError` carrying the recorded error type,
-message, and original traceback. That class is not re-exported from the top-level package
-yet; import it from `satay.api.run_handle` if you need to catch it by type, or catch
-`RuntimeError`, which it subclasses.
+run and returns its outcome, or raises `satay.WorkflowFailedError` carrying the recorded error
+type, message, and original traceback. It subclasses `RuntimeError`, so catching that works
+too, but the specific type is the one to reach for:
+
+```python
+try:
+    total = await handle.result()
+except satay.WorkflowFailedError as exc:
+    print(exc.error_type, exc.error_message, exc.traceback_str)
+```
 
 What `start` does depends on what it finds:
 

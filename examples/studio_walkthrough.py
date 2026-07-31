@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 import satay
-from satay.api.run_handle import WorkflowFailedError
 from satay.config import DATA_DIR_ENV_VAR, db_path
 from satay.control.security import TOKEN_HEADER
 from satay.journal.events import Event, EventType
@@ -254,7 +253,7 @@ async def build_the_failed_run(store: SQLiteStore, clock: ManualClock) -> str:
     print("5. and one run that fails outright, to compare against")
     try:
         await settle(handle.result, clock)
-    except WorkflowFailedError as exc:
+    except satay.WorkflowFailedError as exc:
         print(f"   failed with {exc.error_type}: {exc.error_message}")
     return handle.run_id
 

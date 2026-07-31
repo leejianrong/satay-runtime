@@ -71,11 +71,10 @@ allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a sha
 `0.1.0a1` is the first published release. There is no deprecation policy, no compatibility
 promise between alpha versions, and the public API can move. Pin the exact version.
 
-Some names this documentation uses are also below the eleven re-exported from `satay`:
-`TimerEventWorker`, `SQLiteStore`, `resolve_data_dir`, and `WorkflowFailedError` all live at
-deeper import paths and are more likely to change. There is no high-level "run my application"
-entry point yet, which is why the [worker pattern](primitives.md#running-the-worker) is
-something you assemble by hand.
+Some names this documentation uses sit below the top-level `satay` package: `TimerEventWorker`,
+`SQLiteStore`, and `resolve_data_dir` all live at deeper import paths and are more likely to
+change. There is no high-level "run my application" entry point yet, which is why the
+[worker pattern](primitives.md#running-the-worker) is something you assemble by hand.
 
 ## Where to raise things
 

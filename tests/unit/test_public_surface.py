@@ -29,6 +29,8 @@ def test_public_surface_is_exported() -> None:
         "EffectSafetyError",
         # V7 public error type (N17): version mismatch on resume under strict.
         "VersionMismatchError",
+        # The error `await handle.result()` raises for a failed run (KAN-444).
+        "WorkflowFailedError",
     }
     assert expected <= set(satay.__all__)
     for name in expected:
@@ -44,6 +46,40 @@ def test_v2_error_types_are_public() -> None:
 def test_v7_version_mismatch_error_is_public() -> None:
     """VersionMismatchError is a public runtime error, mirroring the V2 policy errors."""
     assert issubclass(satay.VersionMismatchError, RuntimeError)
+
+
+@satay.task()
+async def _ps_boom(value: int) -> int:
+    raise ValueError("kaboom")
+
+
+@satay.workflow
+async def _ps_failing(value: int) -> int:
+    return await _ps_boom(value)
+
+
+async def test_workflow_failed_error_catches_a_real_failed_run() -> None:
+    """`except satay.WorkflowFailedError` must catch what a failed run actually raises.
+
+    Exporting the *name* is not the guarantee users need (KAN-444). If the public alias
+    were ever bound to a lookalike — a re-declared class, a shim, an alias left behind
+    by a refactor — every import would keep working while every user's `except` quietly
+    stopped catching. So this drives a real run to failure and lets the public name do
+    the catching, rather than comparing the export against a second import of itself.
+    """
+    from satay.journal.store import SQLiteStore
+
+    store = SQLiteStore.open(":memory:")
+    try:
+        handle = satay.start(_ps_failing, 1, store=store)
+        with pytest.raises(satay.WorkflowFailedError) as excinfo:
+            await handle.result()
+    finally:
+        store.close()
+
+    assert issubclass(satay.WorkflowFailedError, RuntimeError)
+    assert excinfo.value.error_type == "ValueError"
+    assert "kaboom" in excinfo.value.error_message
 
 
 def test_version_is_exposed() -> None:
