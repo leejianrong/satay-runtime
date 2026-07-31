@@ -16,7 +16,7 @@ from satay.journal.codec import encode
 from satay.replay.driver import CURRENT_DRIVER
 
 if TYPE_CHECKING:
-    from satay.config import EffectSafety, NondeterminismPolicy
+    from satay.config import EffectSafety, NondeterminismPolicy, VersionMismatchPolicy
     from satay.journal import Store
     from satay.testing.clock import Clock
     from satay.testing.faults import FaultInjector
@@ -35,6 +35,7 @@ def start(
     rng: Rng | None = None,
     effect_safety: str | EffectSafety | None = None,
     nondeterminism: str | NondeterminismPolicy | None = None,
+    version_mismatch: str | VersionMismatchPolicy | None = None,
 ) -> RunHandle:
     """Create or look up a run and return its handle (N3).
 
@@ -52,12 +53,20 @@ def start(
     ``strict``); unset resolves from ``SATAY_EFFECT_SAFETY`` then the ``warn`` dev
     default. ``nondeterminism`` overrides the **replay-divergence** policy (same three
     values); unset resolves from ``SATAY_NONDETERMINISM`` then the ``strict`` default,
-    so a divergent replay raises unless you opt out (ADR-0022).
+    so a divergent replay raises unless you opt out (ADR-0022). ``version_mismatch``
+    overrides the **code-version mismatch on resume** policy (same three values); unset
+    resolves from ``SATAY_VERSION_MISMATCH`` then the ``warn`` default (ADR-0023).
+
+    Those three settings are independent: turning one off does not quiet the others.
     """
     # Imported lazily: the runner pulls in the replay engine, and importing it at
     # module scope would form a cycle through ``satay.api``.
     from satay.api.runner import build_run_handle
-    from satay.config import resolve_effect_safety, resolve_nondeterminism
+    from satay.config import (
+        resolve_effect_safety,
+        resolve_nondeterminism,
+        resolve_version_mismatch,
+    )
 
     resolved_store = store if store is not None else _default_store()
     return build_run_handle(
@@ -71,6 +80,7 @@ def start(
         rng=rng,
         effect_safety=resolve_effect_safety(effect_safety),
         nondeterminism=resolve_nondeterminism(nondeterminism),
+        version_mismatch=resolve_version_mismatch(version_mismatch),
     )
 
 

@@ -6,13 +6,17 @@ developer-provided **dev string**, else a **source hash** of the registered
 definitions. Recorded on ``WorkflowCreated`` (V1 stamped only).
 
 **V7 turns the stamp into a policy (N17, ADR-0010).** On resume, the worker compares
-the run's *stamped* version against the *current* one; on a mismatch it applies the
-**same dev-warn / strict-reject split** already used for nondeterminism (V2) and
-effect safety — one mental model, not three. ``strict`` raises
-:class:`VersionMismatchError` (the resume is rejected); ``warn`` logs and continues,
-pointing at the fork as the offered path; ``off`` is silent. There is **no automatic
-migration** (ADR-0010) — the developer forks (ADR-0004) to continue under new code.
-The read API surfaces the mismatch so Studio can show a banner (ADR-0018).
+the run's *stamped* version against the *current* one; on a mismatch it applies its
+**own** :class:`~satay.config.VersionMismatchPolicy` — ``strict`` raises
+:class:`VersionMismatchError` (the resume is rejected); ``warn`` (the default) logs and
+continues, pointing at the fork as the offered path; ``off`` is silent. There is **no
+automatic migration** (ADR-0010) — the developer forks (ADR-0004) to continue under new
+code. The read API surfaces the mismatch so Studio can show a banner (ADR-0018).
+
+The policy shares the ``off``/``warn``/``strict`` shape with ``effect_safety``
+(ADR-0006) and the nondeterminism policy (ADR-0022) but is a **separate setting**
+(ADR-0023): it used to read ``effect_safety``, so quieting a side-effect warning also
+silently disabled version-mismatch rejection.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from satay.config import EffectSafety
+from satay.config import VersionMismatchPolicy
 
 _LOG = logging.getLogger("satay")
 
@@ -98,19 +102,23 @@ def is_version_mismatch(stamped: str, current: str) -> bool:
     return stamped != current
 
 
-def check_resume_version(stamped: str, current: str, effect_safety: EffectSafety) -> None:
-    """Apply the mismatch policy on resume, reusing the dev-warn / strict split (N17).
+def check_resume_version(stamped: str, current: str, policy: VersionMismatchPolicy) -> None:
+    """Apply the version-mismatch policy on resume (N17, ADR-0010/0023).
 
     No mismatch is a no-op. On a mismatch: ``strict`` raises
-    :class:`VersionMismatchError` (rejecting the resume); ``warn`` logs and returns
-    (the resume proceeds, but the developer is pointed at forking); ``off`` is silent.
-    The identical shape to nondeterminism and effect-safety enforcement (ADR-0003/0006).
+    :class:`VersionMismatchError` (rejecting the resume); ``warn`` (the default) logs and
+    returns — the resume proceeds, but the developer is pointed at forking; ``off`` is
+    silent.
+
+    ``policy`` is :class:`~satay.config.VersionMismatchPolicy`, **not**
+    :class:`~satay.config.EffectSafety`. The shape is the same as effect-safety and
+    nondeterminism enforcement; the question is not (ADR-0023).
     """
     if not is_version_mismatch(stamped, current):
         return
-    if effect_safety is EffectSafety.STRICT:
+    if policy is VersionMismatchPolicy.STRICT:
         raise VersionMismatchError(stamped, current)
-    if effect_safety is EffectSafety.WARN:
+    if policy is VersionMismatchPolicy.WARN:
         _LOG.warning(
             "code version mismatch on resume: run stamped %s, current %s; resuming under "
             "changed code may diverge — consider forking to continue under the new code "

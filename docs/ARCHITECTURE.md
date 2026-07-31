@@ -205,8 +205,10 @@ with **pnpm** and a pinned Node LTS, styled with plain CSS and minimal routing, 
 
 Stamps each run with a code version (git commit, then dev string, then source hash)
 and enforces the mismatch policy on resume, plus the `effect_safety` checks on
-retryable side-effecting tasks. `effect_safety` covers those checks only;
-replay divergence is the separate `nondeterminism` policy (ADR-0022). Stack: pure Python, using the local `git` binary or
+retryable side-effecting tasks. These are three independent settings, not one:
+`effect_safety` covers unguarded side effects only, replay divergence is the
+`nondeterminism` policy (strict by default, ADR-0022), and the resume-time mismatch is
+the `version_mismatch` policy (warn by default, ADR-0023). Stack: pure Python, using the local `git` binary or
 `dulwich` when available and falling back to a source hash otherwise.
 
 ### 3.9. CLI and dev orchestrator (A9, U1)

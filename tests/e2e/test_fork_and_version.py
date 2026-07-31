@@ -131,14 +131,16 @@ async def test_version_mismatch_on_resume_rejected_in_strict_and_warns_in_dev(
 
     # strict: the resume is rejected and the run is left untouched (no WorkflowResumed).
     with pytest.raises(versioning.VersionMismatchError):
-        await start(demo.demo, 1, run_id="v1", store=store, effect_safety="strict").result()
+        await start(demo.demo, 1, run_id="v1", store=store, version_mismatch="strict").result()
     events = await store.read_events("v1")
     assert not any(e.type is EventType.WORKFLOW_RESUMED for e in events)
     assert (await store.get_run("v1")).status is RunStatus.RUNNING
 
     # dev/warn: the same mismatch warns (offering a fork) but the resume proceeds.
     with caplog.at_level(logging.WARNING, logger="satay"):
-        result = await start(demo.demo, 1, run_id="v1", store=store, effect_safety="warn").result()
+        result = await start(
+            demo.demo, 1, run_id="v1", store=store, version_mismatch="warn"
+        ).result()
     assert result == 4  # the run completed on resume
     assert "mismatch" in caplog.text.lower()
     assert any(e.type is EventType.WORKFLOW_RESUMED for e in await store.read_events("v1"))

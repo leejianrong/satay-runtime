@@ -26,13 +26,17 @@ EFFECT_SAFETY_ENV_VAR = "SATAY_EFFECT_SAFETY"
 #: Environment variable providing the project-level nondeterminism policy (ADR-0022).
 NONDETERMINISM_ENV_VAR = "SATAY_NONDETERMINISM"
 
+#: Environment variable providing the project-level version-mismatch policy (ADR-0023).
+VERSION_MISMATCH_ENV_VAR = "SATAY_VERSION_MISMATCH"
+
 
 def _parse_mode[ModeT: StrEnum](cls: type[ModeT], value: str | ModeT, *, setting: str) -> ModeT:
     """Coerce ``value`` to a member of ``cls``, case- and whitespace-insensitively.
 
-    Shared by the two policy enums below, which have identical ``off``/``warn``/``strict``
-    vocabularies but different defaults. Each caller resolves its own default, so ``None``
-    never reaches here. Raises :class:`ValueError` naming ``setting`` and the valid modes.
+    Shared by the policy enums below, which have identical ``off``/``warn``/``strict``
+    vocabularies but different scopes and defaults. Each caller resolves its own default,
+    so ``None`` never reaches here. Raises :class:`ValueError` naming ``setting`` and the
+    valid modes.
     """
     if isinstance(value, cls):
         return value
@@ -51,9 +55,11 @@ class EffectSafety(StrEnum):
     schedule time; :attr:`WARN` (the dev default) logs the same condition; :attr:`OFF`
     is silent.
 
-    It does **not** govern replay divergence. That is :class:`NondeterminismPolicy`,
-    a separate setting that defaults to ``strict`` (ADR-0022) — the two checks share a
-    vocabulary but not a risk profile, so they do not share a knob.
+    It does **not** govern replay divergence — that is :class:`NondeterminismPolicy`,
+    which defaults to ``strict`` (ADR-0022) — and it does **not** govern the code-version
+    mismatch check on resume — that is :class:`VersionMismatchPolicy` (ADR-0023). All
+    three share an ``off``/``warn``/``strict`` vocabulary but not a risk profile, so they
+    do not share a knob.
     """
 
     OFF = "off"
@@ -103,6 +109,41 @@ class NondeterminismPolicy(StrEnum):
         return _parse_mode(cls, value, setting="nondeterminism")
 
 
+class VersionMismatchPolicy(StrEnum):
+    """Project policy for **code-version mismatch on resume** (N17, ADR-0010/ADR-0023).
+
+    Applies when a run is resumed by a process whose code version differs from the one
+    stamped on the run at creation. In :attr:`STRICT` the runtime raises
+    :class:`~satay.versioning.VersionMismatchError` and the resume is rejected;
+    :attr:`WARN` (the default) logs and lets the resume proceed, pointing at a fork
+    (ADR-0004) as the supported way to continue under new code; :attr:`OFF` is silent.
+
+    ``warn`` is the default because it is what the runtime already did when this check
+    rode on ``effect_safety``; ADR-0023 made the coupling explicit without changing the
+    behaviour. Unlike a replay divergence, a version change is not by itself evidence
+    that anything has diverged — the edit may not touch the workflow's durable calls at
+    all, and any divergence it *does* cause is caught by
+    :class:`NondeterminismPolicy` on its own terms.
+
+    Distinct from :class:`EffectSafety` and :class:`NondeterminismPolicy`: same three
+    mode names, three unrelated questions.
+    """
+
+    OFF = "off"
+    WARN = "warn"
+    STRICT = "strict"
+
+    @classmethod
+    def parse(cls, value: str | VersionMismatchPolicy | None) -> VersionMismatchPolicy:
+        """Parse a policy, defaulting to :attr:`WARN` when unset.
+
+        Raises :class:`ValueError` naming the valid modes for an unknown value.
+        """
+        if value is None:
+            return cls.WARN
+        return _parse_mode(cls, value, setting="version_mismatch")
+
+
 def resolve_effect_safety(override: str | EffectSafety | None = None) -> EffectSafety:
     """Resolve the effect-safety mode: explicit ``override`` then env var then default.
 
@@ -124,6 +165,19 @@ def resolve_nondeterminism(
     if override is not None:
         return NondeterminismPolicy.parse(override)
     return NondeterminismPolicy.parse(os.environ.get(NONDETERMINISM_ENV_VAR))
+
+
+def resolve_version_mismatch(
+    override: str | VersionMismatchPolicy | None = None,
+) -> VersionMismatchPolicy:
+    """Resolve the version-mismatch policy: explicit ``override`` then env var then default.
+
+    The default is :attr:`VersionMismatchPolicy.WARN` (ADR-0023), which is what the check
+    did while it read ``effect_safety``'s ``warn`` default.
+    """
+    if override is not None:
+        return VersionMismatchPolicy.parse(override)
+    return VersionMismatchPolicy.parse(os.environ.get(VERSION_MISMATCH_ENV_VAR))
 
 
 #: Filename of the SQLite database inside the data directory.

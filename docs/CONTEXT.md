@@ -26,11 +26,12 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 | **Call-site ordinal** | The sequential position of a durable call within a workflow run, combined with the task-definition name, used to match a call to its journal entry. |
 | **Idempotency key** | A stable key Satay derives per logical task invocation, stable across retries and distinct across invocations, for making external effects safe. |
 | **Side-effecting task** | A task declared `side_effect=True`; subject to `effect_safety` policy. |
-| **effect_safety** | Project mode governing **unguarded side effects only**: `off` / `warn` (dev default) / `strict`. Not replay divergence — see below (ADR-0022). |
+| **effect_safety** | Project mode governing **unguarded side effects only**: `off` / `warn` (dev default) / `strict`. Not replay divergence and not version mismatch — see below (ADR-0022/0023). |
 | **nondeterminism policy** | Project mode governing **replay divergence**: `off` / `warn` / `strict` (the default). Separate from `effect_safety` (ADR-0022). |
+| **version-mismatch policy** | Project mode governing the **code-version mismatch check on resume**: `off` / `warn` (the default) / `strict`. Separate from `effect_safety` and from the nondeterminism policy (ADR-0023). |
 | **NondeterminismError** | Raised when a replayed durable call does not match the journal (code changed, non-deterministic branch, reordered calls). Raised by default; `warn`/`off` are opt-ins. |
 | **Fork** | A new run branched from an earlier point of an existing run's journal; the original is never rewritten. |
-| **Code version** | The identifier recorded per run (git commit → dev-provided string → source hash) used to detect mismatch on resume. |
+| **Code version** | The identifier recorded per run (git commit → dev-provided string → source hash) used to detect mismatch on resume, under the version-mismatch policy. |
 | **TaskExecutor** | Internal interface through which task execution passes. MVP impl: `LocalTaskExecutor`. |
 | **Control API** | Local HTTP API for `start` / `status` / `cancel` / `send_event`, writing to the store. |
 | **Satay Studio** | The local debugger: a web app served by `satay dev` over the JSON API. |
@@ -53,11 +54,11 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 | D3 | Runtime-only nondeterminism detection → `NondeterminismError` (policy amended by D23) | Accepted | [ADR-0003](adr/0003-nondeterminism-detection.md) |
 | D4 | Append-only immutable journal as single source of truth; fork, never rewrite | Accepted | [ADR-0004](adr/0004-append-only-journal.md) |
 | D5 | JSON-compatible serialization, no pickle; typed rehydration via return annotations | Accepted | [ADR-0005](adr/0005-serialization-and-rehydration.md) |
-| D6 | Execution guarantees: at-least-once physical / once-recorded logical; stable idempotency keys; `effect_safety` modes (scope narrowed by D23); retry defaults | Accepted | [ADR-0006](adr/0006-execution-guarantees.md) |
+| D6 | Execution guarantees: at-least-once physical / once-recorded logical; stable idempotency keys; `effect_safety` modes (scope narrowed by D23 and D24); retry defaults | Accepted | [ADR-0006](adr/0006-execution-guarantees.md) |
 | D7 | Local-first single-process asyncio runtime, async-only, behind a `TaskExecutor` seam | Accepted | [ADR-0007](adr/0007-runtime-and-worker-model.md) |
 | D8 | Model/token/cost via `ctx` self-report; core ships no model adapters | Accepted | [ADR-0008](adr/0008-model-observability.md) |
 | D9 | Satay Studio = local web app over a JSON control/read API; events via store polling | Accepted | [ADR-0009](adr/0009-local-surfaces.md) |
-| D10 | Code-version recorded per run (git → dev string → source hash); mismatch surfaced honestly | Accepted | [ADR-0010](adr/0010-code-versioning.md) |
+| D10 | Code-version recorded per run (git → dev string → source hash); mismatch surfaced honestly (policy knob split out by D24) | Accepted | [ADR-0010](adr/0010-code-versioning.md) |
 | D11 | Primary test seam = public API + temp SQLite + fault-injection + deterministic time; assert on observable outcomes | Accepted | [ADR-0011](adr/0011-test-strategy-and-seam.md) |
 | D12 | API co-hosting + single-writer model: separate API thread, reads direct, writes via command queue to the sole worker writer; SQLite via a dedicated writer thread; SQLite kept for MVP | Accepted | [ADR-0012](adr/0012-api-cohosting-and-single-writer.md) |
 | D13 | Lean core + `satay[studio]` extra; Pydantic duck-typed (not core); FastAPI+uvicorn and the Svelte+Vite bundle in the extra, prebuilt in CI | Accepted | [ADR-0013](adr/0013-packaging-and-frontend-stack.md) |
@@ -71,6 +72,7 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 | D21 | Composite failure semantics: `map`/`gather`/`start_child` are fail-fast (a failed part raises through the composite, like native `await`); collect-style deferred post-MVP | Accepted | [ADR-0020](adr/0020-composite-failure-semantics.md) |
 | D22 | Event delivery: a matching event wins over a simultaneously-due `wait_for_event` timeout; multiple buffered matches consumed FIFO by `received_at` | Accepted | [ADR-0021](adr/0021-event-ordering-and-timeout-race.md) |
 | D23 | Replay-divergence policy split out of `effect_safety` into its own `nondeterminism` mode, defaulting to `strict`; `effect_safety` keeps its `warn` default and covers unguarded side effects only | Accepted | [ADR-0022](adr/0022-nondeterminism-policy-split.md) |
+| D24 | Code-version mismatch policy on resume split out of `effect_safety` into its own `version_mismatch` mode, keeping its `warn` default; `effect_safety` now has no remaining riders | Accepted | [ADR-0023](adr/0023-version-mismatch-policy-split.md) |
 | D-name | Product/package/CLI name **Satay**; debugger "Satay Studio" | Accepted (provisional) | — pending PyPI/domain/trademark |
 | D-license | **Apache-2.0** license | Accepted | — |
 | D-python | **Python 3.12+** minimum | Accepted | — |
