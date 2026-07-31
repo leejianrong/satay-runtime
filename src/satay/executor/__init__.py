@@ -9,11 +9,18 @@ logical task the executor:
   against the injected clock),
 - on success appends ``TaskCompleted`` (flushing any ``ctx.record_model_usage`` into
   the generic usage slot) and returns,
-- on failure appends ``TaskAttemptFailed`` (attempt / error / next_delay) and, while
-  attempts remain, waits an exponential backoff with jitter (base 1s, cap ~60s) via
-  the injected clock and RNG, then retries,
+- on failure appends ``TaskAttemptFailed`` (attempt / error / next_delay, **plus the same
+  usage slot**) and, while attempts remain, waits an exponential backoff with jitter
+  (base 1s, cap ~60s) via the injected clock and RNG, then retries,
 - after the last attempt fails, **re-raises the last error** so the engine records the
   terminal ``WorkflowFailed`` (keeping the engine the owner of terminal failure).
+
+A fresh :class:`TaskContext` is bound per **attempt**, and both outcome events carry that
+attempt's own usage — so a run's recorded spend is the whole bill, retries included, and a
+task that never completes still says what it cost (KAN-479). The one gap left is an
+*abandoned* attempt: a worker death or a cancellation reaches neither event, so its usage
+is lost. That is deliberate — nothing was committed because the process stopped, and the
+tokens come back only when the resume re-runs the task.
 
 Every append goes through the injected commit hook, so the fault injector fires
 post-commit (ADR-0011). Backoff waits go through the injected clock, so tests replay a
@@ -168,16 +175,21 @@ class LocalTaskExecutor:
                 failures += 1
                 remaining = max_attempts - failures
                 next_delay = backoff_delay(failures, self._rng) if remaining > 0 else None
+                failed_payload: dict[str, Any] = {
+                    **identity.payload_fields(),
+                    "attempt": attempt,
+                    "error": _error_payload(exc),
+                    "next_delay": next_delay,
+                }
+                # The provider billed this attempt whether or not its answer was usable,
+                # so its usage rides on the failure too (KAN-479, ADR-0016 H3 additive).
+                if usage := ctx.recorded_usage:
+                    failed_payload["usage"] = usage
                 await self._commit(
                     Event(
                         run_id=run_id,
                         type=EventType.TASK_ATTEMPT_FAILED,
-                        payload={
-                            **identity.payload_fields(),
-                            "attempt": attempt,
-                            "error": _error_payload(exc),
-                            "next_delay": next_delay,
-                        },
+                        payload=failed_payload,
                         ts=self._clock.now(),
                     )
                 )

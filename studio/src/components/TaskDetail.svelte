@@ -19,8 +19,8 @@
 <h1 class="view-title">Task detail</h1>
 <p class="view-sub">
   One <b>logical task</b> and its <b>physical attempts</b>, from <code>GET /runs/&#123;id&#125;/tasks/&#123;identity&#125;</code>.
-  Attempts are threaded on the skewer; a failed attempt shows its error and backoff. Usage is per ADR-0008 — present
-  only when the task self-reported it.
+  Attempts are threaded on the skewer; a failed attempt shows its error, its backoff, and what it cost. Usage is per
+  ADR-0008 — present only when the task self-reported it — and the total below is every attempt, failed ones included.
 </p>
 
 <div class="logical">
@@ -40,8 +40,11 @@
   </div>
 
   <div class="usage">
-    <div class="u-label">recorded model usage</div>
+    <div class="u-label">recorded model usage · all {vm.attemptCount} attempt{vm.attemptCount === 1 ? "" : "s"}</div>
     {#if vm.hasUsage}
+      {#if vm.billedFailedAttempts}
+        <div class="u-note">&#9888; includes attempts that failed — billed, and nothing to show for it</div>
+      {/if}
       <table class="usage-table">
         <thead><tr><th>Model</th><th class="r">Input tok</th><th class="r">Output tok</th><th class="r">Cost (USD)</th></tr></thead>
         <tbody>
@@ -84,6 +87,17 @@
         {:else if a.exhausted}
           <div class="att-exhausted">&#9888; retries exhausted — failure propagated to the workflow</div>
         {/if}
+        {#if a.hasUsage}
+          <div class="att-usage">
+            {#each a.usage as u}
+              <div class="au-row">
+                <span class="au-model">{u.model ?? "—"}</span>
+                <span class="au-tok">{u.input_tokens ?? "—"} in / {u.output_tokens ?? "—"} out</span>
+                {#if u.cost_usd != null}<span class="au-cost">${u.cost_usd.toFixed(4)}</span>{/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if a.attempt.note}
           <div class="att-note"><span class="rico">&#9889;</span> {a.attempt.note}</div>
         {/if}
@@ -123,6 +137,12 @@
   .usage-none { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--border-strong); border-radius: 5px; padding: 11px 14px; }
   .usage-none code { font-family: var(--font-mono); font-size: 11px; color: var(--text); }
   .usage-none .dim { color: var(--text-faint); }
+  .u-note { font-family: var(--font-mono); font-size: 11px; color: var(--failed); margin-bottom: 7px; }
+
+  .att-usage { margin-top: 10px; border-top: 1px dashed var(--border-strong); padding-top: 8px; }
+  .au-row { display: flex; align-items: baseline; gap: 10px; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); }
+  .au-model { color: var(--text); }
+  .au-cost { margin-left: auto; color: var(--text); }
 
   .attempts-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--text-faint); margin: 26px 0 12px; }
   .att-list { position: relative; padding-left: 30px; }

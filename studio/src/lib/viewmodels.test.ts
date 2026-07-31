@@ -136,6 +136,34 @@ describe("task-detail view-model — logical task vs attempts + usage (U5)", () 
     expect(taskView(failThriceSucceed).hasUsage).toBe(true);
   });
 
+  it("prices each attempt, failed ones included, and flags a total that hides losses (KAN-479)", () => {
+    const billedRetries = {
+      ...failThriceSucceed,
+      usage: [
+        { model: "m", input_tokens: 2000, output_tokens: 1 },
+        { model: "m", input_tokens: 2000, output_tokens: 1 },
+        { model: "m", input_tokens: 2144, output_tokens: 96 },
+      ],
+      attempts: [
+        { ...failThriceSucceed.attempts[0], usage: [{ model: "m", input_tokens: 2000, output_tokens: 1 }] },
+        { ...failThriceSucceed.attempts[1], usage: [{ model: "m", input_tokens: 2000, output_tokens: 1 }] },
+        { ...failThriceSucceed.attempts[2], usage: [{ model: "m", input_tokens: 2144, output_tokens: 96 }] },
+      ],
+    } as unknown as TaskDetail;
+    const vm = taskView(billedRetries);
+    expect(vm.attempts.map((a) => a.hasUsage)).toEqual([true, true, true]);
+    expect(vm.attempts[0].usage[0].input_tokens).toBe(2000);
+    expect(vm.usage).toHaveLength(3);
+    expect(vm.billedFailedAttempts).toBe(true);
+  });
+
+  it("does not flag failed spend when only the winning attempt reported any", () => {
+    // The pre-KAN-479 shape: a total, and no per-attempt usage anywhere. Still renders.
+    const vm = taskView(failThriceSucceed);
+    expect(vm.attempts.every((a) => a.hasUsage)).toBe(false);
+    expect(vm.billedFailedAttempts).toBe(false);
+  });
+
   it("renders no usage when the task reported none", () => {
     const noUsage = { ...failThriceSucceed, usage: [] } as unknown as TaskDetail;
     expect(taskView(noUsage).hasUsage).toBe(false);

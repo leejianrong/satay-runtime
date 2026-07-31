@@ -16,6 +16,7 @@ import type {
   TimelineEvent,
   Tree,
   TreeNode,
+  UsageEntry,
   VersionMismatch,
 } from "./types";
 
@@ -146,6 +147,9 @@ export interface AttemptView {
   willRetry: boolean;
   /** A failed attempt with no further retry budget (failure propagates). */
   exhausted: boolean;
+  /** What this attempt spent — a failed attempt was billed too (KAN-479). */
+  usage: UsageEntry[];
+  hasUsage: boolean;
 }
 
 export interface TaskView {
@@ -157,7 +161,11 @@ export interface TaskView {
   attemptCount: number;
   /** ADR-0008: usage renders only when the task self-reported it. */
   hasUsage: boolean;
+  /** Every attempt's usage, failed ones included — the complete bill (KAN-479). */
   usage: TaskDetail["usage"];
+  /** True when an attempt that did *not* complete still reported spend, so the total
+   *  needs saying so: this is a task that cost money without producing a result. */
+  billedFailedAttempts: boolean;
   /** The native stack trace is surfaced at run level (from WorkflowFailed), not per
    *  attempt — present only when the run failed. */
   hasTraceback: boolean;
@@ -167,10 +175,13 @@ export interface TaskView {
 export function taskView(detail: TaskDetail): TaskView {
   const attempts = (detail.attempts ?? []).map((attempt): AttemptView => {
     const failed = attempt.status === "failed";
+    const usage = attempt.usage ?? [];
     return {
       attempt,
       willRetry: failed && attempt.next_delay != null,
       exhausted: failed && attempt.next_delay == null,
+      usage,
+      hasUsage: usage.length > 0,
     };
   });
   const usage = detail.usage ?? [];
@@ -184,6 +195,7 @@ export function taskView(detail: TaskDetail): TaskView {
     attemptCount: attempts.length,
     hasUsage: usage.length > 0,
     usage,
+    billedFailedAttempts: attempts.some((a) => a.attempt.status === "failed" && a.hasUsage),
     hasTraceback: Boolean(traceback),
     traceback,
   };

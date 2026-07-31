@@ -8,8 +8,10 @@ reads ``ctx.idempotency_key`` — stable across retries, distinct across invocat
 
 Injection is via a ``ContextVar`` (the same pattern the replay driver uses), so task
 signatures stay ordinary and tasks remain independently callable. Usage is buffered on
-the context and flushed by the executor into the journal's generic usage slot on
-``TaskCompleted`` (build step 1/6). The core ships no model adapters: a task that never
+the context and flushed by the executor into the journal's generic usage slot on the
+attempt's outcome event — ``TaskCompleted`` **or** ``TaskAttemptFailed``, since a failed
+attempt was billed too (KAN-479). The context is per attempt, so a task need not do
+anything to have its retries priced. The core ships no model adapters: a task that never
 calls :meth:`record_model_usage` records no usage.
 """
 
@@ -54,7 +56,9 @@ class TaskContext:
 
         Only the fields supplied are stored, plus any ``extra`` (so non-LLM cost or
         provider-specific fields ride along). The executor flushes the buffer into the
-        journal's usage slot on ``TaskCompleted``; Studio renders it in V6.
+        journal's usage slot on this attempt's outcome — ``TaskCompleted`` if it succeeds,
+        ``TaskAttemptFailed`` if it does not, so recording before the call that might fail
+        is what gets a retried task priced honestly. Studio renders it in V6.
         """
         entry: dict[str, Any] = dict(extra)
         if model is not None:
@@ -67,7 +71,7 @@ class TaskContext:
 
     @property
     def recorded_usage(self) -> list[dict[str, Any]]:
-        """The usage entries recorded so far (executor-internal; empty if none)."""
+        """This attempt's usage entries (executor-internal; empty if none)."""
         return list(self._usage)
 
 
