@@ -16,25 +16,27 @@ to be an ancestor of `main` and the tag to match the version in `pyproject.toml`
 **The workflow cannot publish anything until these steps exist.** OIDC has no fallback:
 without a registered trusted publisher, PyPI rejects the exchange and the job fails.
 
-### 1a. Register the trusted publisher on PyPI
+### 1a. Register the trusted publisher on PyPI — **done, do not redo**
 
-`satay` is not yet on PyPI, so use the **pending publisher** flow (the one that creates the
-project on first upload):
+This started as a **pending publisher** (the flow that creates the project on first
+upload). Publishing `0.1.0a1` converted it into an ordinary trusted publisher on the
+`satay` project, so it no longer appears under *Add a new pending publisher* — it lives at
+<https://pypi.org/manage/project/satay/settings/publishing/>.
 
-1. Go to <https://pypi.org/manage/account/publishing/>.
-2. Under **Add a new pending publisher**, choose **GitHub**, and enter *exactly*:
+Nothing to do here but confirm it is still listed, with exactly these values:
 
-   | Field                | Value            |
-   | -------------------- | ---------------- |
-   | PyPI Project Name    | `satay`          |
-   | Owner                | `leejianrong`    |
-   | Repository name      | `satay-runtime`  |
-   | Workflow name        | `release.yml`    |
-   | Environment name     | `pypi`           |
+| Field                | Value            |
+| -------------------- | ---------------- |
+| PyPI Project Name    | `satay`          |
+| Owner                | `leejianrong`    |
+| Repository name      | `satay-runtime`  |
+| Workflow name        | `release.yml`    |
+| Environment name     | `pypi`           |
 
-3. Save. The values are matched literally — `release.yml` is the **filename**, not the
-   workflow's display name (`Release`), and the environment name must match the
-   `environment: name:` on the `publish-pypi` job.
+The values are matched literally — `release.yml` is the **filename**, not the workflow's
+display name (`Release`), and the environment name must match the `environment: name:` on
+the `publish-pypi` job. If any of them ever drifts, PyPI rejects the OIDC exchange and the
+publish job fails with a permission error rather than anything mentioning the mismatch.
 
 ### 1b. Register the trusted publisher on TestPyPI
 
@@ -61,20 +63,24 @@ configured as follows:
 The environment names match §1a/§1b exactly. A job referencing a nonexistent environment
 fails to start, which is why this was the blocking step.
 
-### 1d. Confirm the names are still free
+### 1d. Confirm you still own the name — **done, do not redo**
 
-Both `satay` and `satay-runtime` were unclaimed on PyPI as of 2026-07-31. Re-check
-<https://pypi.org/project/satay/> before the first release; if someone has taken it, the
-project name in `pyproject.toml`, §1a, and the install commands below all have to change
-together.
+<https://pypi.org/project/satay/> has been ours since `0.1.0a1` went up on 2026-07-31, and
+a PyPI project name cannot be transferred away from under you. A glance at that page before
+a release is enough to confirm it, and it doubles as a check that the last release is where
+you think it is.
+
+`satay-runtime` — the repository name — is *not* reserved on PyPI and we do not publish
+under it. Worth claiming eventually so nobody squats a lookalike; nothing about a release
+depends on it.
 
 ---
 
 ## 2. Rehearse before you release
 
-**Both rehearsal paths have been run green, and `v0.1.0a1` is published on PyPI.** The
-pipeline is proven end to end; this section is the procedure for the *next* version, not
-outstanding work.
+**Both rehearsal paths have been run green, and `satay` is published on PyPI** — `v0.1.0a1`
+was the first release. The pipeline is proven end to end; this section is the procedure for
+whatever version you are about to ship, not outstanding work.
 
 Two rehearsal paths, both via **Actions → Release → Run workflow**. Neither needs a tag,
 so you can point them at a branch.
@@ -89,14 +95,15 @@ A dry run proves everything except the upload: the CI-green gate, the Studio bun
 installs of both `satay` and `satay[studio]`. The wheel listing is pasted into the run
 summary.
 
-After a `testpypi` run, install from TestPyPI to confirm the artifact is real:
+After a `testpypi` run, install from TestPyPI to confirm the artifact is real. Pin the
+version you just rehearsed — `0.1.0a2` here:
 
 ```bash
 uv venv /tmp/satay-testpypi
 uv pip install --python /tmp/satay-testpypi/bin/python \
   --index-url https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  'satay==0.1.0a1'
+  'satay==0.1.0a2'
 /tmp/satay-testpypi/bin/satay --help
 ```
 
@@ -108,7 +115,7 @@ on real PyPI, not TestPyPI.
 ## 3. Release
 
 The version lives in `pyproject.toml` and the tag must match it — the workflow fails
-otherwise. `pyproject.toml` currently says `0.1.0a1`, so the tag is `v0.1.0a1`.
+otherwise. `pyproject.toml` currently says `0.1.0a2`, so the tag is `v0.1.0a2`.
 
 ```bash
 # From a clean checkout of merged main, with the release commit already green in CI.
@@ -116,8 +123,8 @@ git switch main
 git pull --ff-only
 git log --oneline -1          # confirm this is the SHA you mean to ship
 
-git tag -a v0.1.0a1 -m "satay 0.1.0a1"
-git push origin v0.1.0a1
+git tag -a v0.1.0a2 -m "satay 0.1.0a2"
+git push origin v0.1.0a2
 ```
 
 Pushing the tag starts **Release**. It will:
@@ -130,7 +137,10 @@ Pushing the tag starts **Release**. It will:
 4. Publish to PyPI over OIDC.
 
 To release the *next* version, bump `version` in `pyproject.toml` (run `uv lock` so
-`uv.lock` follows — CI installs with `--frozen`), merge that through a PR, then tag.
+`uv.lock` follows — CI installs with `--frozen`), merge that through a PR, then tag. Both
+halves matter: an unbumped `pyproject.toml` fails the `guard` job on the tag/version match,
+and a stale `uv.lock` fails earlier and less legibly, at `uv sync --frozen`, complaining
+that the lockfile is out of date without mentioning the version at all.
 
 ### If it goes wrong
 
@@ -150,33 +160,32 @@ against a lean install with no dev dependencies:
 
 ```bash
 uv venv /tmp/satay-verify
-uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0a1'
+uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0a2'
 /tmp/satay-verify/bin/satay --help
 
 # The version the package reports must equal the tag you just shipped (KAN-447).
 /tmp/satay-verify/bin/python -c "
 import importlib.metadata as m, satay
-assert satay.__version__ == m.version('satay') == '0.1.0a1', satay.__version__
+assert satay.__version__ == m.version('satay') == '0.1.0a2', satay.__version__
 print('version ok:', satay.__version__)"
 
 curl -fsSL \
-  https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a1/examples/crash_recovery_demo.py \
+  https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/crash_recovery_demo.py \
   -o /tmp/crash_recovery_demo.py
 /tmp/satay-verify/bin/python /tmp/crash_recovery_demo.py
 ```
 
-Expect `version ok: 0.1.0a1`, then `phase 2: final result = 4 (expected 4)`, `step_one
+Expect `version ok: 0.1.0a2`, then `phase 2: final result = 4 (expected 4)`, `step_one
 executions = 1 (REUSED, still 1)`, and a timeline ending in `WorkflowCompleted` with a `⚡`
-on `WorkflowResumed`. Also
-confirm the install stayed lean — `pip list` in that venv should show `satay` and nothing
-else of substance (ADR-0013/0016).
+on `WorkflowResumed`. Also confirm the install stayed lean — `pip list` in that venv should
+show `satay` and nothing else of substance (ADR-0013/0016).
 
 **`pip install 'satay[studio]'` actually serves Studio.** The extra is worthless if the
 prebuilt SPA did not ride along in the wheel:
 
 ```bash
 uv venv /tmp/satay-studio
-uv pip install --python /tmp/satay-studio/bin/python 'satay[studio]==0.1.0a1'
+uv pip install --python /tmp/satay-studio/bin/python 'satay[studio]==0.1.0a2'
 /tmp/satay-studio/bin/satay dev
 ```
 

@@ -22,6 +22,10 @@ The debugger — **Satay Studio**, a local web UI over an HTTP read API — ship
 optional `satay[studio]` extra, so applications that embed Satay never carry the
 FastAPI/uvicorn/JS stack into production.
 
+**Documentation: [leejianrong.github.io/satay-runtime](https://leejianrong.github.io/satay-runtime/)**
+— the tutorial, the cookbook, the Studio guide, and the honest account of what the runtime
+does not do.
+
 ## Status
 
 **The MVP is built and the full suite is green (V1–V8).** Trust the code over the docs:
