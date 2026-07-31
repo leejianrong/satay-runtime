@@ -37,7 +37,7 @@ demo: ## Run the crash-recovery demo, then browse it in Satay Studio (Ctrl-C to 
 	@echo
 	@echo "==> starting Satay Studio — open the printed URL (the ?token= is required)"
 	@echo "    the run above is on the run list; open it for the timeline and the tree"
-	@SATAY_DATA_DIR=$(DEMO_DIR) uv run --extra studio satay dev
+	@SATAY_DATA_DIR=$(DEMO_DIR) uv run --extra studio satay dev --app satay.demo
 
 demo-clean: ## Delete the demo data directory
 	rm -rf $(DEMO_DIR)

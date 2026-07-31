@@ -15,6 +15,13 @@ The booted stack mints a per-session token (ADR-0014) and prints a **tokenized S
 URL** — the Studio SPA reads ``?token=`` from its own location — which is the V6 token
 hand-off deferred to here and the Q43 session-token smoke path.
 
+Before any of that, :func:`run_dev` imports the user's workflow modules
+(:mod:`satay.devstack.appload`, driven by ``--app``), because the registry is only ever
+populated by decorators running at import time: without that step the worker has no
+workflow to resolve when a timer comes due and the control ``start`` endpoint has
+nothing to start (KAN-448). The boot prints what got registered, and a module that
+cannot be imported aborts the boot instead of yielding a silently empty registry.
+
 This module imports FastAPI/uvicorn at load, so it is **never** imported at core import
 time: ``satay.devstack.__init__`` reaches it through a lazy accessor and the core CLI
 only loads it when actually running ``satay dev``.
@@ -26,11 +33,21 @@ import asyncio
 import contextlib
 import signal
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import uvicorn
 
-from satay.config import db_path, resolve_data_dir
+from satay.config import (
+    EffectSafety,
+    NondeterminismPolicy,
+    VersionMismatchPolicy,
+    db_path,
+    resolve_data_dir,
+    resolve_effect_safety,
+    resolve_nondeterminism,
+    resolve_version_mismatch,
+)
 from satay.control.commands import CommandQueue
 from satay.control.redaction import Redactor
 from satay.control.security import SecurityPolicy, ensure_loopback_bind, generate_token
@@ -73,6 +90,9 @@ class DevStack:
         clock: Clock | None = None,
         worker_interval: float = 1.0,
         log_level: str = "info",
+        effect_safety: str | EffectSafety | None = None,
+        nondeterminism: str | NondeterminismPolicy | None = None,
+        version_mismatch: str | VersionMismatchPolicy | None = None,
     ) -> None:
         ensure_loopback_bind(host)
         self._data_dir = Path(data_dir)
@@ -82,6 +102,15 @@ class DevStack:
         self._clock = clock or RealClock()
         self._worker_interval = worker_interval
         self._log_level = log_level
+        # Resolve all three project policies the way the in-process API does — explicit
+        # override, then SATAY_EFFECT_SAFETY / SATAY_NONDETERMINISM / SATAY_VERSION_MISMATCH,
+        # then the documented default — and hand them to the worker, which otherwise
+        # silently took its own defaults and ignored the environment (KAN-458). Any policy
+        # added to the worker must be threaded here too, or `satay dev` quietly stops
+        # honouring it.
+        self._effect_safety = resolve_effect_safety(effect_safety)
+        self._nondeterminism = resolve_nondeterminism(nondeterminism)
+        self._version_mismatch = resolve_version_mismatch(version_mismatch)
 
         self._lock = DataDirLock(self._data_dir)
         self._store: SQLiteStore | None = None
@@ -100,6 +129,21 @@ class DevStack:
     def token(self) -> str:
         """The per-session token the guarded API requires (ADR-0014)."""
         return self._token
+
+    @property
+    def effect_safety(self) -> EffectSafety:
+        """The resolved effect-safety mode the worker runs under (ADR-0006)."""
+        return self._effect_safety
+
+    @property
+    def nondeterminism(self) -> NondeterminismPolicy:
+        """The resolved replay-divergence policy the worker runs under (ADR-0022)."""
+        return self._nondeterminism
+
+    @property
+    def version_mismatch(self) -> VersionMismatchPolicy:
+        """The resolved code-version mismatch policy the worker runs under (ADR-0023)."""
+        return self._version_mismatch
 
     @property
     def port(self) -> int:
@@ -130,6 +174,9 @@ class DevStack:
             clock=self._clock,
             commands=self._queue,
             interval=self._worker_interval,
+            effect_safety=self._effect_safety,
+            nondeterminism=self._nondeterminism,
+            version_mismatch=self._version_mismatch,
         )
         self._worker_task = asyncio.create_task(self._worker.run())
         self.started_parts.append("worker")
@@ -207,12 +254,34 @@ def run_dev(
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
     log_level: str = "info",
+    app_modules: Sequence[str] | None = None,
+    project_dir: str | None = None,
 ) -> int:
-    """Boot the dev stack and block until interrupted; return a process exit code (U1)."""
+    """Boot the dev stack and block until interrupted; return a process exit code (U1).
+
+    Imports the user's ``app_modules`` **first** (KAN-448) so the registry is populated
+    before the worker's poll loop and the control API come up. A module that cannot be
+    imported aborts with exit code 2 and a message naming it; a successful boot prints
+    what it registered, including the honest ``0 workflows`` case.
+    """
+    from satay.devstack.appload import AppImportError, load_app
     from satay.devstack.lock import DataDirLockedError
+
+    try:
+        report = load_app(app_modules, project_dir=project_dir)
+    except AppImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     resolved = resolve_data_dir(data_dir)
     stack = DevStack(data_dir=resolved, host=host, port=port, log_level=log_level)
+    for line in report.describe():
+        print(line)
+    print(
+        f"policies: effect_safety={stack.effect_safety.value}, "
+        f"nondeterminism={stack.nondeterminism.value}, "
+        f"version_mismatch={stack.version_mismatch.value}"
+    )
     try:
         asyncio.run(_serve_until_signalled(stack))
     except DataDirLockedError as exc:

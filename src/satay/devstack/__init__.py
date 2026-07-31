@@ -5,6 +5,11 @@ read HTTP API, and the served Studio SPA in **one process**, and takes an **excl
 advisory lock** on a lockfile in the data directory so a second ``satay dev`` on the same
 ``./.satay/`` is refused rather than racing the journal into corruption (ADR-0017/Q54).
 
+Before the stack boots it imports the workflow modules named by ``--app`` (or by
+``[tool.satay] app`` in ``pyproject.toml``) — see :mod:`satay.devstack.appload` — so the
+registry is populated and the worker can resolve, start, and wake the user's own
+workflows (KAN-448).
+
 ``satay dev`` and its Typer command surface live **only in the ``satay[studio]`` extra**
 (ADR-0016). This package ``__init__`` stays import-clean — it pulls in **no**
 FastAPI/uvicorn/Typer at load (the import-hygiene guard imports ``satay.devstack`` in a

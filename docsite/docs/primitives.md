@@ -64,9 +64,12 @@ async def main() -> None:
     repository's own example code uses. Pass the same `store=` to both the worker and every
     `satay.start` call so there is one writer.
 
-`satay dev` also runs a poll loop, but it cannot drive *your* workflows: it never imports your
-module, so its registry has nothing in it. Treat `satay dev` as an inspector over the journal,
-not as an application server. See the [Studio page](studio.md).
+`satay dev --app mypkg.workflows` is the shorter route to the same thing: it imports the modules
+you name — which is what puts your workflows in the registry — and then runs the poll loop, the
+store, the API, and Studio in one process. Its worker will wake runs your own scripts parked, so
+the two shapes interoperate over the same journal. A bare `satay dev` with no `--app` imports
+nothing and drives nothing; it says so at boot. See the
+[Studio page](studio.md#telling-satay-dev-where-your-workflows-live).
 
 ## `sleep`
 

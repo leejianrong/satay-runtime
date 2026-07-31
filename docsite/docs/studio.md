@@ -63,6 +63,8 @@ than on the HTML.
 ## Starting it
 
 ```bash
+satay dev --app mypkg.workflows            # import your workflows, then boot
+satay dev --app mypkg.flows --app mypkg.jobs   # repeatable
 satay dev                                  # ./.satay on 127.0.0.1:8787
 satay dev --port 9000                      # a different port; 0 picks an ephemeral one
 satay dev --data-dir .satay-demo           # a different journal
@@ -70,7 +72,10 @@ satay dev --host 127.0.0.1                 # loopback only, and it will not budg
 ```
 
 ```console
-$ satay dev --port 8791
+$ satay dev --app userapp --port 8791
+app modules (--app): userapp
+registered: 2 workflows (await_approval, nightly_report); 1 task (render)
+policies: effect_safety=warn, nondeterminism=strict, version_mismatch=warn
 INFO:     Started server process [303058]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
@@ -97,17 +102,70 @@ a different --data-dir.
 The lock uses POSIX `flock`, so on Windows it degrades to a no-op and this protection is not
 there.
 
-## `satay dev` cannot run your workflows
+## Telling `satay dev` where your workflows live
 
-This is worth being blunt about. `satay dev` never imports your code. Its workflow registry is
-empty, so its poll loop cannot wake a run of *your* workflow that is parked on a timer or an
-event. It can read any journal, and it can cancel, fork, and deliver events into the inbox, but
-the actual driving of your workflows happens in your process.
+A workflow only exists as far as the runtime is concerned once its `@satay.workflow` decorator
+has run, which happens when Python imports the module it is written in. So the dev stack has to
+import your code before it can do anything with it. `--app` is how you say which modules those
+are:
 
-The working shape is two processes: your application (which registers the workflows and runs a
-[`TimerEventWorker`](primitives.md#running-the-worker)) writing the journal, and `satay dev`
-pointed at the same data directory for looking at it. That is exactly what `make demo` does, and
-why it runs the demo script first and starts Studio second.
+```bash
+satay dev --app mypkg.workflows
+```
+
+Repeat the flag for several modules. To stop retyping it, put the list in your `pyproject.toml`
+and run a bare `satay dev`:
+
+```toml
+[tool.satay]
+app = ["mypkg.workflows", "mypkg.jobs"]
+```
+
+An explicit `--app` replaces that list rather than adding to it, so the command line always wins.
+
+With the modules loaded, one process does everything: `POST /runs` can start your workflows, the
+poll loop wakes yours that are parked on a timer or an event, and Studio shows all of it. A run
+parked by some other process — a script you ran an hour ago and quit — is woken by `satay dev`
+just the same, because the journal is the only state that matters.
+
+The boot always tells you what it registered, and the failures are loud:
+
+```console
+$ satay dev --app userapp
+app modules (--app): userapp
+registered: 2 workflows (await_approval, nightly_report); 1 task (render)
+
+$ satay dev --app userapp.wokflows
+error: --app module 'userapp.wokflows' was not found (no module named 'userapp.wokflows').
+It must be importable from /home/you/project — either installed into this environment, or
+a package/module directory here.
+
+$ satay dev --app brokenapp
+error: --app module 'brokenapp' raised RuntimeError while importing: DATABASE_URL is not set
+```
+
+Both of those exit `2` without touching the data directory. And a bare `satay dev` with nothing
+to import says so rather than looking healthy:
+
+```console
+$ satay dev
+app modules: none (no --app, no [tool.satay] app in pyproject.toml)
+registered: 0 workflows; 0 tasks
+  warning: 0 workflows registered — this process can serve Studio and read the journal, but
+  it cannot start a run or wake one parked on a timer or event. Pass --app your.module to
+  import your workflows.
+```
+
+That is a perfectly good way to run it if all you want is to look at a journal. It is not a way
+to run anything.
+
+!!! note "Modules are imported, not exec'd from a path"
+
+    `--app` takes dotted module paths, not filenames. Your project directory is added to the
+    **end** of `sys.path`, so a module in the directory you ran from is importable without
+    installing anything — but a local `queue.py` cannot shadow the stdlib's, because the stdlib
+    resolves first. If your code lives somewhere else entirely, install it (`pip install -e .`)
+    or set `PYTHONPATH`.
 
 ## The tour
 
@@ -166,8 +224,9 @@ block on the worker.
 | `GET` | `/runs/{run_id}/tasks/{identity}` | One call: attempts, input, output, usage. |
 | `GET` | `/runs/{run_id}/compare?to={other_run_id}` | Call-by-call comparison. |
 
-`POST /runs` has the same registry limitation as the worker: it can only start a workflow the
-serving process has registered, which for a plain `satay dev` is none of yours.
+`POST /runs` can only start a workflow the serving process has registered — so it starts
+whatever you passed to [`--app`](#telling-satay-dev-where-your-workflows-live), and nothing
+at all if you passed nothing.
 
 Reading a timeline:
 
@@ -224,8 +283,13 @@ tool on a laptop, and it is not network authentication. Do not put it on a share
 Every run records a code version at creation. The order is `git rev-parse HEAD` where a git
 checkout is available, then `SATAY_CODE_VERSION` if you set it, then a hash of your source (you
 will see `src:...` prefixes in that case). On resume Satay compares the stamp against the current
-version and applies the same policy as everything else: `warn` logs and continues, `strict`
-raises `VersionMismatchError`, `off` says nothing.
+version and applies its **own** policy — `version_mismatch`, set with `SATAY_VERSION_MISMATCH`
+and separate from `effect_safety` since [ADR-0023](decisions.md): `warn` (the default) logs and
+continues, `strict` raises `VersionMismatchError`, `off` says nothing.
+
+`satay dev` resolves that policy, along with `effect_safety` and `nondeterminism`, from the
+environment and prints all three at boot, so `SATAY_VERSION_MISMATCH=strict satay dev --app ...`
+does what it says.
 
 You will see mismatch chips in Studio a lot, and often harmlessly. A `satay dev` started from a
 different working directory than the one that wrote the run computes a different source hash, so
