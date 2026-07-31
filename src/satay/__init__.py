@@ -37,6 +37,7 @@ from satay.api import (
     wait_for_event,
     workflow,
 )
+from satay.api.run_handle import WorkflowFailedError
 from satay.versioning import VersionMismatchError
 
 
@@ -86,6 +87,7 @@ __all__ = [
     "RunHandle",
     "TaskContext",
     "VersionMismatchError",
+    "WorkflowFailedError",
     "__version__",
     "gather",
     "map",

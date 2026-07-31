@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 import satay
-from satay.api.run_handle import WorkflowFailedError
 from satay.config import DATA_DIR_ENV_VAR, db_path
 from satay.journal.events import Event, EventType
 from satay.journal.store import SQLiteStore
@@ -192,7 +191,7 @@ async def main() -> None:
     print(f"\n2) fetch_from_dead_host exhausts retries=1 — run {doomed.run_id}")
     try:
         await drive(doomed.result, clock)
-    except WorkflowFailedError as exc:
+    except satay.WorkflowFailedError as exc:
         print(f"  raised {exc.error_type}: {exc.error_message}")
     print(f"  status: {await doomed.status()}")
     print(f"  attempts made: {EXECUTIONS['fetch_from_dead_host']} (retries=1 → 1 + 1 retry)")
