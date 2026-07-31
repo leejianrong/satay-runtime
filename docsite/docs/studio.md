@@ -100,12 +100,6 @@ journal into corruption (ADR-0017/Q54). Stop that process, or run with a differe
 
 The lock uses POSIX `flock`, so on Windows it degrades to a no-op and this protection is not there.
 
-!!! info "`--app` landed after `0.1.0a1`"
-
-    The published alpha has no `--app` flag, so its dev stack cannot import your workflows and
-    cannot start or wake them. See the [install note](tutorial/index.md#install) for how to get a
-    build that can.
-
 ## Telling `satay dev` where your workflows live
 
 A workflow only exists as far as the runtime is concerned once its `@satay.workflow` decorator has

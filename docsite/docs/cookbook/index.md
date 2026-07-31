@@ -10,36 +10,28 @@ the whole setup, and it is the same three steps on every page.
 ## Install
 
 ```bash
-pip install 'satay[studio] @ git+https://github.com/leejianrong/satay-runtime'
+pip install 'satay[studio]'
 ```
 
-Six of the seven recipes need a Satay newer than the published alpha, so that is the install
-line these pages use. Read the box below before you reach for `pip install satay` instead.
+That is the published package from PyPI, and all seven recipes run against it.
 
-!!! warning "The published alpha predates most of these recipes"
+!!! tip "These pages are pinned to one version"
 
-    `satay==0.1.0a1` on PyPI is the first published version, tagged well before six of these
-    seven examples were written. Against that wheel:
+    Every `curl` below fetches from the **`v0.1.0a2`** tag, not from `main`, so the file you
+    download is the file that matches the wheel you just installed. `main` moves; the tag does
+    not.
 
-    - four of the recipes fail with `AttributeError: module 'satay' has no attribute
-      'WorkflowFailedError'`;
-    - `satay dev --app`, which two of these pages end with, does not exist yet;
-    - the example files themselves are not in the `v0.1.0a1` tag, so a `raw.githubusercontent`
-      URL at that ref is a 404.
-
-    [Crash Recovery](crash-recovery.md) is the exception. It ships inside the package as
-    `satay.demo`, and it runs against a plain `pip install satay` today.
-
-    So install from git for now, or clone the repository. Once the next alpha ships, a plain
-    `pip install satay` will cover all seven. Nothing here is deprecated gracefully yet, so pin
-    whatever you build on. The [limits page](../limits.md) lists what is deliberately absent.
+    Satay is alpha. There is no compatibility promise between alpha versions and nothing is
+    deprecated gracefully yet, so pin the exact version in anything you build:
+    `pip install 'satay[studio]==0.1.0a2'`. The [limits page](../limits.md) lists what is
+    deliberately absent.
 
 The core runtime declares **no dependencies**, and all seven recipes run on it alone. The
 `[studio]` extra above only adds the debugger and the HTTP API, which is the last step of most of
 these pages:
 
 ```bash
-pip install 'satay @ git+https://github.com/leejianrong/satay-runtime'   # core only
+pip install satay   # core only
 ```
 
 ## Run Any Recipe
@@ -50,7 +42,7 @@ fetch it, run it:
 ```bash
 mkdir satay-cookbook && cd satay-cookbook
 
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/main/examples/crash_recovery_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/crash_recovery_demo.py
 
 python crash_recovery_demo.py
 ```

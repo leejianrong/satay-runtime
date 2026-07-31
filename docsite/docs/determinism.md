@@ -160,12 +160,6 @@ it over `warn`.
     and nothing else; changing one does not move the other. `version_mismatch` is a third
     independent knob, described in [Studio and `satay dev`](studio.md#the-code-version-stamp).
 
-!!! info "In `0.1.0a1` this raises nothing"
-
-    The policy split landed after the published alpha. Run the example above against
-    `satay==0.1.0a1` and you get the `warn` output, `result: 21`, with no way to ask for strict.
-    See the [install note](tutorial/index.md#install).
-
 ## What the check does not catch
 
 `NondeterminismError` compares the **schedule** of durable calls: which task, at which position or

@@ -80,16 +80,16 @@ async def trial(cents: int) -> str:
 
 
 @satay.task(retries=2)
-async def settle(cents: int) -> str:
-    ran("settle")
-    if EXECUTIONS["settle"] < 3:
+async def capture(cents: int) -> str:
+    ran("capture")
+    if EXECUTIONS["capture"] < 3:
         raise RuntimeError("the bank hung up")
-    return f"settled-{cents}"
+    return f"captured-{cents}"
 
 
 @satay.workflow
 async def settlement(cents: int) -> str:
-    return await settle(cents)
+    return await capture(cents)
 ```
 
 That counter is the whole trick behind every assertion below. It counts **executions of the task
@@ -262,7 +262,7 @@ was re-driven to completion inside that call.
 
 ## Pin the Backoff Jitter
 
-`settle` has `retries=2` and fails twice, so a real run of it sleeps for a jittered backoff delay
+`capture` has `retries=2` and fails twice, so a real run of it sleeps for a jittered backoff delay
 between attempts. `SeededRng` makes that delay reproducible, and `ManualClock` makes it free.
 
 Backoff waits happen inside the drive, so the test needs to advance virtual time while the drive is
@@ -290,6 +290,12 @@ async def drain(factory, clock, *, step=61.0, max_steps=500):
 is non-zero the drive is waiting on time and nothing else, so advancing is safe. The `step=61.0`
 clears the 60-second backoff ceiling in one go.
 
+!!! info "This helper is becoming part of the library"
+
+    The same loop now ships on `main` as `satay.testing.settle`, and the `drain` fixture there
+    just returns it. A future release lets you write `from satay.testing import settle` instead of
+    the function above. It is not in `0.1.0a2`, which is the version these pages describe.
+
 ```python
 async def test_backoff_is_reproducible_under_a_seed() -> None:
     async def delays(seed: int) -> list[float]:
@@ -297,8 +303,8 @@ async def test_backoff_is_reproducible_under_a_seed() -> None:
         clock = ManualClock()
         store = SQLiteStore.open(":memory:")
         handle = satay.start(settlement, 500, store=store, clock=clock, rng=SeededRng(seed))
-        assert await drain(handle.result, clock) == "settled-500"
-        assert EXECUTIONS["settle"] == 3
+        assert await drain(handle.result, clock) == "captured-500"
+        assert EXECUTIONS["capture"] == 3
         events = await store.read_events(handle.run_id)
         store.close()
         return [

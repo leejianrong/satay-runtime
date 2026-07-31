@@ -7,13 +7,13 @@ The thing to watch is what the sleeping workflow costs while it waits, which is 
 not hold a coroutine open for eight hours. It records a timer, **parks**, and is released from
 memory. A worker re-drives it when the deadline comes due.
 
-Source: [`examples/timers_events_demo.py`](https://github.com/leejianrong/satay-runtime/blob/main/examples/timers_events_demo.py)
+Source: [`examples/timers_events_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a2/examples/timers_events_demo.py)
 
 ## Get It And Run It
 
 ```bash
-pip install 'satay[studio] @ git+https://github.com/leejianrong/satay-runtime'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/main/examples/timers_events_demo.py
+pip install 'satay[studio]'
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/timers_events_demo.py
 SATAY_DATA_DIR=.satay-demo python timers_events_demo.py
 ```
 
