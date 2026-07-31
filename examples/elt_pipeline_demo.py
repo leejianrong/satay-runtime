@@ -23,6 +23,8 @@ the only workaround available today: a task that returns an outcome instead of r
 
 Everything is local: the source files and the warehouse are written into the data dir, and
 time is a ``satay.testing.ManualClock`` so the retry backoff replays in zero wall clock.
+Nothing waiting on a manual clock moves until someone advances it, which is what
+``satay.testing.settle`` does around every drive below.
 
 By default the run lands in a throwaway temp directory, so this file is self-contained
 wherever you download it. Set ``SATAY_DATA_DIR`` (or pass a path as the first argument)
@@ -47,7 +49,7 @@ from satay.blobs import SPILL_THRESHOLD_BYTES
 from satay.config import DATA_DIR_ENV_VAR, blob_dir, db_path
 from satay.journal.events import EventType
 from satay.journal.store import SQLiteStore
-from satay.testing import FaultInjector, ManualClock, SeededRng, SimulatedCrash
+from satay.testing import FaultInjector, ManualClock, SeededRng, SimulatedCrash, settle
 
 # -- the shapes that travel through the pipeline ---------------------------------------
 #
@@ -441,27 +443,6 @@ def resolve_workdir() -> tuple[Path, bool]:
     return Path(tempfile.mkdtemp(prefix="satay-elt-")), False
 
 
-async def drive(factory: Any, clock: ManualClock, *, step: int = 61) -> Any:
-    """Await ``factory()``, advancing ``clock`` through every retry backoff.
-
-    Backoff sleeps go through the injected clock, so under a ``ManualClock`` nothing moves
-    until someone advances it. Same loop as ``drain`` in ``tests/conftest.py``.
-    """
-    task = asyncio.ensure_future(factory())
-    try:
-        for _ in range(500):
-            for _ in range(4):
-                await asyncio.sleep(0)  # let the drive reach its next suspension point
-            if task.done():
-                return await task
-            if clock.pending_sleepers:
-                clock.advance(step)
-    finally:
-        if not task.done():
-            task.cancel()
-    raise RuntimeError("the run never settled — is something waiting on real time?")
-
-
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
@@ -514,7 +495,7 @@ async def section_1_and_2(store: SQLiteStore, clock: ManualClock) -> tuple[str, 
     )
     run_id = handle.run_id
     try:
-        await drive(handle.result, clock)
+        await settle(handle.result, clock)
     except SimulatedCrash as exc:
         print(f"     worker died: {exc}")
 
@@ -528,7 +509,7 @@ async def section_1_and_2(store: SQLiteStore, clock: ManualClock) -> tuple[str, 
     print("   phase 2: resume the same run — only the unresolved sources run again")
     PHASE["n"] = 2
     resumed = satay.start(elt_pipeline, SOURCES, run_id=run_id, store=store, clock=clock)
-    report: PipelineReport = await drive(resumed.result, clock)
+    report: PipelineReport = await settle(resumed.result, clock)
     print(f"     status: {await resumed.status()}   run {run_id}\n")
 
     counts = warehouse_counts()
@@ -565,7 +546,7 @@ async def section_1_and_2(store: SQLiteStore, clock: ManualClock) -> tuple[str, 
         rng=SeededRng(7),
         effect_safety="warn",  # `strict` would refuse to schedule it at all
     )
-    await drive(careless.result, clock)
+    await settle(careless.result, clock)
     counts = warehouse_counts()
     bad_total, bad_distinct = counts["orders-careless"]
     good_total, good_distinct = counts[LOST_ACK_SOURCE]
@@ -628,7 +609,7 @@ async def section_4_and_5(store: SQLiteStore, clock: ManualClock) -> None:
     PHASE["n"] = 4
     doomed = satay.start(strict_extract, sources, store=store, clock=clock)
     try:
-        await drive(doomed.result, clock)
+        await settle(doomed.result, clock)
     except satay.WorkflowFailedError as exc:
         print(f"     the map raised {exc.error_type}: {exc.error_message}")
     print(f"     status: {await doomed.status()}   run {doomed.run_id}")
@@ -656,7 +637,7 @@ async def section_4_and_5(store: SQLiteStore, clock: ManualClock) -> None:
     print("\n5) the workaround: return an outcome instead of raising")
     PHASE["n"] = 5
     resilient = satay.start(resilient_extract, sources, store=store, clock=clock)
-    outcomes: list[Outcome] = await drive(resilient.result, clock)
+    outcomes: list[Outcome] = await settle(resilient.result, clock)
     good = [outcome for outcome in outcomes if outcome.ok]
     bad = [outcome for outcome in outcomes if not outcome.ok]
     print(f"     status: {await resilient.status()}   run {resilient.run_id}")

@@ -1,8 +1,9 @@
 """Pytest fixtures for the primary test seam (ADR-0011).
 
 Importable as a pytest plugin: add ``pytest_plugins = ["satay.testing.fixtures"]`` to a
-``conftest.py``. These provide the temp-store scaffolding and the determinism controls
-(manual clock, seeded RNG, fault injector) that the public-API E2E seam is driven with.
+``conftest.py``. These provide the temp-store scaffolding, the determinism controls
+(manual clock, seeded RNG, fault injector) that the public-API E2E seam is driven with,
+and ``drain`` — :func:`satay.testing.settle` for driving a run through backoff.
 
 The temp-store fixtures hand out *paths* only (a temp-file path and the ``:memory:``
 path) laid out per ADR-0017; tests open a real ``SQLiteStore`` on them, which creates and
@@ -13,8 +14,9 @@ stay import-clean without pytest.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,6 +24,7 @@ from satay.config import BLOB_DIR_NAME, DB_FILENAME
 from satay.testing.clock import ManualClock
 from satay.testing.faults import FaultInjector
 from satay.testing.rng import SeededRng
+from satay.testing.settle import settle
 
 #: Default seed for the seeded RNG fixture, so backoff jitter is reproducible.
 DEFAULT_TEST_SEED = 1234
@@ -57,6 +60,18 @@ def manual_clock() -> ManualClock:
 def seeded_rng() -> SeededRng:
     """A reproducibly seeded RNG for deterministic backoff jitter (ADR-0011, Q46)."""
     return SeededRng(DEFAULT_TEST_SEED)
+
+
+@pytest.fixture
+def drain() -> Callable[..., Awaitable[Any]]:
+    """:func:`satay.testing.settle`, as a fixture — drives an awaitable through backoff.
+
+    Hands back the importable function rather than re-implementing the loop, so the
+    fixture and the ``examples/`` scripts (which cannot use a fixture) cannot drift apart.
+    The fixture keeps its original name because that is what the existing call sites say;
+    new code can just ``from satay.testing import settle``.
+    """
+    return settle
 
 
 @pytest.fixture

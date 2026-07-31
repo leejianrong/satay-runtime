@@ -12,11 +12,13 @@ The examples own their determinism controls: each one injects a ``ManualClock`` 
 workflows can be exercised here in about a second of wall clock.
 
 :data:`EXAMPLES` is **discovered, not listed**, so a new example is covered the moment it
-lands: it has to exit 0 and leave a coherent journal behind, or this module fails.
+lands: it has to exit 0, leave a coherent journal behind, and stand on its own as a single
+downloadable file, or this module fails.
 """
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -166,13 +168,49 @@ async def test_example_runs_and_leaves_a_coherent_journal(name: str, tmp_path: P
 def test_example_is_self_contained_without_a_data_dir(name: str, tmp_path: Path) -> None:
     """With no ``SATAY_DATA_DIR`` and no argument, an example must leave the cwd alone.
 
-    That is the "curl it into any directory and run it" promise: the fallback is a
+    Half of the "curl it into any directory and run it" promise: the fallback is a
     throwaway temp dir, never a ``.satay`` scribbled into wherever you happened to be.
+    The other half — that the file needs no sibling file — is
+    :func:`test_example_imports_no_sibling_example_module`, because this one cannot see it.
     """
     stdout = run_example(name, data_dir=None, cwd=tmp_path)
 
     assert "temp dir" in stdout
     assert not (tmp_path / ".satay").exists(), f"{name} polluted the working directory"
+
+
+@pytest.mark.parametrize("name", EXAMPLES)
+def test_example_imports_no_sibling_example_module(name: str) -> None:
+    """Each example is ONE file: it may import ``satay`` and the stdlib, nothing local.
+
+    ``docs/RELEASING.md`` §4 and every cookbook page download a **single file** and run it
+    (`curl -fsSL -O .../examples/<file>.py`), so a shared ``examples/_helper.py`` would
+    break a user-facing, release-procedure-load-bearing promise.
+
+    This has to be a static check, and that is the whole reason it exists. Running the
+    examples cannot catch it: CPython puts the *script's own directory* on ``sys.path``, so
+    ``import _helper`` resolves here no matter what cwd the subprocess is given, and the
+    test above would stay green while a downloaded copy died on ``ModuleNotFoundError``.
+
+    If a future slice decides the duplication between examples is worth more than the
+    guarantee, that is a real decision someone may make — but it has to be made *here*,
+    by deleting this test on purpose, rather than by quietly adding an import (KAN-482).
+    """
+    source = (EXAMPLES_DIR / name).read_text()
+    siblings = {path.stem for path in EXAMPLES_DIR.glob("*.py")} - {Path(name).stem}
+
+    for node in ast.walk(ast.parse(source, filename=name)):
+        if isinstance(node, ast.ImportFrom):
+            assert node.level == 0, f"{name} uses a relative import; it must be standalone"
+            root = (node.module or "").split(".")[0]
+        elif isinstance(node, ast.Import):
+            root = node.names[0].name.split(".")[0]
+        else:
+            continue
+        assert root not in siblings, (
+            f"{name} imports the sibling example module {root!r}. Examples are downloaded "
+            "one file at a time (docs/RELEASING.md §4), so this breaks curl-and-run."
+        )
 
 
 def test_example_accepts_the_data_dir_as_an_argument(tmp_path: Path) -> None:
