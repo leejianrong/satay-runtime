@@ -1,9 +1,9 @@
 # Guarantees
 
 Satay executes tasks **at least once**. Not exactly once, because exactly-once execution of an
-effect that leaves the process is not something a runtime can promise. What it gives you
-instead is a stable key you can build exactly-once semantics on top of, plus a policy that
-shouts when you have not.
+effect that leaves the process is not something a runtime can promise. What it gives you instead is
+a stable key you can build exactly-once semantics on top of, plus a policy that shouts when you
+have not.
 
 ## Retries and backoff
 
@@ -15,14 +15,13 @@ async def fetch(url: str) -> dict:
     ...
 ```
 
-`retries=2` means up to three physical attempts. Each failure appends `TaskAttemptFailed`
-carrying the error and the delay before the next try, then the executor waits and appends a
-fresh `TaskAttemptStarted`. Exhausting the budget re-raises the last error, which becomes
+`retries=2` means up to three physical attempts. Each failure appends `TaskAttemptFailed` carrying
+the error and the delay before the next try, then the executor waits and appends a fresh
+`TaskAttemptStarted`. Exhausting the budget re-raises the last error, which becomes
 `WorkflowFailed`.
 
-The delay is capped exponential backoff with full jitter: the ceiling for failure *n* is
-`min(60, 1 × 2^(n-1))` seconds, and the actual wait is drawn uniformly from zero to that
-ceiling.
+The delay is capped exponential backoff with full jitter. The ceiling for failure *n* is
+`min(60, 1 × 2^(n-1))` seconds, and the actual wait is drawn uniformly from zero to that ceiling.
 
 | Failure | Ceiling | Actual wait |
 | --- | --- | --- |
@@ -32,17 +31,16 @@ ceiling.
 | 4 | 8s | random in [0, 8] |
 | 7 and beyond | 60s | random in [0, 60] |
 
-Full jitter rather than fixed backoff, so a hundred tasks failing on the same downstream
-outage do not retry in lockstep. Both the clock and the RNG are injected, which is how the
-test suite replays a retry schedule with no real delay.
+Full jitter rather than fixed backoff, so a hundred tasks failing on the same downstream outage do
+not retry in lockstep. Both the clock and the RNG are injected, which is how a test
+[replays a retry schedule with no real delay](tutorial/testing.md#pin-the-backoff-jitter).
 
-`timeout` is per attempt, in seconds. Exceeding it cancels the task body and fails that
-attempt with `TimeoutError`, which then counts against the retry budget like any other
-failure.
+`timeout` is per attempt, in seconds. Exceeding it cancels the task body and fails that attempt
+with `TimeoutError`, which then counts against the retry budget like any other failure.
 
-One subtlety in the resume path: only **recorded** failures consume retry budget. If the
-process dies between your effect landing and `TaskCompleted` being written, the resumed
-attempt number goes up but the budget does not shrink. A crash is not a failure.
+One subtlety in the resume path: only **recorded** failures consume retry budget. If the process
+dies between your effect landing and `TaskCompleted` being written, the resumed attempt number goes
+up but the budget does not shrink. A crash is not a failure.
 
 ## At-least-once, concretely
 
@@ -51,9 +49,9 @@ A task body can run more than once for a single logical call. Two ways:
 - A retry, after the body raised.
 - A crash between the body finishing its work and `TaskCompleted` reaching disk.
 
-The second one is the awkward case, because from inside the task nothing looks wrong. The
-charge went through, the email went out, and then the power went off before the journal
-learned about it. On resume there is no recorded result, so the task runs again.
+The second one is the awkward case, because from inside the task nothing looks wrong. The charge
+went through, the email went out, and then the power went off before the journal learned about it.
+On resume there is no recorded result, so the task runs again.
 
 ```mermaid
 flowchart LR
@@ -84,11 +82,11 @@ async def charge(cents: int) -> str:
 ```
 
 Two ways to use it, and both are legitimate. Pass it to a downstream API that accepts an
-idempotency key of its own, which every payment provider does. Or record it yourself in a table
-and check before acting.
+idempotency key of its own, which every payment provider does. Or record it yourself in a table and
+check before acting.
 
-`ctx` also carries `run_id`, `task_name`, `ordinal`, and `attempt`. `attempt` is genuinely
-useful in logs, because "this is attempt 3" explains a lot.
+`ctx` also carries `run_id`, `task_name`, `ordinal`, and `attempt`. Put `attempt` in your log
+lines, because "this is attempt 3" explains a lot.
 
 ## `effect_safety`
 
@@ -98,10 +96,10 @@ The runtime cannot tell whether your task talks to the outside world, so you tel
 @satay.task(side_effect=True, retries=2, idempotent=True)
 ```
 
-`side_effect=True` says this task does something the world notices. `idempotent=True` is a
-promise that you have keyed that effect on `ctx.idempotency_key`. A task that is
-side-effecting **and** retryable **and** not declared idempotent is the dangerous combination,
-and `effect_safety` is what happens when the runtime spots one:
+`side_effect=True` says this task does something the world notices. `idempotent=True` is a promise
+that you have keyed that effect on `ctx.idempotency_key`. A task that is side-effecting **and**
+retryable **and** not declared idempotent is the dangerous combination, and `effect_safety` is what
+happens when the runtime spots one:
 
 | Mode | Behaviour |
 | --- | --- |
@@ -109,21 +107,21 @@ and `effect_safety` is what happens when the runtime spots one:
 | `warn` | Logs a warning and runs it. The default. |
 | `strict` | Refuses at schedule time with `EffectSafetyError`. |
 
-Resolution order is the `effect_safety=` argument to `satay.start`, then
-`SATAY_EFFECT_SAFETY` in the environment, then `warn`.
+Resolution order is the `effect_safety=` argument to `satay.start`, then `SATAY_EFFECT_SAFETY` in
+the environment, then `warn`.
 
-`warn` is the default here because the flagged combination is a design smell rather than a
-present bug: the task may well be safe, the runtime just cannot tell. Promote it to `strict`
-in any environment where you would rather be told at schedule time than find out from a
-duplicate charge.
+`warn` is the default here because the flagged combination is a design smell rather than a present
+bug: the task may well be safe, the runtime just cannot tell. Promote it to `strict` in any
+environment where you would rather be told at schedule time than find out from a duplicate charge.
 
 !!! note "This setting does not cover replay divergence"
 
     Replay divergence has its own knob, the
     [nondeterminism policy](determinism.md#opting-out-while-you-iterate), which defaults to
-    `strict`. The two used to be one setting; they were split because a divergence is a
-    live wrong answer while an unguarded effect is a risk, and one default cannot serve
-    both. Changing one has no effect on the other.
+    `strict`. The two used to be one setting; they were split because a divergence is a live wrong
+    answer while an unguarded effect is a risk, and one default cannot serve both. Changing one has
+    no effect on the other. The [code-version stamp](studio.md#the-code-version-stamp) is a third
+    independent policy.
 
 ## See all three
 
@@ -160,7 +158,7 @@ async def charge(cents: int) -> str:
         charged.add(ctx.idempotency_key)
         print(f"  charge: applying the effect (attempt {ctx.attempt})")
     if ctx.attempt == 1:
-        raise RuntimeError("network died after the charge went through")
+        raise RuntimeError("the network died after the charge went through")
     return f"receipt-{cents}"
 
 
@@ -190,7 +188,7 @@ async def main() -> None:
     print("effect_safety=strict:")
     try:
         await satay.start(unsafe, 500, effect_safety="strict").result()
-    except Exception as exc:
+    except satay.EffectSafetyError as exc:
         print(f"  -> {type(exc).__name__}: {exc}")
 
 
@@ -213,19 +211,19 @@ effect_safety=strict:
   -> EffectSafetyError: effect_safety=strict rejects task 'unguarded': it is side-effecting and retryable but declares no idempotency or compensation strategy. Set @task(idempotent=True) or accept a ctx parameter and guard the effect with ctx.idempotency_key.
 ```
 
-The middle block is the one to stare at. `charge` ran twice, the effect happened once, and the
-key is what made the difference. In real code `charged` would be a database table rather than a
-`set`, since a `set` does not survive the process it lives in.
+The middle block is the one to stare at. `charge` ran twice, the effect happened once, and the key
+is what made the difference. In real code `charged` would be a database table rather than a `set`,
+since a `set` does not survive the process it lives in.
 
 ## Redaction
 
-Every read through the HTTP API and Studio passes through a redactor before it leaves the
-process. Any field whose name contains `password`, `passwd`, `secret`, `token`, `api_key`,
-`apikey`, `access_key`, `accesskey`, `private_key`, `credential`, `authorization`, or
-`session_token` has its value replaced with `***REDACTED***`, recursively through nested
-structures.
+Every read through the HTTP API and Studio passes through a redactor before it leaves the process.
+Any field whose name contains `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`,
+`access_key`, `accesskey`, `private_key`, `credential`, `authorization`, or `session_token` has its
+value replaced with `***REDACTED***`, recursively through nested structures.
 
 The list is deliberately narrow so structural keys survive: a `map` item's `key`, plus
-`code_version`, `event_id`, and `identity`, are never caught. Redaction is applied on read, not
-on write, so the raw value is still in `satay.db`. It stops a secret being rendered in a
-browser tab. It is not encryption at rest.
+`code_version`, `event_id`, and `identity`, are never caught.
+
+Redaction is applied on read, not on write, so the raw value is still in `satay.db`. It stops a
+secret being rendered in a browser tab. It is not encryption at rest.

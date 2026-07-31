@@ -1,86 +1,12 @@
-# Quickstart
+# First Steps
 
-By the end of this page you will have killed a running workflow with `Ctrl-C`, restarted it,
-and watched the task that had already finished get skipped. That is the whole product in one
-sitting.
+By the end of this page you will have killed a running workflow with `Ctrl-C`, restarted it, and
+watched the task that had already finished get skipped. That is the whole product in one sitting.
 
-## Install
+If you have not installed Satay yet, the [tutorial index](tutorial/index.md#install) has the
+one line you need.
 
-```bash
-pip install satay
-```
-
-Or with [uv](https://docs.astral.sh/uv/), which is what the project itself uses:
-
-```bash
-uv venv
-source .venv/bin/activate      # .venv\Scripts\activate on Windows
-uv pip install satay
-```
-
-Either way you get exactly one package. `satay` declares no runtime dependencies, so a
-`pip list` in a fresh environment shows `satay` and nothing else. The debugger UI and the
-HTTP API are a separate opt-in:
-
-```bash
-pip install 'satay[studio]'     # adds fastapi, uvicorn, pydantic, typer
-```
-
-Check it landed:
-
-```console
-$ satay --help
-usage: satay [-h] {runs,dev} ...
-
-Satay Runtime — local-first durable execution (core CLI).
-
-positional arguments:
-  {runs,dev}
-    runs      Inspect durable runs.
-    dev       (studio extra) Boot the full local dev stack.
-```
-
-!!! warning "This is an alpha"
-
-    `0.1.0a1` is the first published version. The runtime works and its suite is green, but
-    the public API can still change between alpha releases and nothing is deprecated
-    gracefully yet. Pin `satay==0.1.0a1` if you are building something you care about.
-
-## The one-command version
-
-From a clone of the repository, one target does the entire demo and then drops you into the
-debugger:
-
-```bash
-git clone https://github.com/leejianrong/satay-runtime
-cd satay-runtime
-make demo
-```
-
-It runs a two-task workflow, kills the worker right after the first task's `TaskCompleted`
-commits, resumes the same run id in a fresh worker, and proves with an execution counter
-that the first task was reused rather than re-run:
-
-```console
-phase 1: starting run dc00741f0c3c4d88adc140f44d4f2e3c
-phase 1: worker crashed — simulated crash after event 'TaskCompleted'
-phase 1: step_one executions so far = 1
-phase 1: step_two executions so far = 0
-
-phase 2: resuming run dc00741f0c3c4d88adc140f44d4f2e3c
-phase 2: final result = 4 (expected 4)
-phase 2: step_one executions = 1 (REUSED, still 1)
-phase 2: step_two executions = 1 (ran once)
-```
-
-Then it starts Satay Studio on the same journal so you can click through the timeline. Read
-the [Studio page](studio.md) before you open the URL, because the `?token=` on the end of it
-is not optional.
-
-The rest of this page is the same story written by hand, from a plain `pip install`, with a
-real interruption instead of a simulated one.
-
-## Write a two-task workflow
+## Create It
 
 Put this in `checkout.py`:
 
@@ -93,13 +19,13 @@ import satay
 
 @satay.task()
 async def charge(cents: int) -> str:
-    print("  charge: really running")
+    print("  charge: running for real")
     return f"receipt-{cents}"
 
 
 @satay.task()
 async def email_receipt(receipt: str) -> str:
-    print("  email_receipt: really running (sleeping 20s, press Ctrl-C now)")
+    print("  email_receipt: running for real (sleeping 20s, press Ctrl-C now)")
     await asyncio.sleep(20)
     return f"emailed {receipt}"
 
@@ -120,92 +46,122 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Three things are doing work here.
+Three things are doing work.
 
-`@satay.task()` marks a function whose result is worth recording. Calling it from inside a
-workflow becomes a **durable call**: the runtime checks the journal first and only executes
-the body if there is no recorded result. Called from anywhere else it is an ordinary async
-function, which keeps tasks unit-testable.
+**`@satay.task()`** marks a function whose result is worth recording. Call it from inside a
+workflow and it becomes a **durable call**: the runtime checks the journal first and executes
+the body only if there is no recorded result. Call it from anywhere else and it is an ordinary
+async function, which is what keeps tasks easy to unit-test.
 
-`@satay.workflow` marks the coroutine that orchestrates those calls. Its body is what gets
+!!! warning "The parentheses are required"
+
+    Write `@satay.task()`, not `@satay.task`. It is a decorator factory, because it takes
+    `retries`, `timeout`, `side_effect`, and `idempotent`. `@satay.workflow` is the opposite:
+    it takes no arguments, so write it bare.
+
+**`@satay.workflow`** marks the coroutine that orchestrates those calls. Its body is what gets
 re-executed on every resume.
 
-`satay.start(...)` creates or looks up a run and returns a handle. Nothing runs until you
-`await handle.result()`. Passing `run_id=` for an existing, unfinished run resumes it
-instead of starting a new one. The long `asyncio.sleep(20)` is only there to give you a
-window to hit `Ctrl-C` in.
+**`satay.start(...)`** creates or looks up a run and returns a `RunHandle`. It is a plain
+function, not a coroutine, so there is no `await` on it. Nothing runs until you
+`await handle.result()`. Passing `run_id=` for an existing unfinished run resumes it instead of
+starting a new one.
 
-## Kill it in the middle
+The twenty-second `asyncio.sleep` is only there to give you a window to press `Ctrl-C` in. In a
+workflow body it would be a bug, and [The Determinism Rule](determinism.md) explains why. Here
+it is inside a task, where sleeping is fine.
+
+## Run It, and Interrupt It
 
 ```console
 $ python checkout.py
-run_id: aeedd82980d741df9befdf9873ad3995
-  charge: really running
-  email_receipt: really running (sleeping 20s, press Ctrl-C now)
+run_id: 1d3015a1f1514d13b8aa930f445e7def
+  charge: running for real
+  email_receipt: running for real (sleeping 20s, press Ctrl-C now)
 ^C
+Traceback (most recent call last):
+  ...
+KeyboardInterrupt
 ```
 
-Python dumps a `KeyboardInterrupt` traceback, which is the point. The process is gone with
+Python dumps a `KeyboardInterrupt` traceback, which is what you want. The process is gone with
 the workflow half done. Copy the `run_id` off the first line.
 
-A `./.satay/` directory appeared next to your script. That is the journal (a single
-`satay.db` SQLite file, in WAL mode). Set `SATAY_DATA_DIR` or pass `--data-dir` to put it
-somewhere else.
+A `./.satay/` directory has appeared next to your script. That is the journal: one `satay.db`
+SQLite file in WAL mode, plus a `blobs/` directory for large payloads. Set `SATAY_DATA_DIR` or
+pass `--data-dir` to put it somewhere else.
 
-## Resume it
+## Resume It
 
 Same script, same run id:
 
 ```console
-$ python checkout.py aeedd82980d741df9befdf9873ad3995
-run_id: aeedd82980d741df9befdf9873ad3995
-  email_receipt: really running (sleeping 20s, press Ctrl-C now)
+$ python checkout.py 1d3015a1f1514d13b8aa930f445e7def
+run_id: 1d3015a1f1514d13b8aa930f445e7def
+  email_receipt: running for real (sleeping 20s, press Ctrl-C now)
 result: emailed receipt-1999
 ```
 
-`charge: really running` is missing, and that absence is the entire feature. The workflow
-body ran from its first line again, but when it reached `await charge(1999)` the engine
-found a recorded `TaskCompleted` at that position and returned the recorded value without
-calling your function. `email_receipt` had no recorded result, so it ran for real, finished
-this time, and the run completed.
+`charge: running for real` is missing, and that absence is the entire feature. The workflow body
+ran from its first line again, but when it reached `await charge(1999)` the engine found a
+recorded `TaskCompleted` at that position and returned the recorded value without calling your
+function. `email_receipt` had no recorded result, so it ran for real, finished this time, and the
+run completed.
 
-If a task charges a credit card, this is the difference between charging once and charging
-twice.
+If a task charges a credit card, this is the difference between charging once and charging twice.
 
-## Read the journal
+## Read the Journal
 
 The core CLI prints the timeline as text:
 
 ```console
-$ satay runs show aeedd82980d741df9befdf9873ad3995
-Run aeedd82980d741df9befdf9873ad3995 — 10 event(s)
-    1  2026-07-30T19:47:04.840477+00:00  WorkflowCreated  workflow=checkout code_version=src:cb74cc01bda0d791
-    2  2026-07-30T19:47:04.844887+00:00  TaskScheduled  task=charge ordinal=0
-    3  2026-07-30T19:47:04.849620+00:00  TaskAttemptStarted  task=charge ordinal=0 attempt=1
-    4  2026-07-30T19:47:04.853886+00:00  TaskCompleted  task=charge ordinal=0
-    5  2026-07-30T19:47:04.858401+00:00  TaskScheduled  task=email_receipt ordinal=0
-    6  2026-07-30T19:47:04.862877+00:00  TaskAttemptStarted  task=email_receipt ordinal=0 attempt=1
-⚡   7  2026-07-30T19:47:19.425655+00:00  WorkflowResumed
-    8  2026-07-30T19:47:19.447362+00:00  TaskAttemptStarted  task=email_receipt ordinal=0 attempt=2
-    9  2026-07-30T19:47:39.472772+00:00  TaskCompleted  task=email_receipt ordinal=0
-   10  2026-07-30T19:47:39.490775+00:00  WorkflowCompleted
+$ satay runs show 1d3015a1f1514d13b8aa930f445e7def
+Run 1d3015a1f1514d13b8aa930f445e7def — 10 event(s)
+    1  2026-07-31T07:45:17.981713+00:00  WorkflowCreated  workflow=checkout code_version=src:d76ca379f15909ae
+    2  2026-07-31T07:45:17.986717+00:00  TaskScheduled  task=charge ordinal=0
+    3  2026-07-31T07:45:17.991449+00:00  TaskAttemptStarted  task=charge ordinal=0 attempt=1
+    4  2026-07-31T07:45:17.995764+00:00  TaskCompleted  task=charge ordinal=0
+    5  2026-07-31T07:45:18.000502+00:00  TaskScheduled  task=email_receipt ordinal=0
+    6  2026-07-31T07:45:18.006617+00:00  TaskAttemptStarted  task=email_receipt ordinal=0 attempt=1
+⚡   7  2026-07-31T07:45:20.934322+00:00  WorkflowResumed
+    8  2026-07-31T07:45:20.945649+00:00  TaskAttemptStarted  task=email_receipt ordinal=0 attempt=2
+    9  2026-07-31T07:45:40.957327+00:00  TaskCompleted  task=email_receipt ordinal=0
+   10  2026-07-31T07:45:40.965280+00:00  WorkflowCompleted
 ```
 
-Read it top to bottom and the story is all there. `charge` was scheduled, attempted once,
-and completed. `email_receipt` was scheduled and attempted, then the log stops: that is
-where you pressed `Ctrl-C`. The `⚡` marks `WorkflowResumed`, the event that says a run came
-back from an interruption rather than waking up gracefully from a timer. `email_receipt`
-then gets `attempt=2` on the same `ordinal=0`, because it is the same logical task making a
-second physical attempt. `charge` never appears again.
+Read it top to bottom and the story is all there.
 
-`satay runs show` is deliberately frozen at this event subset. Timer, event, cancellation,
-and fork events render as bare type lines. Studio is the surface that renders everything.
+1. `charge` was scheduled, attempted once, and completed.
+2. `email_receipt` was scheduled and attempted, and then the log stops. That is where you
+   pressed `Ctrl-C`.
+3. The `⚡` marks `WorkflowResumed`, the event that says a run came back from an interruption
+   rather than waking up gracefully from a timer.
+4. `email_receipt` then gets `attempt=2` on the same `ordinal=0`, because it is the same logical
+   task making a second physical attempt.
+5. `charge` never appears again.
 
-## Then what
+!!! info "`satay runs show` is deliberately small"
 
-- [The determinism rule](determinism.md), which is the one thing that can make replay give
-  you a wrong answer. Read it before you write a third workflow.
-- [Concepts](concepts.md) for what `ordinal=0` means and why it matters.
-- [The five primitives](primitives.md) for sleeping, waiting on external events, and
-  fanning out.
-- [Studio and `satay dev`](studio.md) to click through the timeline instead of reading text.
+    It renders the events you see above and prints later ones (timers, external events,
+    cancellation, fork) as bare type lines with no payload summary. Studio is the surface that
+    renders everything. See [Limits](limits.md#tooling).
+
+## Recap
+
+You now know the shape of every Satay program:
+
+- `@satay.task()` on the functions whose results should survive a crash, with the parentheses.
+- `@satay.workflow` on the coroutine that calls them, bare.
+- `satay.start(wf, arg)` to get a handle, `await handle.result()` to drive it.
+- The same `run_id` to resume, which replays the body and reuses recorded results.
+- `satay runs show <run_id>` to see what happened.
+
+!!! tip "Want the same demo without typing it?"
+
+    The repository ships it as a script, with the crash simulated rather than pressed by hand,
+    so it is repeatable. See [Crash recovery](cookbook/crash-recovery.md) in the Cookbook.
+
+## Next
+
+[Concepts](concepts.md) explains what `ordinal=0` means, why the same task name appearing twice
+does not collide, and what the journal is actually storing.
