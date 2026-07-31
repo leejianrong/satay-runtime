@@ -3,7 +3,8 @@
 **All I/O, clocks, and randomness live in tasks. Never in a workflow body.**
 
 That is the whole rule, and it is the single most important thing to learn about Satay. Get
-it wrong and replay hands you a plausible, wrong answer.
+it wrong and replay refuses to finish the run — or, if you have turned the check down, hands
+you a plausible wrong answer instead.
 
 ## Why the rule exists
 
@@ -102,7 +103,7 @@ Start it and interrupt it while `slow_path` is sleeping:
 
 ```console
 $ python report.py
-run_id: e3f03462d4e14bc1a89f715b1541d47f
+run_id: 5d7301ecdd7845e98c7daa9adbb4ffbf
   slow_path: really running (sleeping 20s, press Ctrl-C now)
 ^C
 ```
@@ -111,49 +112,56 @@ Now resume with the environment variable set, standing in for any outside state 
 while the process was down:
 
 ```console
-$ REPORT_FAST=1 python report.py e3f03462d4e14bc1a89f715b1541d47f
-nondeterministic replay at durable-call position 0: journal expected 'slow_path' but replay issued 'fast_path' (the workflow changed between runs)
-run_id: e3f03462d4e14bc1a89f715b1541d47f
-  fast_path: really running
-result: 21
-```
-
-Read that carefully, because two things went wrong. The runtime spotted the divergence and
-said so precisely: position 0 recorded `slow_path`, the replay issued `fast_path`. And then
-it carried on and returned `21`. Had the run finished uninterrupted it would have returned
-`42`.
-
-That is the default. `effect_safety` ships as `warn`, which logs and continues, because in
-development a divergence is usually you editing a workflow and wanting to see what happens.
-
-## Making it fail loudly
-
-Set `effect_safety` to `strict` and the same divergence raises instead:
-
-```console
-$ SATAY_EFFECT_SAFETY=strict REPORT_FAST=1 python report.py b45a299b97a148ca8f85a84615b49b11
+$ REPORT_FAST=1 python report.py 5d7301ecdd7845e98c7daa9adbb4ffbf
+run_id: 5d7301ecdd7845e98c7daa9adbb4ffbf
 Traceback (most recent call last):
   ...
 satay.replay.nondeterminism.NondeterminismError: nondeterministic replay at durable-call position 0: journal expected 'slow_path' but replay issued 'fast_path' (the workflow changed between runs)
 ```
 
-Three ways to set it, highest priority first:
+The message names exactly what changed: position 0 recorded `slow_path`, the replay issued
+`fast_path`. Note what is *not* in that output — `fast_path` never printed. The check fires
+before the divergent call executes, so nothing was recorded and the run is still resumable
+once you fix the body.
+
+That is the default, and it has a name of its own: the **nondeterminism policy**, which
+ships as `strict`.
+
+## Opting out while you iterate
+
+Editing a workflow and re-driving an old run is a normal thing to do at a laptop, and a
+hard failure gets in the way. Set the policy to `warn` and the same divergence logs and
+carries on:
+
+```console
+$ SATAY_NONDETERMINISM=warn REPORT_FAST=1 python report.py 5d7301ecdd7845e98c7daa9adbb4ffbf
+run_id: 5d7301ecdd7845e98c7daa9adbb4ffbf
+nondeterministic replay at durable-call position 0: journal expected 'slow_path' but replay issued 'fast_path' (the workflow changed between runs)
+  fast_path: really running
+result: 21
+```
+
+Stare at the last line. The run reported success and returned `21`. Uninterrupted it would
+have returned `42`. That is the whole reason `warn` is not the default: a wrong answer that
+reports success is indistinguishable from a right one, and the warning scrolls away.
+
+Three ways to set the policy, highest priority first:
 
 | Where | How |
 | --- | --- |
-| Per run | `satay.start(wf, n, effect_safety="strict")` |
-| Per process | `SATAY_EFFECT_SAFETY=strict` |
-| Default | `warn` |
+| Per run | `satay.start(wf, n, nondeterminism="warn")` |
+| Per process | `SATAY_NONDETERMINISM=warn` |
+| Default | `strict` |
 
-`off` is the third mode. It silences the check entirely, which is worse than `warn` for no
-benefit. Use `strict` anywhere a wrong answer costs more than a crash, which is most places
-that are not a laptop.
+`off` is the third mode: same as `warn` without the log line. There is little reason to
+choose it over `warn`.
 
-!!! tip "Run strict outside development"
+!!! warning "This is not `effect_safety`"
 
-    `warn` is a good default for the edit-run-edit loop, and a bad default for anything that
-    touches money or sends mail. Set `SATAY_EFFECT_SAFETY=strict` in those environments and
-    treat a `NondeterminismError` as the bug report it is.
+    `effect_safety` is a separate setting covering a separate problem — unguarded
+    retryable side effects — and it keeps its `warn` default. See
+    [guarantees](guarantees.md#effect_safety). The two share an `off`/`warn`/`strict`
+    vocabulary and nothing else; changing one does not move the other.
 
 ## What the check does not catch
 
@@ -161,7 +169,7 @@ that are not a laptop.
 position or key. It does not compare arguments, and there is no static analysis of workflow
 bodies at all.
 
-So this goes undetected, even in `strict` mode:
+So this goes undetected, `strict` default and all:
 
 ```python
 @satay.workflow

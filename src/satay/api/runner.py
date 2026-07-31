@@ -22,7 +22,7 @@ from typing import Any
 
 from satay.api.registry import WorkflowDefinition
 from satay.api.run_handle import RunHandle, WorkflowFailedError
-from satay.config import EffectSafety
+from satay.config import EffectSafety, NondeterminismPolicy
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
 from satay.journal.events import (
@@ -56,6 +56,7 @@ class RunController:
         clock: Clock | None,
         rng: Rng | None,
         effect_safety: EffectSafety,
+        nondeterminism: NondeterminismPolicy,
     ) -> None:
         self._store = store
         self._run_id = run_id
@@ -67,6 +68,7 @@ class RunController:
         self._clock = clock
         self._rng = rng
         self._effect_safety = effect_safety
+        self._nondeterminism = nondeterminism
 
     def current_run_id(self) -> str:
         """The resolved run id (may change once a keyed start resolves, N13)."""
@@ -187,6 +189,7 @@ class RunController:
             clock=self._clock,
             rng=self._rng,
             effect_safety=self._effect_safety,
+            nondeterminism=self._nondeterminism,
         )
         await engine.drive(self._wf, self._input)
 
@@ -217,6 +220,7 @@ def build_run_handle(
     clock: Clock | None,
     rng: Rng | None,
     effect_safety: EffectSafety,
+    nondeterminism: NondeterminismPolicy,
 ) -> RunHandle:
     """Resolve the workflow definition and return a handle wired to a controller."""
     workflow_def = _resolve_workflow(workflow)
@@ -235,6 +239,7 @@ def build_run_handle(
         clock=clock,
         rng=rng,
         effect_safety=effect_safety,
+        nondeterminism=nondeterminism,
     )
     return RunHandle(resolved_run_id, controller)
 

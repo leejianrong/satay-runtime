@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from satay.config import EffectSafety
+from satay.config import EffectSafety, NondeterminismPolicy
 from satay.journal import Store
 from satay.journal.events import (
     TERMINAL_STATUSES,
@@ -141,6 +141,7 @@ async def apply_command(
     rng: Rng | None = None,
     injector: FaultInjector | None = None,
     effect_safety: EffectSafety = EffectSafety.WARN,
+    nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
 ) -> None:
     """Apply one drained command against the store (the worker is the sole writer)."""
     from satay.journal.events import utc_now
@@ -172,6 +173,7 @@ async def apply_command(
             rng=rng,
             injector=injector,
             effect_safety=effect_safety,
+            nondeterminism=nondeterminism,
         )
         return
 
@@ -193,6 +195,7 @@ async def apply_command(
         clock=clock,
         rng=rng,
         effect_safety=effect_safety,
+        nondeterminism=nondeterminism,
     )
     await handle.result()
 
@@ -303,6 +306,7 @@ async def apply_fork(
     rng: Rng | None = None,
     injector: FaultInjector | None = None,
     effect_safety: EffectSafety = EffectSafety.WARN,
+    nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
 ) -> None:
     """Seed the forked run then drive it, re-running the dropped downstream (N15).
 
@@ -341,6 +345,7 @@ async def apply_fork(
         clock=clock,
         rng=rng,
         effect_safety=effect_safety,
+        nondeterminism=nondeterminism,
     )
     await engine.drive(workflow_def, workflow_input)
 

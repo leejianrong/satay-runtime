@@ -3,12 +3,14 @@
 The replay engine is correct only for deterministic workflow bodies (ADR-0001). When
 a replayed durable call does not match the journal at its position, the engine raises
 :class:`NondeterminismError` carrying the *expected* versus *actual* call for a clear
-message. Policy follows the effect-safety mode (ADR-0003): ``warn`` (dev) logs and
-continues, ``strict`` raises. This is the same dev-warn / strict-fail policy model
-V7 reuses for code-version mismatch.
+message. Policy follows :class:`~satay.config.NondeterminismPolicy`, which defaults to
+``strict`` and raises (ADR-0003/0022); ``warn`` logs and continues, which lets the run
+finish with a wrong result, and ``off`` does so silently.
 
 :class:`EffectSafetyError` is raised in ``strict`` mode when a retryable
 ``side_effect=True`` task declares no idempotency or compensation strategy (ADR-0006).
+That is a **separate** setting, :class:`~satay.config.EffectSafety`, which keeps its
+``warn`` default; the two share a vocabulary but not a risk profile.
 """
 
 from __future__ import annotations

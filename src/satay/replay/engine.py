@@ -25,8 +25,10 @@ in that window would otherwise duplicate it (ADR-0004).
 
 **Nondeterminism (N9).** If a durable call's task name does not match the journal
 entry at that global position, the engine raises :class:`NondeterminismError`
-(expected-vs-actual). Policy follows the effect-safety mode (ADR-0003): ``strict``
-fails, ``warn`` logs and continues, ``off`` is silent.
+(expected-vs-actual). Policy follows the **nondeterminism policy** (ADR-0003/0022),
+which is separate from ``effect_safety`` and defaults to ``strict``: ``strict`` fails,
+``warn`` logs and lets the divergent call proceed as a fresh miss (so the run can
+complete with a wrong result), ``off`` does the same silently.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, get_type_hints
 
 from satay.api.registry import TaskDefinition, WorkflowDefinition
-from satay.config import EffectSafety
+from satay.config import EffectSafety, NondeterminismPolicy
 from satay.executor import LocalTaskExecutor, TaskExecutor
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
@@ -122,6 +124,7 @@ class ReplayEngine:
         rng: Rng | None = None,
         executor: TaskExecutor | None = None,
         effect_safety: EffectSafety = EffectSafety.WARN,
+        nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
     ) -> None:
         self._store = store
         self._run_id = run_id
@@ -129,6 +132,7 @@ class ReplayEngine:
         self._clock = clock or RealClock()
         self._rng = rng or SystemRng()
         self._effect_safety = effect_safety
+        self._nondeterminism = nondeterminism
         self._executor = executor or LocalTaskExecutor(
             self._commit, clock=self._clock, rng=self._rng
         )
@@ -653,6 +657,7 @@ class ReplayEngine:
             clock=self._clock,
             rng=self._rng,
             effect_safety=self._effect_safety,
+            nondeterminism=self._nondeterminism,
         )
         await child_engine.drive(workflow_def, workflow_input)
 
@@ -672,16 +677,24 @@ class ReplayEngine:
             clock=self._clock,
             rng=self._rng,
             effect_safety=self._effect_safety,
+            nondeterminism=self._nondeterminism,
         )
 
     # -- policy ------------------------------------------------------------------
 
     def _on_nondeterminism(self, position: int, *, expected: str, actual: str) -> None:
+        """Apply the nondeterminism policy to a replay divergence (N9, ADR-0022).
+
+        Consults the dedicated nondeterminism policy, **not** ``effect_safety``: strict
+        (the default) raises, warn logs, off is silent. Under warn/off the divergent call
+        falls through as a fresh miss and the run can complete with a wrong result.
+        """
         error = NondeterminismError(position=position, expected=expected, actual=actual)
-        if self._effect_safety is EffectSafety.STRICT:
+        if self._nondeterminism is NondeterminismPolicy.STRICT:
             raise error
-        if self._effect_safety is EffectSafety.WARN:
-            # Dev warns; the developer recovers by forking the run at a chosen point.
+        if self._nondeterminism is NondeterminismPolicy.WARN:
+            # Opt-in dev mode: warn; the developer recovers by forking the run at a
+            # chosen point. The divergent call still proceeds as a fresh miss below.
             _LOG.warning("%s", error)
         # off: silent. Fall through — the divergent call proceeds as a fresh miss.
 

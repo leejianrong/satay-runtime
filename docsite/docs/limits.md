@@ -44,9 +44,9 @@ using it is your job.
 Divergence is caught when a replay actually diverges, not when you write the bug.
 
 **It compares the schedule, not arguments.** Which task at which position or key. Resume a run
-with a different input and nothing complains, even in `strict` mode, while the run happily
-mixes results computed from both inputs. There is a
-[worked example](determinism.md#what-the-check-does-not-catch).
+with a different input and nothing complains, not even under the default `strict`
+nondeterminism policy, while the run happily mixes results computed from both inputs. There is
+a [worked example](determinism.md#what-the-check-does-not-catch).
 
 **No automatic migration across code versions.** Change a workflow with runs in flight and your
 options are to let them drain or to fork them. The code-version stamp tells you a run was

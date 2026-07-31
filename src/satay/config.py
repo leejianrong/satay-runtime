@@ -23,13 +23,37 @@ DATA_DIR_ENV_VAR = "SATAY_DATA_DIR"
 #: Environment variable providing the project-level effect-safety mode (ADR-0006).
 EFFECT_SAFETY_ENV_VAR = "SATAY_EFFECT_SAFETY"
 
+#: Environment variable providing the project-level nondeterminism policy (ADR-0022).
+NONDETERMINISM_ENV_VAR = "SATAY_NONDETERMINISM"
+
+
+def _parse_mode[ModeT: StrEnum](cls: type[ModeT], value: str | ModeT, *, setting: str) -> ModeT:
+    """Coerce ``value`` to a member of ``cls``, case- and whitespace-insensitively.
+
+    Shared by the two policy enums below, which have identical ``off``/``warn``/``strict``
+    vocabularies but different defaults. Each caller resolves its own default, so ``None``
+    never reaches here. Raises :class:`ValueError` naming ``setting`` and the valid modes.
+    """
+    if isinstance(value, cls):
+        return value
+    try:
+        return cls(str(value).strip().lower())
+    except ValueError:
+        valid = ", ".join(m.value for m in cls)
+        raise ValueError(f"unknown {setting} mode {value!r}; expected one of: {valid}") from None
+
 
 class EffectSafety(StrEnum):
-    """Project effect-safety mode (A10.2, ADR-0006).
+    """Project effect-safety mode — **unguarded side effects only** (A10.2, ADR-0006).
 
-    In :attr:`STRICT`, a retryable ``side_effect=True`` task must declare an
-    idempotency or compensation strategy or the runtime rejects it at schedule time.
-    :attr:`WARN` (the dev default) logs the same condition; :attr:`OFF` is silent.
+    Governs exactly one check: a retryable ``side_effect=True`` task that declares no
+    idempotency or compensation strategy. In :attr:`STRICT` the runtime rejects it at
+    schedule time; :attr:`WARN` (the dev default) logs the same condition; :attr:`OFF`
+    is silent.
+
+    It does **not** govern replay divergence. That is :class:`NondeterminismPolicy`,
+    a separate setting that defaults to ``strict`` (ADR-0022) — the two checks share a
+    vocabulary but not a risk profile, so they do not share a knob.
     """
 
     OFF = "off"
@@ -44,15 +68,39 @@ class EffectSafety(StrEnum):
         """
         if value is None:
             return cls.WARN
-        if isinstance(value, cls):
-            return value
-        try:
-            return cls(str(value).strip().lower())
-        except ValueError:
-            valid = ", ".join(m.value for m in cls)
-            raise ValueError(
-                f"unknown effect_safety mode {value!r}; expected one of: {valid}"
-            ) from None
+        return _parse_mode(cls, value, setting="effect_safety")
+
+
+class NondeterminismPolicy(StrEnum):
+    """Project policy for **replay divergence** (N9, ADR-0003/ADR-0022).
+
+    Applies when a replayed durable call's task name does not match the journal at that
+    position. In :attr:`STRICT` (the default) the runtime raises
+    :class:`~satay.replay.nondeterminism.NondeterminismError`; :attr:`WARN` logs and
+    lets the divergent call proceed as a fresh miss, which means **the run can complete
+    with a wrong result**; :attr:`OFF` does the same silently.
+
+    Strict is the default because a silently wrong answer is indistinguishable from a
+    right one. ``warn`` and ``off`` are explicit opt-ins for local iteration, where
+    editing a workflow body and watching what happens is the point.
+
+    Distinct from :class:`EffectSafety`, which governs unguarded side effects and keeps
+    its ``warn`` default.
+    """
+
+    OFF = "off"
+    WARN = "warn"
+    STRICT = "strict"
+
+    @classmethod
+    def parse(cls, value: str | NondeterminismPolicy | None) -> NondeterminismPolicy:
+        """Parse a policy, defaulting to :attr:`STRICT` when unset.
+
+        Raises :class:`ValueError` naming the valid modes for an unknown value.
+        """
+        if value is None:
+            return cls.STRICT
+        return _parse_mode(cls, value, setting="nondeterminism")
 
 
 def resolve_effect_safety(override: str | EffectSafety | None = None) -> EffectSafety:
@@ -63,6 +111,19 @@ def resolve_effect_safety(override: str | EffectSafety | None = None) -> EffectS
     if override is not None:
         return EffectSafety.parse(override)
     return EffectSafety.parse(os.environ.get(EFFECT_SAFETY_ENV_VAR))
+
+
+def resolve_nondeterminism(
+    override: str | NondeterminismPolicy | None = None,
+) -> NondeterminismPolicy:
+    """Resolve the nondeterminism policy: explicit ``override`` then env var then default.
+
+    The default is :attr:`NondeterminismPolicy.STRICT` (ADR-0022), so a divergent replay
+    raises unless something explicitly opted out.
+    """
+    if override is not None:
+        return NondeterminismPolicy.parse(override)
+    return NondeterminismPolicy.parse(os.environ.get(NONDETERMINISM_ENV_VAR))
 
 
 #: Filename of the SQLite database inside the data directory.

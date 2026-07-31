@@ -35,8 +35,9 @@ What works today:
   results are reused and only unfinished work re-executes.
 - **Execution guarantees.** Retries with capped exponential backoff and jittered delays
   off an injected clock, at-least-once task execution, runtime-derived idempotency keys
-  readable inside a task body, replay nondeterminism detection, and an `effect_safety`
-  policy that guards retryable side-effecting tasks.
+  readable inside a task body, replay nondeterminism detection (strict by default — a
+  divergent replay raises rather than returning a plausible wrong answer), and a separate
+  `effect_safety` policy that guards retryable side-effecting tasks.
 - **Time and events.** Durable `sleep`, `wait_for_event`/`send_event` over a persistent
   inbox, and a timer + event poll loop with FIFO delivery and event-wins-over-timeout.
 - **Composition.** `map`, `gather`, and `start_child`, each item a keyed durable call, so

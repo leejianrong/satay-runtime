@@ -27,6 +27,11 @@ developers tools to make external effects safe, and a policy for retries.
   / `strict`. In `strict`, a retryable `side_effect=True` task must declare an
   idempotency or compensation strategy.
 
+> **Scope narrowed by [ADR-0022](0022-nondeterminism-policy-split.md).** `effect_safety`
+> governs the unguarded-side-effect check above and **nothing else**; replay divergence
+> moved to a separate `nondeterminism` policy that defaults to `strict`. The modes and the
+> `warn` default of `effect_safety` itself are unchanged.
+
 Exactly-once for external systems is **not** claimed; safety depends on
 provider idempotency keys, DB transactions, transactional outbox, or explicit
 compensation. Full Saga/compensation orchestration is out of scope for the MVP.

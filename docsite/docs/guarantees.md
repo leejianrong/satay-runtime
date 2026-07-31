@@ -112,9 +112,18 @@ and `effect_safety` is what happens when the runtime spots one:
 Resolution order is the `effect_safety=` argument to `satay.start`, then
 `SATAY_EFFECT_SAFETY` in the environment, then `warn`.
 
-The same setting also controls what a replay divergence does, which is covered on
-[the determinism page](determinism.md#making-it-fail-loudly). One knob, two checks, same
-philosophy: warn while you are iterating, fail where a wrong answer is expensive.
+`warn` is the default here because the flagged combination is a design smell rather than a
+present bug: the task may well be safe, the runtime just cannot tell. Promote it to `strict`
+in any environment where you would rather be told at schedule time than find out from a
+duplicate charge.
+
+!!! note "This setting does not cover replay divergence"
+
+    Replay divergence has its own knob, the
+    [nondeterminism policy](determinism.md#opting-out-while-you-iterate), which defaults to
+    `strict`. The two used to be one setting; they were split because a divergence is a
+    live wrong answer while an unguarded effect is a risk, and one default cannot serve
+    both. Changing one has no effect on the other.
 
 ## See all three
 
