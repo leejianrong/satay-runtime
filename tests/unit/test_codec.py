@@ -190,6 +190,15 @@ MATRIX: list[tuple[str, Any, Any]] = [
     ("dataclass_with_generic_fields", Boxed, Boxed(Point(1, 2), [Label("t")], {"k": Point(0, 0)})),
     ("dataclass_with_none_field", Boxed, Boxed(None, [], {})),
     ("annotated_dataclass", Annotated[Point, "meta"], Point(1, 2)),
+    # A recorded None against an annotation that does not admit one. The first execution
+    # returned that None, so replay must too — an over-promising annotation must not
+    # become a resume-only crash, at any depth.
+    ("none_recorded_for_dataclass", Point, None),
+    ("none_recorded_as_dict_value", dict[str, Point], {"k": None}),
+    ("none_recorded_as_list_element", list[Point], [Point(1, 2), None]),
+    ("none_recorded_as_tuple_element", tuple[Point, int], (None, 7)),
+    ("none_recorded_for_dataclass_field", Segment, Segment(start=None, label="edge")),
+    ("none_recorded_for_enum", Color, None),
 ]
 
 
@@ -260,10 +269,33 @@ def test_fixed_tuple_arity_mismatch_fails_loudly() -> None:
         rehydrate([encode(Point(1, 2)), 7, 8], tuple[Point, int])
 
 
-def test_recorded_none_is_returned_for_a_container_annotation() -> None:
-    """The recorded value wins over an over-promising annotation: no resume-only crash."""
+def test_recorded_none_is_returned_whatever_the_annotation_says() -> None:
+    """The recorded value wins over an over-promising annotation: no resume-only crash.
+
+    A ``None`` is the one mismatch that is ordinary rather than pathological — a lookup
+    miss, an empty branch — so it passes through at every depth instead of raising.
+    """
     assert rehydrate(None, list[Point]) is None
     assert rehydrate(None, dict[str, Point]) is None
+    assert rehydrate(None, Point) is None
+    assert rehydrate(None, Color) is None
+    assert rehydrate(None, Point | Label) is None
+    assert rehydrate({"k": None}, dict[str, Point]) == {"k": None}
+    assert rehydrate([None], list[Point]) == [None]
+    assert rehydrate([{"k": None}], list[dict[str, Point]]) == [{"k": None}]
+
+
+def test_mismatched_non_none_container_value_still_fails_loudly() -> None:
+    """A *present* value of the wrong shape is a broken annotation, not a lookup miss.
+
+    Deliberate asymmetry with ``None`` above: falling back here would mean rehydrating
+    the sibling values of the same container into plain dicts, which is the KAN-474 bug
+    itself. The ``list[X]`` half of this already behaved this way on origin/main.
+    """
+    with pytest.raises(DecodeError):
+        rehydrate({"k": "not a Point"}, dict[str, Point])
+    with pytest.raises(DecodeError):
+        rehydrate([5], list[Point])
 
 
 def test_no_pickle_import_in_codec() -> None:

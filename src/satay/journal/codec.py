@@ -168,7 +168,16 @@ def rehydrate(data: Any, annotation: Any) -> Any:
     - datetime/timedelta: already decoded natively; returned as-is.
     - Parametrized generic (``list[X]``, ``dict[str, X]``, ``X | None``, ...): recurse
       into the element/value/arm annotations (see :func:`_rehydrate_generic`).
+    - A recorded ``None``: returned as ``None`` whatever the annotation says.
     """
+    if data is None:
+        # A recorded None is the truth even when the annotation does not admit one: the
+        # first execution returned None, so handing back None is what keeps the type the
+        # same across replay. Applies at every depth — a None element of a list[X], a
+        # None value in a dict[str, X], a None field of a dataclass — because an
+        # over-promising annotation must never become a resume-only crash (KAN-474).
+        return None
+
     if annotation is None or annotation is Any or _is_empty(annotation):
         return decode(data)
 
@@ -221,6 +230,8 @@ def _rehydrate_generic(data: Any, annotation: Any, origin: Any) -> Any:
     Where the annotation demands a reconstruction that cannot be performed, this raises
     :class:`DecodeError`: on the recovery path a loud failure beats a value of the wrong
     type (KAN-474).
+
+    ``data`` is never ``None`` here — :func:`rehydrate` returns that case early.
     """
     args = get_args(annotation)
 
@@ -229,9 +240,6 @@ def _rehydrate_generic(data: Any, annotation: Any, origin: Any) -> Any:
 
     if _is_union(origin):
         return _rehydrate_union(data, annotation, args)
-
-    if data is None:
-        return None  # the recorded value is the truth, even if the annotation says otherwise
 
     if origin in (list, tuple) and isinstance(data, list):
         return _rehydrate_sequence(data, annotation, origin, args)
@@ -286,9 +294,11 @@ def _rehydrate_mapping(data: dict[str, Any], annotation: Any, args: tuple[Any, .
 
 
 def _rehydrate_union(data: Any, annotation: Any, args: tuple[Any, ...]) -> Any:
-    """Rehydrate against a union, selecting the arm the recorded value belongs to."""
-    if data is None:
-        return None
+    """Rehydrate against a union, selecting the arm the recorded value belongs to.
+
+    A recorded ``None`` never reaches here (:func:`rehydrate` returns it early), so the
+    ``None`` arm of an ``X | None`` is only ever dropped from the candidate set.
+    """
     arms = [arm for arm in args if arm is not _NONE_TYPE]
     if not any(_needs_rehydration(arm) for arm in arms):
         return decode(data)  # nothing to reconstruct: the decoded value is already right

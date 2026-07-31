@@ -178,6 +178,30 @@ async def rt_wf_optional_union_of_containers(n: int) -> str:
 
 
 @task()
+async def rt_none_in_dict(n: int) -> dict[str, Batch]:
+    # A recorded None under a non-optional value annotation: a lookup miss, ordinary code.
+    # The first execution returns it, so the resumed attempt must too, not raise.
+    _ran("rt_none_in_dict")
+    return {"hit": Batch(rows=[Row(key=str(n))]), "miss": None}
+
+
+@workflow
+async def rt_wf_none_in_dict(n: int) -> str:
+    return _shape(await rt_none_in_dict(n))
+
+
+@task()
+async def rt_none_in_list(n: int) -> list[Row]:
+    _ran("rt_none_in_list")
+    return [Row(key=str(n)), None]
+
+
+@workflow
+async def rt_wf_none_in_list(n: int) -> str:
+    return _shape(await rt_none_in_list(n))
+
+
+@task()
 async def rt_hetero_tuple(n: int) -> tuple[Row, int]:
     _ran("rt_hetero_tuple")
     return (Row(key=str(n)), n)
@@ -206,6 +230,14 @@ CASES = [
         "list[Row]",
     ),
     ("rt_wf_hetero_tuple", rt_wf_hetero_tuple, 3, "rt_hetero_tuple", "tuple[Row,int]"),
+    (
+        "rt_wf_none_in_dict",
+        rt_wf_none_in_dict,
+        1,
+        "rt_none_in_dict",
+        "dict{hit:Batch,miss:NoneType}",
+    ),
+    ("rt_wf_none_in_list", rt_wf_none_in_list, 1, "rt_none_in_list", "list[Row,NoneType]"),
 ]
 
 
