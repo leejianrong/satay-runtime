@@ -138,8 +138,10 @@ return-annotation capture, no third-party dependency.
 Re-runs a workflow top-to-bottom on each drive, intercepts durable calls, resolves
 identity by call-site ordinal plus task name (or explicit `key=` for fan-out), and
 consults the journal: a hit returns the recorded result, a miss schedules execution.
-It raises `NondeterminismError` on divergence. Stack: pure Python asyncio. This is
-the heart of the system and has no external dependency by design.
+It raises `NondeterminismError` on divergence, under the `nondeterminism` policy, which
+is **strict by default** and is a separate setting from `effect_safety` (ADR-0022).
+Stack: pure Python asyncio. This is the heart of the system and has no external
+dependency by design.
 
 ### 3.3. Journal, codec, and persistence (A3)
 
@@ -203,7 +205,8 @@ with **pnpm** and a pinned Node LTS, styled with plain CSS and minimal routing, 
 
 Stamps each run with a code version (git commit, then dev string, then source hash)
 and enforces the mismatch policy on resume, plus the `effect_safety` checks on
-retryable side-effecting tasks. Stack: pure Python, using the local `git` binary or
+retryable side-effecting tasks. `effect_safety` covers those checks only;
+replay divergence is the separate `nondeterminism` policy (ADR-0022). Stack: pure Python, using the local `git` binary or
 `dulwich` when available and falling back to a source hash otherwise.
 
 ### 3.9. CLI and dev orchestrator (A9, U1)

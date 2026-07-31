@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from typing import Any, get_type_hints
 
 from satay.api.registry import REGISTRY, WorkflowDefinition
-from satay.config import EffectSafety
+from satay.config import EffectSafety, NondeterminismPolicy
 from satay.control.commands import CommandQueue, apply_command
 from satay.journal import Store
 from satay.journal.codec import rehydrate
@@ -60,6 +60,7 @@ class TimerEventWorker:
         rng: Rng | None = None,
         injector: FaultInjector | None = None,
         effect_safety: EffectSafety = EffectSafety.WARN,
+        nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
         interval: float = 1.0,
         commands: CommandQueue | None = None,
     ) -> None:
@@ -68,6 +69,7 @@ class TimerEventWorker:
         self._rng = rng
         self._injector = injector
         self._effect_safety = effect_safety
+        self._nondeterminism = nondeterminism
         self._interval = interval
         self._running = False
         #: The control-write command queue the worker drains each tick (V5, ADR-0012).
@@ -115,6 +117,7 @@ class TimerEventWorker:
                 rng=self._rng,
                 injector=self._injector,
                 effect_safety=self._effect_safety,
+                nondeterminism=self._nondeterminism,
             )
 
     # -- event delivery ----------------------------------------------------------
@@ -213,6 +216,7 @@ class TimerEventWorker:
             clock=self._clock,
             rng=self._rng,
             effect_safety=self._effect_safety,
+            nondeterminism=self._nondeterminism,
         )
         await engine.drive(workflow_def, workflow_input)
 

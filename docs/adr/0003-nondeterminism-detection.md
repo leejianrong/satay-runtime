@@ -26,10 +26,18 @@ Policy on the error follows the safety mode: **dev = warn + offer to fork**;
 **strict = hard-fail**. Static AST analysis is deferred as a possible post-MVP
 linter.
 
+> **Amended by [ADR-0022](0022-nondeterminism-policy-split.md).** The policy sentence above
+> is superseded: divergence policy is no longer the shared `effect_safety` mode, and it
+> defaults to **strict**, not warn. Warn-plus-fork survives as an explicit opt-in
+> (`nondeterminism="warn"` / `SATAY_NONDETERMINISM=warn`). Runtime-only detection and
+> everything else here stand.
+
 ## Consequences
 
 - Correct by construction: the journal is ground truth, and all divergence causes
   are caught (including env/config/data-driven ones static analysis can't see).
 - A latent nondeterminism bug may not surface until the first crash/recovery.
-- `NondeterminismError` is a public error type; its dev/strict behavior mirrors
-  the `effect_safety` split (ADR-0006) and code-version mismatch policy (ADR-0010).
+- `NondeterminismError` is a public error type. Its off/warn/strict *vocabulary* is shared
+  with `effect_safety` (ADR-0006) and the code-version mismatch policy (ADR-0010), but per
+  ADR-0022 it is a **separate setting with its own strict default** — the vocabulary is
+  shared, the knob is not.

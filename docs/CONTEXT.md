@@ -26,8 +26,9 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 | **Call-site ordinal** | The sequential position of a durable call within a workflow run, combined with the task-definition name, used to match a call to its journal entry. |
 | **Idempotency key** | A stable key Satay derives per logical task invocation, stable across retries and distinct across invocations, for making external effects safe. |
 | **Side-effecting task** | A task declared `side_effect=True`; subject to `effect_safety` policy. |
-| **effect_safety** | Project mode governing side-effect safety: `off` / `warn` (dev default) / `strict`. |
-| **NondeterminismError** | Raised when a replayed durable call does not match the journal (code changed, non-deterministic branch, reordered calls). |
+| **effect_safety** | Project mode governing **unguarded side effects only**: `off` / `warn` (dev default) / `strict`. Not replay divergence — see below (ADR-0022). |
+| **nondeterminism policy** | Project mode governing **replay divergence**: `off` / `warn` / `strict` (the default). Separate from `effect_safety` (ADR-0022). |
+| **NondeterminismError** | Raised when a replayed durable call does not match the journal (code changed, non-deterministic branch, reordered calls). Raised by default; `warn`/`off` are opt-ins. |
 | **Fork** | A new run branched from an earlier point of an existing run's journal; the original is never rewritten. |
 | **Code version** | The identifier recorded per run (git commit → dev-provided string → source hash) used to detect mismatch on resume. |
 | **TaskExecutor** | Internal interface through which task execution passes. MVP impl: `LocalTaskExecutor`. |
@@ -49,10 +50,10 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 |---|---|---|---|
 | D1 | Event-sourced replay execution model (re-run workflow, reuse journaled results) | Accepted | [ADR-0001](adr/0001-event-sourced-replay.md) |
 | D2 | Durable-call identity = call-site ordinal + task name; fan-out uses explicit `key=` | Accepted | [ADR-0002](adr/0002-durable-call-identity.md) |
-| D3 | Runtime-only nondeterminism detection → `NondeterminismError` (dev warn+fork / strict fail) | Accepted | [ADR-0003](adr/0003-nondeterminism-detection.md) |
+| D3 | Runtime-only nondeterminism detection → `NondeterminismError` (policy amended by D23) | Accepted | [ADR-0003](adr/0003-nondeterminism-detection.md) |
 | D4 | Append-only immutable journal as single source of truth; fork, never rewrite | Accepted | [ADR-0004](adr/0004-append-only-journal.md) |
 | D5 | JSON-compatible serialization, no pickle; typed rehydration via return annotations | Accepted | [ADR-0005](adr/0005-serialization-and-rehydration.md) |
-| D6 | Execution guarantees: at-least-once physical / once-recorded logical; stable idempotency keys; `effect_safety` modes; retry defaults | Accepted | [ADR-0006](adr/0006-execution-guarantees.md) |
+| D6 | Execution guarantees: at-least-once physical / once-recorded logical; stable idempotency keys; `effect_safety` modes (scope narrowed by D23); retry defaults | Accepted | [ADR-0006](adr/0006-execution-guarantees.md) |
 | D7 | Local-first single-process asyncio runtime, async-only, behind a `TaskExecutor` seam | Accepted | [ADR-0007](adr/0007-runtime-and-worker-model.md) |
 | D8 | Model/token/cost via `ctx` self-report; core ships no model adapters | Accepted | [ADR-0008](adr/0008-model-observability.md) |
 | D9 | Satay Studio = local web app over a JSON control/read API; events via store polling | Accepted | [ADR-0009](adr/0009-local-surfaces.md) |
@@ -69,6 +70,7 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 | D20 | Platform/release/tooling: Linux+macOS first-class (local disk only), Python 3.12/3.13; PyPI via OIDC; stdlib logging; hand-rolled retry; pytest-cov + optional hypothesis | Accepted | [ADR-0019](adr/0019-platform-release-and-tooling.md) |
 | D21 | Composite failure semantics: `map`/`gather`/`start_child` are fail-fast (a failed part raises through the composite, like native `await`); collect-style deferred post-MVP | Accepted | [ADR-0020](adr/0020-composite-failure-semantics.md) |
 | D22 | Event delivery: a matching event wins over a simultaneously-due `wait_for_event` timeout; multiple buffered matches consumed FIFO by `received_at` | Accepted | [ADR-0021](adr/0021-event-ordering-and-timeout-race.md) |
+| D23 | Replay-divergence policy split out of `effect_safety` into its own `nondeterminism` mode, defaulting to `strict`; `effect_safety` keeps its `warn` default and covers unguarded side effects only | Accepted | [ADR-0022](adr/0022-nondeterminism-policy-split.md) |
 | D-name | Product/package/CLI name **Satay**; debugger "Satay Studio" | Accepted (provisional) | — pending PyPI/domain/trademark |
 | D-license | **Apache-2.0** license | Accepted | — |
 | D-python | **Python 3.12+** minimum | Accepted | — |

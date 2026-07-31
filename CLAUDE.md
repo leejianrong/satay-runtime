@@ -19,13 +19,18 @@ signal that something is wrong.
 What is real now:
 
 - **Durable core + replay** (`replay/`): replay from the top over an append-only journal,
-  reusing recorded results; identity resolution and nondeterminism detection.
+  reusing recorded results; identity resolution and nondeterminism detection under a
+  `nondeterminism` policy (strict/warn/off) that is **strict by default** — a divergent
+  replay raises `NondeterminismError` (ADR-0022). It is a separate knob from
+  `effect_safety`; do not conflate them.
 - **SQLite journal** (`journal/`): `SQLiteStore` on raw stdlib `sqlite3`, versioned by
   `PRAGMA user_version` with forward-only migrations, WAL, per-run async writer lock.
 - **Execution guarantees** (`executor/`): retries with capped exponential backoff and
   full-jitter delays off the injected clock and RNG, at-least-once execution,
-  runtime-derived idempotency keys, and `effect_safety` (strict/warn/off) guarding
-  retryable `side_effect=True` tasks that are not declared `idempotent=True`.
+  runtime-derived idempotency keys, and `effect_safety` (strict/warn/off, **warn by
+  default**) guarding retryable `side_effect=True` tasks that are not declared
+  `idempotent=True`. It governs *only* that check — replay divergence is the separate
+  `nondeterminism` policy (ADR-0022).
 - **Time and events** (`timers/`): durable `sleep`, `wait_for_event`/`send_event` over a
   persistent inbox, and the timer + event poll loop (FIFO, event-wins-over-timeout).
 - **Composition** (`api/primitives.py`): `map`/`gather`/`start_child` as keyed durable
@@ -138,7 +143,7 @@ refuses a DB newer than the code).
 ## Pointers
 
 - `docs/ARCHITECTURE.md` §1–§2 — structure + system model
-- `docs/CONTEXT.md` — glossary + decision register D1–D22
+- `docs/CONTEXT.md` — glossary + decision register D1–D23
 - ADRs of record: 0011 (test seam), 0012 (co-hosting/single-writer), 0013 (packaging),
   0015 (toolchain), 0016 (core deps), 0017 (persistence), 0019 (platform/release)
 - `docs/SLICE-V*.md` — per-slice scope; V1 is the two-task crash-recovery headline

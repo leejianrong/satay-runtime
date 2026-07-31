@@ -16,7 +16,7 @@ from satay.journal.codec import encode
 from satay.replay.driver import CURRENT_DRIVER
 
 if TYPE_CHECKING:
-    from satay.config import EffectSafety
+    from satay.config import EffectSafety, NondeterminismPolicy
     from satay.journal import Store
     from satay.testing.clock import Clock
     from satay.testing.faults import FaultInjector
@@ -34,6 +34,7 @@ def start(
     clock: Clock | None = None,
     rng: Rng | None = None,
     effect_safety: str | EffectSafety | None = None,
+    nondeterminism: str | NondeterminismPolicy | None = None,
 ) -> RunHandle:
     """Create or look up a run and return its handle (N3).
 
@@ -47,13 +48,16 @@ def start(
 
     ``store`` / ``injector`` / ``clock`` / ``rng`` are the injectable test seam
     (ADR-0011); ``store`` defaults to the project-local ``./.satay`` SQLite database.
-    ``effect_safety`` overrides the project mode (``off``/``warn``/``strict``);
-    unset resolves from ``SATAY_EFFECT_SAFETY`` then the ``warn`` dev default.
+    ``effect_safety`` overrides the unguarded-side-effect mode (``off``/``warn``/
+    ``strict``); unset resolves from ``SATAY_EFFECT_SAFETY`` then the ``warn`` dev
+    default. ``nondeterminism`` overrides the **replay-divergence** policy (same three
+    values); unset resolves from ``SATAY_NONDETERMINISM`` then the ``strict`` default,
+    so a divergent replay raises unless you opt out (ADR-0022).
     """
     # Imported lazily: the runner pulls in the replay engine, and importing it at
     # module scope would form a cycle through ``satay.api``.
     from satay.api.runner import build_run_handle
-    from satay.config import resolve_effect_safety
+    from satay.config import resolve_effect_safety, resolve_nondeterminism
 
     resolved_store = store if store is not None else _default_store()
     return build_run_handle(
@@ -66,6 +70,7 @@ def start(
         clock=clock,
         rng=rng,
         effect_safety=resolve_effect_safety(effect_safety),
+        nondeterminism=resolve_nondeterminism(nondeterminism),
     )
 
 

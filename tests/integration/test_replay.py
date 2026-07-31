@@ -78,8 +78,9 @@ async def test_hit_reuses_recorded_result_without_reexecuting() -> None:
 async def test_determinism_guard_raises_on_task_name_collision() -> None:
     """A resume whose workflow issues a different task at a recorded position errors.
 
-    V2 upgrades the V1 guard to the public ``NondeterminismError``; under ``strict`` it
-    hard-fails (the default ``warn`` mode logs and continues — covered in the E2E tier).
+    V2 upgrades the V1 guard to the public ``NondeterminismError``, which the default
+    ``strict`` nondeterminism policy raises (ADR-0022). The opt-in ``warn``/``off`` modes
+    that log and continue are covered in the E2E tier.
     """
     from satay.api import NondeterminismError
 
@@ -96,7 +97,7 @@ async def test_determinism_guard_raises_on_task_name_collision() -> None:
 
     # Resume the SAME run_id with a workflow that issues ri_beta first — a different
     # task name at the recorded position 0.
-    resumed = start(ri_beta_first, 1, run_id=handle.run_id, store=store, effect_safety="strict")
+    resumed = start(ri_beta_first, 1, run_id=handle.run_id, store=store, nondeterminism="strict")
     with pytest.raises(NondeterminismError, match="nondeterministic"):
         await resumed.result()
     store.close()

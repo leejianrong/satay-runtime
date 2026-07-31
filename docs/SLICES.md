@@ -56,8 +56,8 @@ the primary test seam.
 - **Demo:** A task that fails twice then succeeds shows 3 attempts in the
   timeline; a task interrupted after its side effect re-runs on restart; a
   workflow whose body was edited to reorder calls raises `NondeterminismError`
-  (warn in dev, fail in strict); `effect_safety=strict` rejects an unguarded
-  retryable side-effecting task.
+  (strict by default since ADR-0022; `warn`/`off` are opt-ins); `effect_safety=strict`
+  rejects an unguarded retryable side-effecting task.
 - **Acceptance:** Attempts recorded and shown; stable idempotency key across
   retries and distinct across invocations; divergent replay raises the typed
   error with expected-vs-actual; strict-mode enforcement works.
