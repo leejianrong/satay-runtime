@@ -48,7 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     # command in the studio extra (ADR-0016), so `main` intercepts the verb before argparse
     # parses it and forwards the remaining args to that command.
     subcommands.add_parser(
-        "dev", help="(studio extra) Boot the full local dev stack.", add_help=False
+        "dev",
+        help="(studio extra) Boot the local dev stack; --app MODULE imports your workflows.",
+        add_help=False,
     )
 
     return parser

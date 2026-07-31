@@ -58,9 +58,11 @@ written by different code; it does nothing about it.
 cancellation, and fork events render as bare type lines with no payload summary. Studio renders
 everything, and widening the text renderer is out of scope.
 
-**`satay dev` does not import your code.** Its workflow registry is empty, so it cannot start or
-wake runs of your workflows. It reads journals and writes control commands. See
-[Studio and `satay dev`](studio.md#satay-dev-cannot-run-your-workflows).
+**`satay dev` only runs the workflows you name.** It imports the modules passed to `--app` (or
+listed under `[tool.satay] app`), and nothing else — with neither, its registry is empty and it
+cannot start or wake runs of your workflows, only read journals and write control commands. It
+says which it is at boot. See
+[Studio and `satay dev`](studio.md#telling-satay-dev-where-your-workflows-live).
 
 **The local surface guard is not network authentication.** Session token, `Origin`/`Host`
 allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a shared host
