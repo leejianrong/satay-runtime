@@ -23,6 +23,15 @@ short-circuits the drive (the workflow is not re-run and no second terminal even
 appended), because the terminal event commits *before* the run status flips and a crash
 in that window would otherwise duplicate it (ADR-0004).
 
+**Derived state is repaired, not re-created (ADR-0004).** Every durable write commits its
+journal event *first* and derives side-table rows (``runs.status``, ``timers``) from it, so
+a crash can leave the side table lagging the journal but never leading it. Resume therefore
+guards each write on *its own* recorded presence and completes whichever writes are
+missing. Concretely, a recorded ``TimerCreated`` whose ``timers`` row was lost to a crash
+has that row rebuilt from the recorded payload — idempotently, keyed on the journal's
+``timer_id`` — instead of the whole park being skipped as already done, which used to leave
+a created timer with no row for the poll loop to fire and a run parked forever (KAN-443).
+
 **Nondeterminism (N9).** If a durable call's task name does not match the journal
 entry at that global position, the engine raises :class:`NondeterminismError`
 (expected-vs-actual). Policy follows the **nondeterminism policy** (ADR-0003/0022),
@@ -39,7 +48,7 @@ import logging
 import traceback
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, get_type_hints
 
 from satay.api.registry import TaskDefinition, WorkflowDefinition
@@ -161,12 +170,16 @@ class ReplayEngine:
         #: (``sleep`` / ``event:<type>``). Kept separate from task ordinals: primitives
         #: append no ``TaskScheduled`` and are outside the task nondeterminism check.
         self._primitive_resolver = IdentityResolver()
-        #: Timer identities that already have a recorded ``TimerCreated`` → kind.
-        self._timers_created: dict[str, TimerKind] = {}
+        #: Timer identities with a recorded ``TimerCreated`` → the payload it recorded.
+        #: The payload is kept whole (not just the kind) because it carries everything
+        #: needed to rebuild the derived ``timers`` row on resume (KAN-443).
+        self._timers_created: dict[str, dict[str, Any]] = {}
         #: Timer identities with a recorded ``TimerFired`` → kind (a resolved wait/sleep).
         self._timers_fired: dict[str, TimerKind] = {}
         #: Wait identities with a recorded ``EventWaitStarted`` (already parked once).
         self._waits_started: set[str] = set()
+        #: Identities whose park is already recorded by a ``WorkflowWaiting``.
+        self._waiting_recorded: set[str] = set()
         #: Wait identities with a recorded ``ExternalEventReceived`` → encoded event ref.
         self._events_received: dict[str, Any] = {}
 
@@ -203,11 +216,15 @@ class ReplayEngine:
                 identity = CallIdentity.from_payload(payload)
                 self._children_scheduled[identity] = payload["child_run_id"]
             elif event.type is EventType.TIMER_CREATED:
-                self._timers_created[payload["identity"]] = TimerKind(payload["kind"])
+                self._timers_created[payload["identity"]] = dict(payload)
             elif event.type is EventType.TIMER_FIRED:
                 self._timers_fired[payload["identity"]] = TimerKind(payload["kind"])
             elif event.type is EventType.EVENT_WAIT_STARTED:
                 self._waits_started.add(payload["identity"])
+            elif event.type is EventType.WORKFLOW_WAITING:
+                parked = payload.get("identity")
+                if isinstance(parked, str):
+                    self._waiting_recorded.add(parked)
             elif event.type is EventType.EXTERNAL_EVENT_RECEIVED:
                 self._events_received[payload["identity"]] = payload["event_ref"]
 
@@ -267,6 +284,63 @@ class ReplayEngine:
 
     # -- durable primitives (V3, N5) ---------------------------------------------
 
+    async def _create_timer(
+        self, *, kind: TimerKind, identity: str, duration: timedelta
+    ) -> dict[str, Any]:
+        """Record a new timer: append ``TimerCreated``, then insert its derived row.
+
+        The journal event is committed **first** and the ``timers`` row is derived from
+        it (ADR-0004). That ordering is deliberate and must not be inverted: the row may
+        therefore *lag* the journal after a crash, but it can never *lead* it, so a
+        recorded ``TimerCreated`` is always enough to rebuild the row. Returns the
+        recorded payload so the caller can reference the ``timer_id`` it minted.
+        """
+        payload: dict[str, Any] = {
+            "timer_id": uuid.uuid4().hex,
+            "kind": kind.value,
+            "identity": identity,
+            "fire_at": (self._clock.now() + duration).isoformat(),
+            "duration_seconds": duration.total_seconds(),
+        }
+        await self._commit(
+            Event(
+                run_id=self._run_id,
+                type=EventType.TIMER_CREATED,
+                payload=payload,
+                ts=self._clock.now(),
+            )
+        )
+        self._timers_created[identity] = payload
+        await self._ensure_timer_row(payload)
+        return payload
+
+    async def _ensure_timer_row(self, recorded: dict[str, Any]) -> None:
+        """Insert the ``timers`` row a recorded ``TimerCreated`` implies (idempotent).
+
+        KAN-443: ``TimerCreated`` commits *before* its row, so a crash in that window
+        left a timer the journal had created with **no row for the poll loop to fire** —
+        and resume, seeing the recorded event, treated the timer as created, skipped the
+        block, and re-parked. Nothing ever inserted the row and the run waited forever.
+
+        The journal is the single source of truth and ``timers`` is derived from it
+        (ADR-0004), which is the KAN-394 precedent — an idempotent repair on resume, not
+        a transaction coupling the append to a side table. ``add_timer`` is
+        ``INSERT OR IGNORE`` on ``timer_id``, and the ``timer_id`` comes from the journal
+        rather than a fresh ``uuid4``, so repairing any number of times converges on
+        exactly one row, and an already-``fired``/``discarded`` row is left settled.
+        """
+        await self._store.add_timer(
+            TimerRecord(
+                timer_id=recorded["timer_id"],
+                run_id=self._run_id,
+                kind=TimerKind(recorded["kind"]),
+                identity=recorded["identity"],
+                fire_at=datetime.fromisoformat(recorded["fire_at"]),
+                status=TimerStatus.PENDING,
+                created_at=self._clock.now(),
+            )
+        )
+
     async def durable_sleep(self, duration: timedelta) -> None:
         """Durable sleep: hit (``TimerFired``) returns; miss creates a timer and parks.
 
@@ -274,40 +348,25 @@ class ReplayEngine:
         the injected clock) plus a ``timers`` row and ``WorkflowWaiting``, then raises
         :class:`WorkflowParked` to release the run. On the resolving ``TimerFired`` the
         worker re-drives and this call is a journal hit that returns.
+
+        Each write is guarded by *its own* recorded presence in the journal, so a resume
+        after a crash part-way through completes whichever writes are missing rather than
+        skipping the lot: an already-recorded ``TimerCreated`` has its derived row
+        repaired (KAN-443) at the ``fire_at`` the journal recorded, so the sleep keeps its
+        original deadline instead of silently restarting from resume time.
         """
         identity = f"sleep#{self._primitive_resolver.next('sleep').ordinal}"
 
         if identity in self._timers_fired:
             return None  # hit: the timer already fired — the sleep is over.
 
-        if identity not in self._timers_created:
-            fire_at = self._clock.now() + duration
-            timer_id = uuid.uuid4().hex
-            await self._commit(
-                Event(
-                    run_id=self._run_id,
-                    type=EventType.TIMER_CREATED,
-                    payload={
-                        "timer_id": timer_id,
-                        "kind": TimerKind.SLEEP.value,
-                        "identity": identity,
-                        "fire_at": fire_at.isoformat(),
-                        "duration_seconds": duration.total_seconds(),
-                    },
-                    ts=self._clock.now(),
-                )
-            )
-            await self._store.add_timer(
-                TimerRecord(
-                    timer_id=timer_id,
-                    run_id=self._run_id,
-                    kind=TimerKind.SLEEP,
-                    identity=identity,
-                    fire_at=fire_at,
-                    status=TimerStatus.PENDING,
-                    created_at=self._clock.now(),
-                )
-            )
+        recorded = self._timers_created.get(identity)
+        if recorded is None:
+            await self._create_timer(kind=TimerKind.SLEEP, identity=identity, duration=duration)
+        else:
+            await self._ensure_timer_row(recorded)
+
+        if identity not in self._waiting_recorded:
             await self._commit(
                 Event(
                     run_id=self._run_id,
@@ -316,6 +375,7 @@ class ReplayEngine:
                     ts=self._clock.now(),
                 )
             )
+            self._waiting_recorded.add(identity)
         raise WorkflowParked
 
     async def durable_wait_for_event(
@@ -360,36 +420,25 @@ class ReplayEngine:
             return rehydrate(match.payload_ref, annotation)
 
         # No matching event yet: start waiting (once) and park.
+        #
+        # The timeout timer is guarded by its *own* recorded ``TimerCreated``, not by the
+        # ``EventWaitStarted`` that commits after it (KAN-443). Under the old shared guard
+        # a crash between the two re-entered this block on resume and minted a *second*
+        # timeout timer: a duplicate ``TimerCreated`` for one wait (ADR-0004) whose
+        # deadline had slid forward to resume time, quietly extending the timeout the
+        # author asked for (ADR-0021).
+        timeout_timer_id: str | None = None
+        if timeout is not None:
+            recorded_timeout = self._timers_created.get(identity)
+            if recorded_timeout is None:
+                recorded_timeout = await self._create_timer(
+                    kind=TimerKind.EVENT_TIMEOUT, identity=identity, duration=timeout
+                )
+            else:
+                await self._ensure_timer_row(recorded_timeout)
+            timeout_timer_id = recorded_timeout["timer_id"]
+
         if identity not in self._waits_started:
-            timeout_timer_id: str | None = None
-            if timeout is not None:
-                timeout_timer_id = uuid.uuid4().hex
-                fire_at = self._clock.now() + timeout
-                await self._commit(
-                    Event(
-                        run_id=self._run_id,
-                        type=EventType.TIMER_CREATED,
-                        payload={
-                            "timer_id": timeout_timer_id,
-                            "kind": TimerKind.EVENT_TIMEOUT.value,
-                            "identity": identity,
-                            "fire_at": fire_at.isoformat(),
-                            "duration_seconds": timeout.total_seconds(),
-                        },
-                        ts=self._clock.now(),
-                    )
-                )
-                await self._store.add_timer(
-                    TimerRecord(
-                        timer_id=timeout_timer_id,
-                        run_id=self._run_id,
-                        kind=TimerKind.EVENT_TIMEOUT,
-                        identity=identity,
-                        fire_at=fire_at,
-                        status=TimerStatus.PENDING,
-                        created_at=self._clock.now(),
-                    )
-                )
             await self._commit(
                 Event(
                     run_id=self._run_id,
@@ -403,6 +452,9 @@ class ReplayEngine:
                     ts=self._clock.now(),
                 )
             )
+            self._waits_started.add(identity)
+
+        if identity not in self._waiting_recorded:
             await self._commit(
                 Event(
                     run_id=self._run_id,
@@ -416,6 +468,7 @@ class ReplayEngine:
                     ts=self._clock.now(),
                 )
             )
+            self._waiting_recorded.add(identity)
         raise WorkflowParked
 
     # -- composite primitives (V4, N5/A6) ---------------------------------------
