@@ -11,6 +11,16 @@ model via ``model_validate`` (duck-typed — Pydantic is *not* a core dependency
 dataclass by field reconstruction, an enum/datetime/timedelta by its native
 constructor, falling back to the decoded JSON value (typically a dict) when the
 annotation is absent.
+
+Rehydration recurses through parametrized annotations — ``list[X]``, ``tuple[X, Y]``,
+``dict[str, X]``, ``X | None``, ``X | Y`` and any nesting of them — so a **resumed**
+value has the same Python type as the **first-execution** value (KAN-474). Union arms
+are discriminated by the ``"type"`` qualname the encoder records on tagged values when
+that tag is still present, and by encoded shape and field names once it is not (the
+journal store decodes payloads on read, so the replay path sees decoded data). An
+annotation whose reconstruction cannot be resolved raises :class:`DecodeError` naming
+the annotation, rather than silently degrading to a plain dict on the recovery path
+only.
 """
 
 from __future__ import annotations
@@ -18,11 +28,16 @@ from __future__ import annotations
 import dataclasses
 import enum
 import json
+import types
+import typing
 from datetime import datetime, timedelta
 from typing import Any, get_args, get_origin, get_type_hints
 
 #: The discriminator key marking a tagged (non-JSON-native) value.
 TAG_KEY = "$satay"
+
+#: ``type(None)``, the arm ``X | None`` adds to a union.
+_NONE_TYPE = type(None)
 
 
 class EncodeError(TypeError):
@@ -151,14 +166,25 @@ def rehydrate(data: Any, annotation: Any) -> Any:
     - Dataclass: reconstruct from field values, recursing on nested annotations.
     - Enum: look up by value.
     - datetime/timedelta: already decoded natively; returned as-is.
+    - Parametrized generic (``list[X]``, ``dict[str, X]``, ``X | None``, ...): recurse
+      into the element/value/arm annotations (see :func:`_rehydrate_generic`).
+    - A recorded ``None``: returned as ``None`` whatever the annotation says.
     """
+    if data is None:
+        # A recorded None is the truth even when the annotation does not admit one: the
+        # first execution returned None, so handing back None is what keeps the type the
+        # same across replay. Applies at every depth — a None element of a list[X], a
+        # None value in a dict[str, X], a None field of a dataclass — because an
+        # over-promising annotation must never become a resume-only crash (KAN-474).
+        return None
+
     if annotation is None or annotation is Any or _is_empty(annotation):
         return decode(data)
 
     origin = get_origin(annotation)
     if origin is not None:
-        # Generic alias (list[X], dict[str, X], X | None, ...). Decode structurally;
-        # recurse into element annotations where it is unambiguous.
+        # Generic alias (list[X], dict[str, X], X | None, ...): recurse into the
+        # element/value/arm annotations so nested types are reconstructed too.
         return _rehydrate_generic(data, annotation, origin)
 
     if not isinstance(annotation, type):
@@ -178,7 +204,9 @@ def rehydrate(data: Any, annotation: Any) -> Any:
         return validate(raw)
 
     if dataclasses.is_dataclass(annotation):
-        raw = _raw_fields(data)
+        # Fields are recursed over *still encoded*, so nested tags (and therefore union
+        # discrimination) survive into the recursive rehydrate call.
+        raw = _encoded_fields(data)
         hints = get_type_hints(annotation)
         kwargs = {}
         for f in dataclasses.fields(annotation):
@@ -191,19 +219,258 @@ def rehydrate(data: Any, annotation: Any) -> Any:
 
 
 def _rehydrate_generic(data: Any, annotation: Any, origin: Any) -> Any:
+    """Rehydrate a parametrized annotation by recursing into its arguments.
+
+    Handles ``Annotated[X, ...]`` (unwrapped), unions in both spellings
+    (``X | None`` and ``typing.Optional[X]``/``typing.Union[X, Y]``), ``list[X]``,
+    ``tuple[X, Y]``/``tuple[X, ...]`` and ``dict[str, X]``, nested to any depth.
+
+    Where the recorded data does not match the annotation's shape, the *decoded* value is
+    returned — it is what the first execution produced, so parity across replay is kept.
+    Where the annotation demands a reconstruction that cannot be performed, this raises
+    :class:`DecodeError`: on the recovery path a loud failure beats a value of the wrong
+    type (KAN-474).
+
+    ``data`` is never ``None`` here — :func:`rehydrate` returns that case early.
+    """
     args = get_args(annotation)
-    if origin in (list, tuple) and args and isinstance(data, list):
-        elem = args[0]
-        return [rehydrate(item, elem) for item in data]
+
+    if hasattr(annotation, "__metadata__") and args:
+        return rehydrate(data, args[0])  # Annotated[X, ...] rehydrates as X
+
+    if _is_union(origin):
+        return _rehydrate_union(data, annotation, args)
+
+    if origin in (list, tuple) and isinstance(data, list):
+        return _rehydrate_sequence(data, annotation, origin, args)
+
+    if origin is dict and len(args) == 2 and isinstance(data, dict) and data.get(TAG_KEY) is None:
+        return _rehydrate_mapping(data, annotation, args)
+
+    if _needs_rehydration(annotation):
+        raise DecodeError(
+            f"cannot rehydrate a recorded {type(data).__name__!r} against the annotation "
+            f"{_annotation_name(annotation)}; the runtime would otherwise hand back a "
+            f"plain value of the wrong type on resume only"
+        )
     return decode(data)
 
 
+def _rehydrate_sequence(
+    data: list[Any], annotation: Any, origin: Any, args: tuple[Any, ...]
+) -> Any:
+    """Rehydrate a JSON array against ``list[X]`` or ``tuple[...]``.
+
+    A ``tuple`` annotation reconstructs a real ``tuple`` (the first execution returned
+    one; the encoder flattens it to a JSON array), element-wise for the fixed-length
+    heterogeneous spelling and uniformly for ``tuple[X, ...]``.
+    """
+    if origin is tuple:
+        if len(args) == 2 and args[1] is Ellipsis:
+            return tuple(rehydrate(item, args[0]) for item in data)
+        if len(args) == len(data):
+            return tuple(rehydrate(item, arg) for item, arg in zip(data, args, strict=True))
+        if _needs_rehydration(annotation):
+            raise DecodeError(
+                f"recorded array of {len(data)} element(s) does not match the arity of "
+                f"{_annotation_name(annotation)}; cannot rehydrate its elements"
+            )
+        return tuple(decode(item) for item in data)
+
+    elem = args[0] if args else None
+    return [rehydrate(item, elem) for item in data]
+
+
+def _rehydrate_mapping(data: dict[str, Any], annotation: Any, args: tuple[Any, ...]) -> Any:
+    """Rehydrate a JSON object against ``dict[K, V]``, recursing over the *values*."""
+    key_type, value_type = args
+    if data and not _is_json_key_type(key_type):
+        raise DecodeError(
+            f"cannot rehydrate {_annotation_name(annotation)}: JSON object keys are always "
+            f"strings, so a {_annotation_name(key_type)} key cannot be restored (encode() "
+            f"rejects non-string dict keys for the same reason) — declare str keys"
+        )
+    return {k: rehydrate(v, value_type) for k, v in data.items()}
+
+
+def _rehydrate_union(data: Any, annotation: Any, args: tuple[Any, ...]) -> Any:
+    """Rehydrate against a union, selecting the arm the recorded value belongs to.
+
+    A recorded ``None`` never reaches here (:func:`rehydrate` returns it early), so the
+    ``None`` arm of an ``X | None`` is only ever dropped from the candidate set.
+    """
+    arms = [arm for arm in args if arm is not _NONE_TYPE]
+    if not any(_needs_rehydration(arm) for arm in arms):
+        return decode(data)  # nothing to reconstruct: the decoded value is already right
+    if len(arms) == 1:
+        return rehydrate(data, arms[0])  # X | None with a value in hand
+    return rehydrate(data, _select_union_arm(data, arms, annotation))
+
+
+def _select_union_arm(data: Any, arms: list[Any], annotation: Any) -> Any:
+    """Pick the union arm for ``data``, preferring the discriminator the encoder wrote.
+
+    Three signals, in order of strength:
+
+    1. the ``"type"`` qualname on a tagged value — exact, but only present when
+       rehydrating a *still-encoded* payload. The journal store decodes payloads on read
+       (``SQLiteStore._decode_payload``), so on the replay path the tag is already gone;
+    2. the encoded shape (array / object / primitive / natively-decoded object);
+    3. for objects, the field-name set, against each structured arm's declared fields.
+
+    None of them narrowing to exactly one arm is a hard error, never a guess.
+    """
+    tag = data.get(TAG_KEY) if isinstance(data, dict) else None
+    if tag in ("dataclass", "model", "enum"):
+        recorded = data.get("type")
+        for arm in arms:
+            if isinstance(arm, type) and _qualname(arm) == recorded:
+                return arm
+
+    candidates = [arm for arm in arms if _arm_accepts(data, tag, arm)]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1 and isinstance(data, dict):
+        narrowed = _narrow_by_field_names(data, candidates)
+        if narrowed is not None:
+            return narrowed
+    raise DecodeError(
+        f"cannot tell which arm of {_annotation_name(annotation)} the recorded "
+        f"{_recorded_kind(data, tag)} belongs to"
+        + (f" ({len(candidates)} arms match)" if candidates else " (no arm matches)")
+        + "; annotate the task with a single concrete type, or with a union whose arms are "
+        "distinguishable in the journal"
+    )
+
+
+def _narrow_by_field_names(data: dict[str, Any], candidates: list[Any]) -> Any | None:
+    """Narrow structured union arms by the recorded object's field names, or ``None``.
+
+    The fallback for a decoded payload, whose ``$satay`` tag the store has already
+    consumed: an exact field-name match wins, otherwise a single arm that declares a
+    superset of the recorded keys (the rest defaulted) wins.
+    """
+    keys = set(_encoded_fields(data))
+    exact = [arm for arm in candidates if _arm_field_names(arm) == keys]
+    if len(exact) == 1:
+        return exact[0]
+    covering = [
+        arm for arm in candidates if (names := _arm_field_names(arm)) is not None and keys <= names
+    ]
+    if len(covering) == 1:
+        return covering[0]
+    return None
+
+
+def _arm_field_names(arm: Any) -> set[str] | None:
+    """The declared field names of a structured type, or ``None`` if it has none."""
+    if dataclasses.is_dataclass(arm) and isinstance(arm, type):
+        return {f.name for f in dataclasses.fields(arm)}
+    model_fields = getattr(arm, "model_fields", None)  # duck-typed Pydantic v2
+    if isinstance(model_fields, dict):
+        return set(model_fields)
+    return None
+
+
+def _arm_accepts(data: Any, tag: Any, arm: Any) -> bool:
+    """Whether ``arm`` could be the type of the recorded ``data``, by encoded shape."""
+    if tag is not None:
+        if tag == "datetime":
+            return arm is datetime
+        if tag == "timedelta":
+            return arm is timedelta
+        if tag == "enum":
+            return isinstance(arm, type) and issubclass(arm, enum.Enum)
+        if tag in ("dataclass", "model"):
+            return _is_structured(arm)
+        return False
+
+    if isinstance(arm, type) and issubclass(arm, enum.Enum):
+        # decode() drops an enum to its raw value; only a member value can be this arm.
+        return any(data == member.value for member in arm)
+
+    origin = get_origin(arm)
+    if isinstance(data, list):
+        return origin in (list, tuple) or arm in (list, tuple)
+    if isinstance(data, dict):
+        return origin is dict or arm is dict or _is_structured(arm)
+    if isinstance(data, bool):
+        return arm is bool
+    if isinstance(data, int):
+        return arm is int or arm is float
+    if isinstance(data, float):
+        return arm is float
+    if isinstance(data, str):
+        return arm is str
+    # datetime/timedelta come back from decode() as native objects.
+    return isinstance(arm, type) and isinstance(data, arm)
+
+
+def _recorded_kind(data: Any, tag: Any) -> str:
+    if tag in ("dataclass", "model", "enum") and isinstance(data, dict):
+        return f"{tag} {data.get('type')!r}"
+    return f"{type(data).__name__!r} value"
+
+
+def _needs_rehydration(annotation: Any) -> bool:
+    """Whether ``annotation`` describes a type that :func:`decode` alone cannot produce.
+
+    ``True`` for dataclasses, Pydantic-shaped models and enums (and any generic
+    parametrized by one). ``False`` for JSON-native types and for datetime/timedelta,
+    which :func:`decode` already restores from their tags.
+    """
+    if annotation is None or annotation is Any or _is_empty(annotation):
+        return False
+    if get_origin(annotation) is not None:
+        return any(_needs_rehydration(arg) for arg in get_args(annotation))
+    if not isinstance(annotation, type):
+        return False
+    if issubclass(annotation, enum.Enum):
+        return True
+    return _is_structured(annotation)
+
+
+def _is_structured(annotation: Any) -> bool:
+    """Whether ``annotation`` is a dataclass or a Pydantic-shaped (duck-typed) model."""
+    if not isinstance(annotation, type):
+        return False
+    return dataclasses.is_dataclass(annotation) or callable(
+        getattr(annotation, "model_validate", None)
+    )
+
+
+def _is_union(origin: Any) -> bool:
+    """Whether ``origin`` is a union origin, in either spelling.
+
+    ``X | None`` reports ``types.UnionType`` and ``typing.Optional[X]`` reports
+    ``typing.Union`` (they are the same object from Python 3.14 on).
+    """
+    return origin is types.UnionType or origin is typing.Union
+
+
+def _is_json_key_type(annotation: Any) -> bool:
+    """Whether ``annotation`` is a dict-key type a JSON object can round-trip."""
+    if annotation is Any or annotation is object or _is_empty(annotation):
+        return True
+    return isinstance(annotation, type) and issubclass(annotation, str)
+
+
+def _annotation_name(annotation: Any) -> str:
+    return _qualname(annotation) if isinstance(annotation, type) else str(annotation)
+
+
 def _raw_fields(data: Any) -> dict[str, Any]:
-    """Return the raw (still-encoded-native) field dict for a structured value."""
+    """Return the decoded field dict for a structured value (for ``model_validate``)."""
+    return {k: decode(v) for k, v in _encoded_fields(data).items()}
+
+
+def _encoded_fields(data: Any) -> dict[str, Any]:
+    """Return the still-encoded field dict for a structured value."""
     if isinstance(data, dict):
         if data.get(TAG_KEY) in ("dataclass", "model"):
-            return {k: decode(v) for k, v in data["fields"].items()}
-        return {k: decode(v) for k, v in data.items() if k != TAG_KEY}
+            fields: dict[str, Any] = data["fields"]
+            return dict(fields)
+        return {k: v for k, v in data.items() if k != TAG_KEY}
     raise DecodeError(f"expected a structured object to rehydrate, got {type(data).__name__!r}")
 
 

@@ -6,10 +6,12 @@ import dataclasses
 import enum
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Annotated, Any, Optional, Union
 
 import pytest
 
 from satay.journal.codec import (
+    DecodeError,
     EncodeError,
     decode,
     encode,
@@ -24,6 +26,11 @@ class Color(enum.Enum):
     GREEN = "green"
 
 
+class Size(enum.Enum):
+    SMALL = "small"
+    LARGE = "large"
+
+
 @dataclasses.dataclass
 class Point:
     x: int
@@ -34,6 +41,18 @@ class Point:
 class Segment:
     start: Point
     label: str
+
+
+@dataclasses.dataclass
+class Label:
+    text: str
+
+
+@dataclasses.dataclass
+class Boxed:
+    head: Point | None
+    tags: list[Label]
+    index: dict[str, Point]
 
 
 def test_primitives_pass_through() -> None:
@@ -127,6 +146,156 @@ def test_duck_typed_model_encodes_and_rehydrates_without_pydantic() -> None:
     assert isinstance(restored, DuckModel)
     assert restored.name == "grace"
     assert restored.age == 45
+
+
+# ---------------------------------------------------------------------------
+# The annotation matrix (KAN-474): a resumed value must have the same Python type
+# as the first-execution value, for every shape an author can annotate.
+#
+# Each case is checked twice, because both forms reach rehydrate() in the runtime:
+#   * the still-encoded payload (tags present), and
+#   * the decoded payload (tags already consumed) — what SQLiteStore hands the
+#     replay engine on resume.
+# ---------------------------------------------------------------------------
+
+_DT = datetime(2026, 7, 22, 10, 30, tzinfo=UTC)
+
+MATRIX: list[tuple[str, Any, Any]] = [
+    ("optional_pep604", Point | None, Point(1, 2)),
+    ("optional_pep604_none", Point | None, None),
+    ("optional_typing", Optional[Point], Point(1, 2)),  # noqa: UP045 — the spelling is the point
+    ("union_typing_two_arms", Union[Point, Label], Label(text="x")),  # noqa: UP007 — ditto
+    ("union_pep604_two_arms", Point | Label, Point(3, 4)),
+    ("union_of_primitives_int", int | str, 5),
+    ("union_of_primitives_str", int | str, "five"),
+    ("union_of_enums", Color | Size, Size.LARGE),
+    ("optional_enum", Color | None, Color.RED),
+    ("optional_datetime", datetime | None, _DT),
+    ("list_of_dataclass", list[Point], [Point(1, 2), Point(3, 4)]),
+    ("list_empty", list[Point], []),
+    ("list_of_enum", list[Color], [Color.RED, Color.GREEN]),
+    ("dict_of_dataclass", dict[str, Point], {"a": Point(1, 2)}),
+    ("dict_empty", dict[str, Point], {}),
+    ("dict_of_optional", dict[str, Point | None], {"a": Point(1, 2), "b": None}),
+    ("dict_of_any", dict[str, Any], {"a": 1, "b": "two"}),
+    ("nested_list_of_dict", list[dict[str, Point]], [{"a": Point(1, 2)}]),
+    ("nested_dict_of_list", dict[str, list[Point]], {"a": [Point(1, 2)]}),
+    ("nested_list_of_list", list[list[Point]], [[Point(1, 2)]]),
+    ("optional_list", list[Point] | None, [Point(1, 2)]),
+    ("optional_list_none", list[Point] | None, None),
+    ("optional_dict", dict[str, Point] | None, {"a": Point(1, 2)}),
+    ("tuple_heterogeneous", tuple[Point, int], (Point(1, 2), 7)),
+    ("tuple_variadic", tuple[Point, ...], (Point(1, 2), Point(3, 4))),
+    ("tuple_empty", tuple[Point, ...], ()),
+    ("dataclass_with_generic_fields", Boxed, Boxed(Point(1, 2), [Label("t")], {"k": Point(0, 0)})),
+    ("dataclass_with_none_field", Boxed, Boxed(None, [], {})),
+    ("annotated_dataclass", Annotated[Point, "meta"], Point(1, 2)),
+    # A recorded None against an annotation that does not admit one. The first execution
+    # returned that None, so replay must too — an over-promising annotation must not
+    # become a resume-only crash, at any depth.
+    ("none_recorded_for_dataclass", Point, None),
+    ("none_recorded_as_dict_value", dict[str, Point], {"k": None}),
+    ("none_recorded_as_list_element", list[Point], [Point(1, 2), None]),
+    ("none_recorded_as_tuple_element", tuple[Point, int], (None, 7)),
+    ("none_recorded_for_dataclass_field", Segment, Segment(start=None, label="edge")),
+    ("none_recorded_for_enum", Color, None),
+]
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [case[1:] for case in MATRIX],
+    ids=[case[0] for case in MATRIX],
+)
+def test_rehydrate_preserves_the_declared_type(annotation: Any, value: Any) -> None:
+    tagged = rehydrate(encode(value), annotation)
+    assert tagged == value
+    assert type(tagged) is type(value)
+
+    replayed = rehydrate(from_json(to_json(value)), annotation)  # the resume path
+    assert replayed == value
+    assert type(replayed) is type(value)
+
+
+def test_union_arm_is_picked_by_the_recorded_type_tag_when_present() -> None:
+    """Ambiguous-by-shape arms still resolve while the encoder's discriminator survives."""
+
+    @dataclasses.dataclass
+    class Alpha:
+        value: int
+
+    @dataclasses.dataclass
+    class Beta:
+        value: int
+
+    assert isinstance(rehydrate(encode(Alpha(1)), Alpha | Beta), Alpha)
+    assert isinstance(rehydrate(encode(Beta(1)), Alpha | Beta), Beta)
+
+
+def test_indistinguishable_union_arms_fail_loudly() -> None:
+    """No tag and no distinguishing field: raise, never guess (the KAN-474 constraint)."""
+
+    @dataclasses.dataclass
+    class Alpha:
+        value: int
+
+    @dataclasses.dataclass
+    class Beta:
+        value: int
+
+    with pytest.raises(DecodeError) as excinfo:
+        rehydrate(from_json(to_json(Alpha(1))), Alpha | Beta)
+    assert "Alpha" in str(excinfo.value) and "Beta" in str(excinfo.value)
+
+
+def test_non_str_dict_keys_fail_loudly_and_name_the_annotation() -> None:
+    with pytest.raises(DecodeError) as excinfo:
+        rehydrate({"1": encode(Point(1, 2))}, dict[int, Point])
+    assert "int" in str(excinfo.value)
+    # An empty mapping has no keys to lose, so it still rehydrates.
+    assert rehydrate({}, dict[int, Point]) == {}
+
+
+def test_unsupported_generic_shape_fails_loudly_rather_than_degrading() -> None:
+    with pytest.raises(DecodeError) as excinfo:
+        rehydrate([encode(Point(1, 2))], set[Point])
+    assert "set" in str(excinfo.value)
+    # ...but a shape needing no reconstruction stays permissive.
+    assert rehydrate([1, 2], set[int]) == [1, 2]
+
+
+def test_fixed_tuple_arity_mismatch_fails_loudly() -> None:
+    with pytest.raises(DecodeError):
+        rehydrate([encode(Point(1, 2)), 7, 8], tuple[Point, int])
+
+
+def test_recorded_none_is_returned_whatever_the_annotation_says() -> None:
+    """The recorded value wins over an over-promising annotation: no resume-only crash.
+
+    A ``None`` is the one mismatch that is ordinary rather than pathological — a lookup
+    miss, an empty branch — so it passes through at every depth instead of raising.
+    """
+    assert rehydrate(None, list[Point]) is None
+    assert rehydrate(None, dict[str, Point]) is None
+    assert rehydrate(None, Point) is None
+    assert rehydrate(None, Color) is None
+    assert rehydrate(None, Point | Label) is None
+    assert rehydrate({"k": None}, dict[str, Point]) == {"k": None}
+    assert rehydrate([None], list[Point]) == [None]
+    assert rehydrate([{"k": None}], list[dict[str, Point]]) == [{"k": None}]
+
+
+def test_mismatched_non_none_container_value_still_fails_loudly() -> None:
+    """A *present* value of the wrong shape is a broken annotation, not a lookup miss.
+
+    Deliberate asymmetry with ``None`` above: falling back here would mean rehydrating
+    the sibling values of the same container into plain dicts, which is the KAN-474 bug
+    itself. The ``list[X]`` half of this already behaved this way on origin/main.
+    """
+    with pytest.raises(DecodeError):
+        rehydrate({"k": "not a Point"}, dict[str, Point])
+    with pytest.raises(DecodeError):
+        rehydrate([5], list[Point])
 
 
 def test_no_pickle_import_in_codec() -> None:
