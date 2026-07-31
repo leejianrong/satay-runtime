@@ -15,7 +15,11 @@ throwaway temp dir — fine for a look, but pass a real directory if you want to
 
 Everything below runs in one process with a ``ManualClock``, so the eight-hour sleep and
 the event wait resolve instantly. ``satay dev`` runs the same worker loop against a real
-clock, which is why the finished journal is browsable by it either way.
+clock, which is why the finished journal is browsable by it either way. Under a manual
+clock somebody has to move time forward, and that is ``satay.testing.settle``: it drives
+an awaitable and advances the clock through every wait it suspends on. Used below for the
+workflow drives *and* the worker ticks, since a tick can re-drive a run straight into a
+backoff wait.
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
 import satay
 from satay.config import DATA_DIR_ENV_VAR, db_path
@@ -35,7 +38,7 @@ from satay.control.security import TOKEN_HEADER
 from satay.journal.events import Event, EventType
 from satay.journal.store import SQLiteStore
 from satay.journal.timeline import interruption_seqs, model_usage, render_timeline
-from satay.testing import FaultInjector, ManualClock, SimulatedCrash
+from satay.testing import FaultInjector, ManualClock, SimulatedCrash, settle
 from satay.timers import TimerEventWorker
 
 #: Physical executions per task name, so reuse across the crash is observable.
@@ -161,29 +164,6 @@ def resolve_workdir() -> tuple[Path, bool]:
         workdir.mkdir(parents=True, exist_ok=True)
         return workdir, True
     return Path(tempfile.mkdtemp(prefix="satay-studio-")), False
-
-
-async def settle(factory: Any, clock: ManualClock, *, step: float = 61.0) -> Any:
-    """Await ``factory()``, advancing ``clock`` through any retry backoff it waits on.
-
-    Backoff sleeps on the injected clock, so under a ``ManualClock`` someone has to move
-    time forward — see ``tests/conftest.py``'s ``drain`` fixture, which does the same for
-    tests. Used for both the workflow drive and the worker ticks, since a tick can re-drive
-    a run straight into a backoff wait.
-    """
-    task = asyncio.ensure_future(factory())
-    try:
-        for _ in range(500):
-            for _ in range(4):
-                await asyncio.sleep(0)
-            if task.done():
-                return await task
-            if clock.pending_sleepers:
-                clock.advance(step)
-    finally:
-        if not task.done():
-            task.cancel()
-    raise RuntimeError("the run never settled — is something waiting on real time?")
 
 
 def recorded_feed_keys(events: list[Event]) -> list[str]:

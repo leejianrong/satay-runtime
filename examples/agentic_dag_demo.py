@@ -36,7 +36,10 @@ What each part shows:
 
 Nothing waits on real time: ``ManualClock`` is the clock the retry backoff and the
 approval timeout are measured against, and ``SeededRng`` pins the backoff jitter, so a
-four-hour review window and a full retry schedule resolve in microseconds.
+four-hour review window and a full retry schedule resolve in microseconds. Something has
+to move a manual clock, and that is ``satay.testing.settle`` — it drives an awaitable and
+advances the clock through every wait it suspends on. Used for the workflow drives and the
+worker ticks alike, since a tick can re-drive a run straight into a backoff wait.
 
 By default the runs land in a throwaway temp directory, so this file is self-contained
 wherever you download it. Set ``SATAY_DATA_DIR`` (or pass a path as the first argument) to
@@ -53,11 +56,11 @@ import os
 import statistics
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 import satay
 from satay.config import DATA_DIR_ENV_VAR, db_path
@@ -66,7 +69,7 @@ from satay.control.commands import CommandQueue
 from satay.journal.events import Event, EventType
 from satay.journal.store import SQLiteStore
 from satay.journal.timeline import model_usage, render_timeline
-from satay.testing import FaultInjector, ManualClock, SeededRng, SimulatedCrash
+from satay.testing import FaultInjector, ManualClock, SeededRng, SimulatedCrash, settle
 from satay.timers import TimerEventWorker
 
 # -- the model seam ---------------------------------------------------------------
@@ -131,6 +134,26 @@ def tokens(text: str) -> int:
 
 
 # -- the deterministic fake -------------------------------------------------------
+#
+# KAN-482 asked whether this fake and the pricing table above should move to a shared
+# ``examples/_fakemodel.py``, since a reference app would want the same seam. Answer: no,
+# they stay here. Recorded so it does not get re-litigated:
+#
+#   * Every example is downloaded as ONE file. ``docs/RELEASING.md`` §4 and every cookbook
+#     page say ``curl -fsSL -O .../examples/<file>.py`` and then run it; the release
+#     procedure itself does this. A sibling import breaks that for a real user, and
+#     ``tests/e2e/test_examples.py`` now fails on purpose if one appears.
+#   * There is nothing to de-duplicate yet. This is the only example with a model fake —
+#     ``studio_walkthrough.py`` just calls ``record_model_usage`` with literal numbers. A
+#     shared module would have exactly one caller.
+#   * The fake is not why this file is long. The seam plus the fake is about 200 of its
+#     ~900 lines; the four narrated parts at the bottom are more. If the length is the
+#     problem, split the *narrative*, not the seam.
+#   * The seam being visible here is the lesson (ADR-0016: Satay ships no model adapters).
+#     A reader who cannot see the fake cannot see how to swap their own client in.
+#
+# A future reference app that needs this should copy it and diverge, or import it from its
+# own package — not reach sideways into ``examples/``.
 
 
 def _field(prompt: str, name: str) -> str:
@@ -571,29 +594,6 @@ def fork_workdir(workdir: Path) -> Path:
     forkdir = workdir / "reprompt"
     forkdir.mkdir(parents=True, exist_ok=True)
     return forkdir
-
-
-async def settle(factory: Callable[[], Any], clock: ManualClock, *, step: float = 61.0) -> Any:
-    """Await ``factory()``, advancing ``clock`` through any retry backoff it waits on.
-
-    Backoff sleeps on the injected clock, so under a ``ManualClock`` someone has to move
-    time forward — the same job ``tests/conftest.py``'s ``drain`` fixture does for tests.
-    Used for the workflow drives and the worker ticks alike, since a tick can re-drive a
-    run straight into a backoff wait.
-    """
-    task = asyncio.ensure_future(factory())
-    try:
-        for _ in range(500):
-            for _ in range(4):
-                await asyncio.sleep(0)
-            if task.done():
-                return await task
-            if clock.pending_sleepers:
-                clock.advance(step)
-    finally:
-        if not task.done():
-            task.cancel()
-    raise RuntimeError("the run never settled — is something waiting on real time?")
 
 
 def spend(calls: list[tuple[str, int, int, int]]) -> tuple[int, int, float]:

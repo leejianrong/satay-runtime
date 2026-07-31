@@ -12,8 +12,10 @@ Why there is a ``ManualClock`` in a demo: backoff waits go through the *injected
 (``base * 2**(failure-1)``, full-jitter, capped at 60s — ADR-0006), so swapping in
 ``satay.testing.ManualClock`` replays a real retry schedule in **zero wall-clock time**.
 The recorded ``next_delay`` values are the real ones; nobody sat and waited for them.
-That is the same trick your own tests want — see ``tests/conftest.py``'s ``drain``
-fixture, which is where :func:`drive` below comes from.
+Somebody still has to move that clock, and that somebody ships with Satay:
+``satay.testing.settle`` drives an awaitable and advances the clock through every wait it
+suspends on. It is the same helper your own tests want (the ``drain`` fixture in
+``satay.testing.fixtures`` hands you this exact function).
 
 By default the run lands in a throwaway temp directory, so this file is self-contained
 wherever you download it. Set ``SATAY_DATA_DIR`` (or pass a path as the first argument)
@@ -27,14 +29,13 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import satay
 from satay.config import DATA_DIR_ENV_VAR, db_path
 from satay.journal.events import Event, EventType
 from satay.journal.store import SQLiteStore
 from satay.journal.timeline import render_timeline
-from satay.testing import ManualClock, SeededRng
+from satay.testing import ManualClock, SeededRng, settle
 
 #: Physical executions per task name, bumped on *real* execution. Makes "the body ran
 #: three times" observable rather than a claim (ADR-0011).
@@ -112,33 +113,6 @@ def resolve_workdir() -> tuple[Path, bool]:
     return Path(tempfile.mkdtemp(prefix="satay-retries-")), False
 
 
-async def drive(factory: Any, clock: ManualClock, *, step: float = 61.0) -> Any:
-    """Await ``factory()``, advancing ``clock`` through every backoff wait.
-
-    The executor sleeps on the injected clock between attempts, so under a
-    ``ManualClock`` nothing moves until someone advances it. This is the loop a test
-    writes (``drain`` in ``tests/conftest.py``); a demo needs it for the same reason —
-    to replay the schedule without waiting on it.
-
-    ``step`` is deliberately coarse (it clears the 60s backoff cap in one advance), which
-    is why the journal timestamps below jump a minute at a time while the *recorded*
-    delays are sub-second: virtual time is free, so there is no reason to be precise.
-    """
-    task = asyncio.ensure_future(factory())
-    try:
-        for _ in range(500):
-            for _ in range(4):
-                await asyncio.sleep(0)  # let the drive reach its next suspension point
-            if task.done():
-                return await task
-            if clock.pending_sleepers:
-                clock.advance(step)
-    finally:
-        if not task.done():
-            task.cancel()
-    raise RuntimeError("the run never settled — is something waiting on real time?")
-
-
 def print_attempts(events: list[Event], task_name: str) -> float:
     """Print one line per recorded attempt of ``task_name``; return the total backoff."""
     total_delay = 0.0
@@ -176,7 +150,10 @@ async def main() -> None:
     # -- 1: fails twice, succeeds on the third attempt --------------------------------
     handle = satay.start(quote, 100.0, store=store, clock=clock, rng=SeededRng(JITTER_SEED))
     print(f"1) fetch_rate fails twice then succeeds — run {handle.run_id}")
-    result = await drive(handle.result, clock)
+    # ``settle`` advances the clock in coarse 61s steps (one step clears the 60s backoff
+    # cap), which is why the journal timestamps below jump a minute at a time while the
+    # *recorded* delays are sub-second. Virtual time is free; precision buys nothing.
+    result = await settle(handle.result, clock)
 
     events = list(await store.read_events(handle.run_id))
     backoff = print_attempts(events, "fetch_rate")
@@ -190,7 +167,7 @@ async def main() -> None:
     doomed = satay.start(doomed_quote, 100.0, store=store, clock=clock, rng=SeededRng(JITTER_SEED))
     print(f"\n2) fetch_from_dead_host exhausts retries=1 — run {doomed.run_id}")
     try:
-        await drive(doomed.result, clock)
+        await settle(doomed.result, clock)
     except satay.WorkflowFailedError as exc:
         print(f"  raised {exc.error_type}: {exc.error_message}")
     print(f"  status: {await doomed.status()}")
