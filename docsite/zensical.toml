@@ -23,25 +23,48 @@ copyright = "Apache-2.0 licensed. Built from the satay-runtime repository."
 docs_dir = "docs"
 site_dir = "site"
 
+# The Abang design language: tokens copied from the landing page, plus the mapping onto
+# the theme's own `--md-*` variables. See the header of that file before editing it.
+extra_css = ["assets/abang.css"]
+
 repo_url = "https://github.com/leejianrong/satay-runtime"
 repo_name = "leejianrong/satay-runtime"
 edit_uri = "edit/main/docsite/docs"
 
+# Navigation, in the FastAPI-docs shape: a landing page, a Tutorial - User Guide that
+# is meant to be read top to bottom, task-shaped recipes, then lookup material and the
+# project's own paperwork.
+#
+# Section titles are set here; page titles deliberately are *not*. A bare
+# "path.md" entry takes its label from the page's own H1, so rewriting a heading can
+# never leave the sidebar saying something the page does not.
 nav = [
-  { "Home" = "index.md" },
-  { "Learn" = [
-    { "Quickstart" = "quickstart.md" },
-    { "The determinism rule" = "determinism.md" },
-    { "Concepts" = "concepts.md" },
+  "index.md",
+  { "Tutorial - User Guide" = [
+    "tutorial/index.md",
+    "quickstart.md",
+    "concepts.md",
+    "determinism.md",
+    "primitives.md",
+    "tutorial/testing.md",
+  ] },
+  { "Cookbook" = [
+    "cookbook/index.md",
+    "cookbook/crash-recovery.md",
+    "cookbook/retries.md",
+    "cookbook/timers-events.md",
+    "cookbook/fan-out.md",
+    "cookbook/elt-pipeline.md",
+    "cookbook/agentic-dag.md",
+    "cookbook/studio-tour.md",
   ] },
   { "Reference" = [
-    { "The five primitives" = "primitives.md" },
-    { "Guarantees" = "guarantees.md" },
-    { "Studio and satay dev" = "studio.md" },
+    "guarantees.md",
+    "studio.md",
   ] },
   { "Project" = [
-    { "Limits" = "limits.md" },
-    { "Decisions" = "decisions.md" },
+    "limits.md",
+    "decisions.md",
   ] },
 ]
 
@@ -54,6 +77,18 @@ invalid_link_anchors = true
 
 [project.theme]
 language = "en"
+
+# The Abang design language lives in `docs/assets/abang.css`; `custom_dir` exists so
+# the ketupat mark can be inlined into the header rather than referenced as an image.
+custom_dir = "overrides"
+favicon = "assets/images/favicon.svg"
+
+# Fonts are the landing page's system stacks, set in `abang.css`. Setting `font` to
+# false is the other half of that: left at its default the theme links Inter and
+# JetBrains Mono from fonts.googleapis.com, and the landing page deliberately ships
+# no external fonts, scripts, or trackers.
+font = false
+
 features = [
   "content.code.annotate",
   "content.code.copy",
@@ -70,17 +105,23 @@ features = [
   "toc.follow",
 ]
 
+# `primary`/`accent` are "abang" rather than one of the theme's named colours on
+# purpose. The names only end up in `data-md-color-primary` / `data-md-color-accent`
+# on <body>, and the theme ships per-name overrides (e.g.
+# `[data-md-color-scheme=slate][data-md-color-primary=deep-orange]`) that outrank a
+# plain scheme selector. Using a name it has never heard of leaves the field clear for
+# `docs/assets/abang.css` to set the real colours.
 [[project.theme.palette]]
 scheme = "default"
-primary = "deep orange"
-accent = "amber"
+primary = "abang"
+accent = "abang"
 toggle.icon = "lucide/sun"
 toggle.name = "Switch to dark mode"
 
 [[project.theme.palette]]
 scheme = "slate"
-primary = "deep orange"
-accent = "amber"
+primary = "abang"
+accent = "abang"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
 

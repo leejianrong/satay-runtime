@@ -1,0 +1,26 @@
+{#-
+  Header (and drawer) logo: the Abang ketupat mark, inlined.
+
+  The theme's own logo partial renders `theme.logo` as `<img src="...">`. That will
+  not do here: the mark draws its outlines in `currentColor` and fakes the
+  cross-weave with two knockout strokes painted in `var(--bg)`, and neither
+  resolves inside an externally referenced SVG. Inlining it puts the shapes in the
+  page's own cascade, so the mark inverts correctly when the theme toggle flips
+  `data-md-color-scheme`.
+
+  The six shape elements below are copied verbatim from the landing page
+  (landing-page/index.html, the header `.brand` and the footer). Do not redraw
+  them; change them there and copy across. `docs/assets/abang.css` restores
+  `fill: none` (the theme sets `fill: currentcolor` on any logo svg) and colours
+  the mark with `--ember`, matching the landing page's `.ket` rule.
+
+  The favicon cannot be inlined the same way — see docs/assets/images/favicon.svg.
+-#}
+<svg class="ket" width="26" height="26" viewBox="0 0 46 34" aria-hidden="true">
+  <polygon points="15,5 27,17 15,29 3,17" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  <polygon points="31,5 43,17 31,29 19,17" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  <line x1="21" y1="15" x2="25" y2="11" stroke="var(--bg)" stroke-width="3.4"/>
+  <line x1="21" y1="23" x2="25" y2="19" stroke="var(--bg)" stroke-width="3.4"/>
+  <line x1="20.5" y1="15.5" x2="23" y2="13" stroke="currentColor" stroke-width="2"/>
+  <line x1="25.5" y1="18.5" x2="23" y2="21" stroke="currentColor" stroke-width="2"/>
+</svg>
