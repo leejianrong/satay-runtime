@@ -69,14 +69,8 @@ allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a sha
 
 ## Maturity
 
-`0.1.0a1` is the first published release. There is no deprecation policy, no compatibility promise
-between alpha versions, and the public API can move. Pin the exact version.
-
-**These docs describe `main`, which is ahead of the published alpha.** Five things documented here
-landed after `0.1.0a1`: `satay dev --app`, the public `WorkflowFailedError`, the `nondeterminism`
-policy (so on `0.1.0a1` a divergent replay warns instead of raising), the `version_mismatch` policy,
-and a correct `satay.__version__`, which the published wheel reports as `0.0.0`. The
-[install note](tutorial/index.md#install) has the details and the workaround.
+`0.1.0a2` is the current release, and these pages describe it. There is no deprecation policy, no
+compatibility promise between alpha versions, and the public API can move. Pin the exact version.
 
 Some names this documentation uses sit below the top-level `satay` package: `TimerEventWorker`,
 `SQLiteStore`, `resolve_data_dir`, and `EventType` all live at deeper import paths and are more

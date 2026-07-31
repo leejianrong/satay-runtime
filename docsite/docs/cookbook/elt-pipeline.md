@@ -8,14 +8,14 @@ This is the longest recipe, and roughly half of it is about what Satay does **ba
 fail-fast section and the idempotency caveat are the parts worth your time, because they are the
 ones that will bite you in a real nightly load.
 
-Source: [`examples/elt_pipeline_demo.py`](https://github.com/leejianrong/satay-runtime/blob/main/examples/elt_pipeline_demo.py)
+Source: [`examples/elt_pipeline_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a2/examples/elt_pipeline_demo.py)
 (706 lines, so this page excerpts it)
 
 ## Get It And Run It
 
 ```bash
-pip install 'satay[studio] @ git+https://github.com/leejianrong/satay-runtime'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/main/examples/elt_pipeline_demo.py
+pip install 'satay[studio]'
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/elt_pipeline_demo.py
 SATAY_DATA_DIR=.satay-demo python elt_pipeline_demo.py
 ```
 
@@ -347,6 +347,13 @@ A task's **return annotation** is what rehydrates a recorded result into your cl
 concrete `list[Row]` rehydrates. A union like `Extracted | None` does not; it decodes to a plain
 dict, and you find out on the resume rather than on the first pass. So the union has to be flat,
 with empty-string placeholders for the fields the other branch does not use.
+
+!!! info "This constraint is lifted on `main`"
+
+    `X | None`, `Optional[X]`, `X | Y`, `dict[K, V]`, `tuple[X, Y]`, `Annotated[X, ...]` and
+    nestings of those all rehydrate to the right type on `main`, so a future release drops the
+    reason the union has to be flat. It is not in `0.1.0a2`, the version this page is pinned to.
+    The flat `Outcome` above keeps working either way — it is just no longer forced.
 
 **You hand-roll the try/except and the partition.** Every caller of every outcome-returning task
 has to remember to split `ok` from not-`ok`. Miss one and a quarantined source flows downstream as

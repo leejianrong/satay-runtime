@@ -7,13 +7,13 @@ The interesting part is not that retries happen. It is that every attempt is a j
 so the retry schedule is durable state you can read back, weeks later, from a run that failed
 at 3am. It is not a log line you have to hope somebody kept.
 
-Source: [`examples/retries_backoff_demo.py`](https://github.com/leejianrong/satay-runtime/blob/main/examples/retries_backoff_demo.py)
+Source: [`examples/retries_backoff_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a2/examples/retries_backoff_demo.py)
 
 ## Get It And Run It
 
 ```bash
-pip install 'satay[studio] @ git+https://github.com/leejianrong/satay-runtime'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/main/examples/retries_backoff_demo.py
+pip install 'satay[studio]'
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/retries_backoff_demo.py
 SATAY_DATA_DIR=.satay-demo python retries_backoff_demo.py
 ```
 
@@ -181,6 +181,12 @@ to be careful with it.
     `drive` is a trimmed copy of the `drain` fixture in the project's own `tests/conftest.py`.
     Test a retry policy this way and your suite asserts the real recorded delays without
     sleeping for them. [Testing workflows](../tutorial/testing.md) has the full pattern.
+
+!!! info "You will not have to hand-write this for much longer"
+
+    The same loop now ships on `main` as `satay.testing.settle`, so a future release replaces the
+    helper above with `from satay.testing import settle`. It is not in `0.1.0a2`, which is the
+    version this page is pinned to, so the local copy is still what you need today.
 
 ## The Guard On Side-Effecting Retries
 

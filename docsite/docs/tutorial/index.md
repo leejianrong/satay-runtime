@@ -31,7 +31,7 @@ $ pip list
 Package Version
 ------- -------
 pip     26.2
-satay   0.1.0a1
+satay   0.1.0a2
 ```
 
 The core install is dependency-free. That is the packaging promise, and it is why you can embed
@@ -60,28 +60,17 @@ options:
   -h, --help  show this help message and exit
 ```
 
-!!! warning "These docs describe `main`, which is ahead of `0.1.0a1` on PyPI"
+!!! warning "Pin the version"
 
-    `0.1.0a1` is the only published release so far, and five things documented here landed
-    after it:
-
-    - **`satay dev --app MODULE`** and the `[tool.satay] app` list. `0.1.0a1` has no `--app`
-      flag, so its dev stack can serve Studio but cannot start or wake your runs.
-    - **`from satay import WorkflowFailedError`**. Not re-exported in `0.1.0a1`.
-    - **The `nondeterminism` policy, strict by default.** In `0.1.0a1` a divergent replay
-      warns and returns whatever the new code computed. On `main` it raises
-      `NondeterminismError`. That is the difference between a loud failure and a quiet wrong
-      answer, so it matters more than the rest.
-    - **The `version_mismatch` policy** and `SATAY_VERSION_MISMATCH`.
-    - **`satay.__version__`**, which reports `0.0.0` in the published wheel.
-
-    To follow the tutorial exactly, install from the repository until the next alpha:
+    Every page in this tutorial was written and executed against **`0.1.0a2`**, the current
+    release. Satay is alpha: there is no compatibility promise between alpha versions and
+    nothing is deprecated gracefully yet, so pin the exact version in anything you build.
 
     ```bash
-    pip install 'satay[studio] @ git+https://github.com/leejianrong/satay-runtime'
+    pip install 'satay[studio]==0.1.0a2'
     ```
 
-    Everything else on these pages behaves the same on both.
+    [Limits](../limits.md) lists what is deliberately missing.
 
 ## Requirements
 
