@@ -1,7 +1,7 @@
-# The five primitives
+# The Five Primitives
 
-Beyond `@task` and `@workflow`, Satay gives you five durable operations. Each one is a
-durable call, so each one is recorded, replayed, and survives a crash.
+Beyond `@task` and `@workflow`, Satay gives you five durable operations. Each one is a durable
+call, so each one is recorded, replayed, and survives a crash.
 
 | Primitive | For |
 | --- | --- |
@@ -12,8 +12,8 @@ durable call, so each one is recorded, replayed, and survives a crash.
 | [`satay.start_child`](#start_child) | Running a linked child workflow |
 
 All five must be called from inside a `@satay.workflow` body. Called anywhere else they raise
-`RuntimeError` telling you so. `send_event` is the exception: it is a control-plane write, so
-you call it from outside a workflow, which is the whole point of it.
+`RuntimeError` telling you so. `send_event` is the exception: it is a control-plane write, so you
+call it from outside a workflow, which is the whole point of it.
 
 ## Running the worker
 
@@ -58,18 +58,18 @@ async def main() -> None:
 
 !!! note "This reaches below the documented public surface"
 
-    `TimerEventWorker`, `SQLiteStore`, and `resolve_data_dir` are not part of the eleven names
-    re-exported from `satay`, so they are more likely to move than `@task` or `satay.map`. The
-    runtime ships no higher-level "run my app" entry point yet, and this is the pattern the
-    repository's own example code uses. Pass the same `store=` to both the worker and every
-    `satay.start` call so there is one writer.
+    `TimerEventWorker`, `SQLiteStore`, and `resolve_data_dir` are not among the names re-exported
+    from `satay`, so they are more likely to move than `@task` or `satay.map`. The runtime ships
+    no higher-level "run my app" entry point yet, and this is the pattern the repository's own
+    examples use. Pass the same `store=` to both the worker and every `satay.start` call so there
+    is one writer.
 
-`satay dev --app mypkg.workflows` is the shorter route to the same thing: it imports the modules
-you name — which is what puts your workflows in the registry — and then runs the poll loop, the
+`satay dev --app mypkg.workflows` is the shorter route to the same thing. It imports the modules
+you name, which is what puts your workflows in the registry, and then runs the poll loop, the
 store, the API, and Studio in one process. Its worker will wake runs your own scripts parked, so
 the two shapes interoperate over the same journal. A bare `satay dev` with no `--app` imports
-nothing and drives nothing; it says so at boot. See the
-[Studio page](studio.md#telling-satay-dev-where-your-workflows-live).
+nothing and drives nothing, and it says so at boot. See
+[Studio and `satay dev`](studio.md#telling-satay-dev-where-your-workflows-live).
 
 ## `sleep`
 
@@ -77,9 +77,9 @@ nothing and drives nothing; it says so at boot. See the
 async def sleep(duration: float | timedelta) -> None
 ```
 
-Durably waits. On the first pass it records a `TimerCreated` event and a timer row, then parks
-the run. When the timer comes due the worker appends `TimerFired` and re-drives the workflow,
-which replays past the completed sleep instead of sleeping again.
+Durably waits. On the first pass it records a `TimerCreated` event and a timer row, then parks the
+run. When the timer comes due the worker appends `TimerFired` and re-drives the workflow, which
+replays past the completed sleep instead of sleeping again.
 
 ```python
 from datetime import timedelta
@@ -95,8 +95,10 @@ A bare `float` is seconds, so `satay.sleep(2)` and `satay.sleep(timedelta(second
 same thing. Fourteen days is a fine argument: the process does not need to stay up, because the
 only durable state is a row with a due time.
 
-Never use `asyncio.sleep` in a workflow body for this. It holds the frame, it is invisible to
-the journal, and it sleeps in full again on every replay.
+!!! warning "Never `asyncio.sleep` in a workflow body"
+
+    It holds the frame, it is invisible to the journal, and it sleeps in full again on every
+    replay. Inside a task it is fine.
 
 ## `wait_for_event` and `send_event`
 
@@ -113,8 +115,8 @@ async def send_event(event, *, key=None, run_id=None, store=None) -> None
 
 `wait_for_event` parks the run until a matching event arrives. Matching is on the pair
 `(event_type, key)`, where the type name is derived as `module.qualname` for a class, or used
-verbatim if you pass a string. Both sides have to produce the same string, so pass the same
-class on both ends.
+verbatim if you pass a string. Both sides have to produce the same string, so pass the same class
+on both ends.
 
 ```python
 from dataclasses import dataclass
@@ -131,7 +133,7 @@ async def review(order_id: str) -> str:
     return "approved" if decision.approved else "rejected"
 ```
 
-Delivery from anywhere else:
+Delivery from anywhere else. Note the `await`: unlike `satay.start`, `send_event` is a coroutine.
 
 ```python
 await satay.send_event(Approval(approved=True), key=order_id)
@@ -145,14 +147,14 @@ something waits on that pair, so you cannot lose a race by sending too early.
 With a `timeout`, the wait resolves to `None` if nothing arrives in time. Without one it waits
 indefinitely.
 
-If an event and its timeout come due on the same tick, the **event wins**. Delivery is
-processed before timers on every poll iteration, deliberately.
+If an event and its timeout come due on the same tick, the **event wins**. Delivery is processed
+before timers on every poll iteration, deliberately.
 
-Buffered matches are consumed first-in-first-out by arrival time, so two sends on the same
-pair reach two waits in order.
+Buffered matches are consumed first-in-first-out by arrival time, so two sends on the same pair
+reach two waits in order.
 
 The HTTP route `POST /runs/{run_id}/events` writes to the same inbox, so Studio's "send event"
-and `satay.send_event` are the same operation.
+button and `satay.send_event` are the same operation.
 
 ## `map`
 
@@ -160,9 +162,9 @@ and `satay.send_event` are the same operation.
 async def map(task, items, *, key, concurrency=8) -> list
 ```
 
-Fans one task out over many items. Each item is an independently keyed durable call, so a
-crash halfway through resumes with the finished items reused and only the unresolved ones
-re-run. That is the behaviour that makes fan-out worth having.
+Fans one task out over many items. Each item is an independently keyed durable call, so a crash
+halfway through resumes with the finished items reused and only the unresolved ones re-run. That
+is the behaviour that makes fan-out worth having.
 
 ```python
 @satay.workflow
@@ -170,15 +172,18 @@ async def resize_all(paths: list[str]) -> list[str]:
     return await satay.map(resize, paths, key=lambda p: p, concurrency=4)
 ```
 
-`key=` is required, not optional, and must return a unique non-empty string per item. Fan-out
-has no stable ordinal, so this is how each item keeps its identity across a replay. A missing
-or duplicate key raises `ValueError` at schedule time, before any item runs.
+`key=` is required, not optional, and must return a unique non-empty string per item. Fan-out has
+no stable ordinal, so this is how each item keeps its identity across a replay. A missing or
+duplicate key raises `ValueError` at schedule time, before any item runs.
 
-`concurrency` bounds how many items are in flight on the event loop, defaulting to 8. Results
-come back in **input order** regardless of who finished first.
+`concurrency` bounds how many items are in flight on the event loop, defaulting to 8. Results come
+back in **input order** regardless of who finished first.
 
-Failure is fail-fast: one item raising fails the whole `map`. In-flight siblings settle but
-their results are discarded. There is no `return_exceptions` mode.
+!!! warning "Fan-out is fail-fast, and that is the only mode"
+
+    One item raising fails the whole `map`. In-flight siblings settle but their results are
+    discarded. There is no `return_exceptions` and no collect mode (ADR-0020), so if you need
+    per-item outcomes, have the task return a result object instead of raising.
 
 ## `gather`
 
@@ -186,9 +191,9 @@ their results are discarded. There is no `return_exceptions` mode.
 async def gather(*awaitables) -> list
 ```
 
-Awaits several durable calls concurrently and rejoins their results **positionally**, in
-argument order. Members can be heterogeneous: plain task calls, nested `map` calls, and
-`start_child` calls all work together, each keeping its own identity.
+Awaits several durable calls concurrently and rejoins their results **positionally**, in argument
+order. Members can be heterogeneous: plain task calls, nested `map` calls, and `start_child` calls
+all work together, each keeping its own identity.
 
 ```python
 @satay.workflow
@@ -200,7 +205,8 @@ async def dashboard(user_id: str, order_ids: list[str]) -> list:
     )
 ```
 
-Same fail-fast rule: one failed member fails the whole `gather`.
+Same fail-fast rule: one failed member fails the whole `gather` and the siblings' results go
+nowhere.
 
 ## `start_child`
 
@@ -306,16 +312,16 @@ async def main() -> None:
     worker = TimerEventWorker(store=store, interval=0.2)
     loop = asyncio.create_task(worker.run())
     try:
-        print("map:       ", await satay.start(fanout, [1, 2, 3], store=store).result())
-        print("gather:    ", await satay.start(combined, 5, store=store).result())
+        print("map:        ", await satay.start(fanout, [1, 2, 3], store=store).result())
+        print("gather:     ", await satay.start(combined, 5, store=store).result())
         print("start_child:", await satay.start(parent, 4, store=store).result())
 
-        print("sleep:     ", await finish(satay.start(paced, 10, store=store)))
+        print("sleep:      ", await finish(satay.start(paced, 10, store=store)))
 
         pending = satay.start(review, 0, store=store)
-        print("waiting:   ", await pending.result(), "->", await pending.status())
+        print("waiting:    ", await pending.result(), "->", await pending.status())
         await satay.send_event(Approval(approved=True), key="order-42", store=store)
-        print("event:     ", await finish(pending))
+        print("event:      ", await finish(pending))
     finally:
         worker.stop()
         loop.cancel()
@@ -325,15 +331,35 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+Run it:
+
 ```console
 $ python primitives.py
-map:        [2, 4, 6]
-gather:     [10, [2, 4]]
+map:         [2, 4, 6]
+gather:      [10, [2, 4]]
 start_child: 9
-sleep:      21
-waiting:    None -> waiting
-event:      approved
+sleep:       21
+waiting:     None -> waiting
+event:       approved
 ```
 
-The `waiting: None -> waiting` line is the parked-run behaviour in the open: `result()` gave
+The `waiting:     None -> waiting` line is the parked-run behaviour in the open. `result()` gave
 back `None` because there was no outcome yet, and `status()` confirmed why.
+
+## Recap
+
+- `satay.sleep(duration)` parks the run on a durable timer. The process can exit and come back.
+- `wait_for_event(Type, key=..., timeout=...)` parks until a matching event lands, resolving to
+  `None` on timeout. `await satay.send_event(...)` delivers one from outside, and early delivery
+  is buffered rather than lost.
+- Parked runs need a poll loop: `TimerEventWorker` in your own script, or `satay dev --app`.
+- `satay.map(task, items, key=...)` keys each item so a crash mid-fan-out resumes only the
+  unfinished ones. `satay.gather(...)` rejoins mixed calls positionally.
+- Both are fail-fast: the first failure discards its siblings' results.
+- `satay.start_child` gives the child its own run id and journal, so it resumes rather than
+  restarts.
+
+## Next
+
+[Testing Workflows](tutorial/testing.md). You have now written workflows that wait fourteen days
+and retry with backoff, and neither is something you want a test suite to sit through.
