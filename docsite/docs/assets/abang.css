@@ -1,0 +1,489 @@
+/* ==========================================================================
+   Abang design language for the Satay Runtime docs.
+
+   The tokens below are copied from the Abang / Satay landing page
+   (github.com/leejianrong — landing-page/index.html, the `<style>` block) so the
+   docs and the marketing page are literally the same palette rather than two
+   approximations of it. Do not hand-tune a colour here: change it on the landing
+   page first, then copy it across.
+
+   Structure:
+     1. Abang tokens, light  — on :root and on any `data-md-color-scheme`
+     2. Abang tokens, dark   — on the `slate` scheme, screen only (so print stays light)
+     3. Zensical/Material `--md-*` variables mapped onto the Abang tokens
+     4. Component touches the variables alone cannot reach
+
+   Note the mapping in (3) lives in the light rule *only* and still works in dark
+   mode: custom-property substitution resolves `var(--ink)` against the element the
+   mapping lands on (`<body>`), and the dark rule redefines `--ink` on that same
+   element. One mapping, both schemes.
+
+   Fonts are the landing page's system stacks. `[project.theme] font = false` in
+   zensical.toml is what stops the theme from pulling Inter and JetBrains Mono off
+   fonts.googleapis.com — keep both halves or the docs start phoning home.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Abang tokens — light, and the --md-* mapping
+   -------------------------------------------------------------------------- */
+
+:root,
+[data-md-color-scheme] {
+  /* -- type ------------------------------------------------------------- */
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Cascadia Code", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* -- surfaces and ink ------------------------------------------------- */
+  --bg: #f7f2ea;
+  --bg2: #f1ebe0;
+  --ink: #221913;
+  --muted: #736354;
+  --card: #fffdf9;
+  --line: rgba(60, 35, 15, 0.12);
+
+  /* -- accents ---------------------------------------------------------- */
+  --ember: #de5f1c;
+  --chili: #c62d1c;
+  --pandan: #2f9c5e;
+  --palm: #8a4a1f;
+  --stick: rgba(60, 35, 15, 0.18);
+  --bead: #8a4a1f;
+
+  /* -- code syntax ------------------------------------------------------ */
+  --c-kw: #c62d1c;
+  --c-dec: #de5f1c;
+  --c-fn: #2f261d;
+  --c-st: #2f9c5e;
+  --c-cm: #8a7561;
+  --c-pn: #8a4a1f;
+
+  /* -- elevation -------------------------------------------------------- */
+  --shadow: 0 30px 60px -38px rgba(120, 50, 10, 0.5);
+  --shadow-sm: 0 10px 26px -18px rgba(120, 50, 10, 0.45);
+
+  /* Zensical's own modern-variant tokens, as space-separated RGB. */
+  --color-foreground: 34 25 19;
+  --color-background: 247 242 234;
+  --color-background-subtle: 241 235 224;
+  --color-backdrop: 247 242 234;
+
+  /* ====================================================================
+     3. Zensical / Material variables, mapped onto the Abang tokens
+     ==================================================================== */
+
+  /* -- type ------------------------------------------------------------- */
+  --md-text-font-family: var(--sans);
+  --md-code-font-family: var(--mono);
+
+  /* -- foreground / background ------------------------------------------ */
+  --md-default-fg-color: var(--ink);
+  --md-default-fg-color--light: var(--muted);
+  --md-default-fg-color--lighter: color-mix(in srgb, var(--ink) 34%, transparent);
+  --md-default-fg-color--lightest: color-mix(in srgb, var(--ink) 12%, transparent);
+  --md-default-bg-color: var(--bg);
+  --md-default-bg-color--light: color-mix(in srgb, var(--bg) 84%, transparent);
+  --md-default-bg-color--lighter: color-mix(in srgb, var(--bg) 46%, transparent);
+  --md-default-bg-color--lightest: color-mix(in srgb, var(--bg) 18%, transparent);
+
+  /* -- primary / accent ------------------------------------------------- */
+  /* The modern variant draws its header from --md-default-bg-color, so primary is
+     really just "the link and button colour": ember, with chili on hover. */
+  --md-primary-fg-color: var(--ember);
+  --md-primary-fg-color--light: color-mix(in srgb, var(--ember) 76%, var(--bg));
+  --md-primary-fg-color--dark: color-mix(in srgb, var(--ember) 84%, #000);
+  --md-primary-bg-color: #fff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+  --md-accent-fg-color: var(--chili);
+  --md-accent-fg-color--transparent: color-mix(in srgb, var(--chili) 12%, transparent);
+  --md-accent-bg-color: #fff;
+  --md-accent-bg-color--light: rgba(255, 255, 255, 0.7);
+
+  /* -- prose ------------------------------------------------------------ */
+  --md-typeset-color: var(--ink);
+  --md-typeset-a-color: var(--ember);
+  --md-typeset-mark-color: color-mix(in srgb, var(--ember) 24%, transparent);
+  --md-typeset-del-color: color-mix(in srgb, var(--chili) 18%, transparent);
+  --md-typeset-ins-color: color-mix(in srgb, var(--pandan) 20%, transparent);
+  --md-typeset-kbd-color: var(--bg2);
+  --md-typeset-kbd-accent-color: var(--card);
+  --md-typeset-kbd-border-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  --md-typeset-table-color: var(--line);
+  --md-typeset-table-color--light: color-mix(in srgb, var(--ink) 4%, transparent);
+
+  /* -- code ------------------------------------------------------------- */
+  /* Fences sit on --card so they read as the landing page's raised panel. */
+  --md-code-fg-color: var(--c-fn);
+  --md-code-bg-color: var(--card);
+  --md-code-bg-color--light: color-mix(in srgb, var(--card) 88%, transparent);
+  --md-code-bg-color--lighter: color-mix(in srgb, var(--card) 52%, transparent);
+  --md-code-hl-color: var(--ember);
+  --md-code-hl-color--light: color-mix(in srgb, var(--ember) 14%, transparent);
+
+  /* The designed syntax palette, in place of a stock Pygments theme. */
+  --md-code-hl-keyword-color: var(--c-kw);
+  --md-code-hl-function-color: var(--c-fn);
+  --md-code-hl-name-color: var(--c-fn);
+  --md-code-hl-string-color: var(--c-st);
+  --md-code-hl-comment-color: var(--c-cm);
+  --md-code-hl-constant-color: var(--c-dec);
+  --md-code-hl-special-color: var(--c-dec);
+  --md-code-hl-number-color: var(--c-pn);
+  --md-code-hl-punctuation-color: var(--c-pn);
+  --md-code-hl-operator-color: var(--c-pn);
+  --md-code-hl-variable-color: var(--palm);
+  --md-code-hl-generic-color: var(--muted);
+
+  /* -- admonitions, footer, elevation ----------------------------------- */
+  --md-admonition-fg-color: var(--ink);
+  --md-admonition-bg-color: var(--card);
+  --md-warning-fg-color: var(--ink);
+  --md-warning-bg-color: color-mix(in srgb, var(--ember) 22%, var(--card));
+  --md-footer-bg-color: var(--bg2);
+  --md-footer-bg-color--dark: var(--bg2);
+  --md-shadow-z1: var(--shadow-sm);
+  --md-shadow-z2: var(--shadow-sm);
+  --md-shadow-z3: var(--shadow);
+}
+
+/* --------------------------------------------------------------------------
+   2. Abang tokens — dark
+   Screen only, mirroring how the theme's own palette stylesheet scopes `slate`,
+   so a printed page stays on the light palette.
+   -------------------------------------------------------------------------- */
+
+@media screen {
+  [data-md-color-scheme="slate"] {
+    --bg: #17110c;
+    --bg2: #1c150f;
+    --ink: #f5ece0;
+    --muted: #b09781;
+    --card: #211913;
+    --line: rgba(255, 220, 180, 0.11);
+
+    --ember: #f5843a;
+    --chili: #f0512f;
+    --pandan: #41c07d;
+    --palm: #c9884f;
+    --stick: rgba(255, 220, 180, 0.16);
+    --bead: #c9884f;
+
+    --c-kw: #f0673f;
+    --c-dec: #f5a54a;
+    --c-fn: #f0e6d8;
+    --c-st: #5ec98c;
+    --c-cm: #a99a88;
+    --c-pn: #e0a266;
+
+    --shadow: 0 30px 66px -36px rgba(0, 0, 0, 0.7);
+    --shadow-sm: 0 12px 30px -20px rgba(0, 0, 0, 0.7);
+
+    --color-foreground: 245 236 224;
+    --color-background: 23 17 12;
+    --color-background-subtle: 28 21 15;
+    --color-backdrop: 15 11 7;
+
+    /* Dark mode wants a warmer knockout on hover states than pure white. */
+    --md-primary-bg-color: #17110c;
+    --md-primary-bg-color--light: rgba(23, 17, 12, 0.72);
+    --md-accent-bg-color: #17110c;
+    --md-accent-bg-color--light: rgba(23, 17, 12, 0.72);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   4. Component touches
+   -------------------------------------------------------------------------- */
+
+/* The theme's slate palette forces headings to pure white; Abang's dark ink is
+   #f5ece0. Same selector shape, loaded later, so this wins on source order. */
+[data-md-color-scheme="slate"] .md-header__title,
+[data-md-color-scheme="slate"] h1,
+[data-md-color-scheme="slate"] h2,
+[data-md-color-scheme="slate"] h3,
+[data-md-color-scheme="slate"] h4,
+[data-md-color-scheme="slate"] h5,
+[data-md-color-scheme="slate"] h6 {
+  color: var(--ink);
+}
+
+/* Headline weight and tracking from the landing page's `h1.head` / `.h2`. */
+.md-typeset h1 {
+  font-weight: 780;
+  letter-spacing: -0.035em;
+}
+
+.md-typeset h2 {
+  letter-spacing: -0.03em;
+}
+
+/* -- the ketupat mark ------------------------------------------------------
+   The header logo is inlined by overrides/partials/logo.html so that both
+   `currentColor` and the `var(--bg)` knockout strokes resolve against the live
+   theme. Two things need saying in CSS:
+     - the theme sets `fill: currentcolor` on any logo svg, which would flood the
+       two diamonds solid; the mark is stroke-only, so put the fill back.
+     - the landing page colours the mark with `.ket { color: var(--ember) }`.
+   -------------------------------------------------------------------------- */
+
+.md-header .md-logo .ket,
+.md-nav .md-logo .ket {
+  color: var(--ember);
+}
+
+.md-header .md-logo .ket polygon,
+.md-nav .md-logo .ket polygon {
+  fill: none;
+}
+
+/* -- code -----------------------------------------------------------------
+   Two splits the `--md-code-hl-*` variables cannot express on their own:
+   Pygments' decorator token shares the keyword variable, and the landing page
+   sets comments in italic and function names in semibold.
+   -------------------------------------------------------------------------- */
+
+.highlight .nd {
+  color: var(--c-dec);
+}
+
+.highlight .sa {
+  color: var(--c-st);
+}
+
+.highlight .c,
+.highlight .c1,
+.highlight .ch,
+.highlight .cm,
+.highlight .cs,
+.highlight .sd {
+  font-style: italic;
+}
+
+.highlight .nc,
+.highlight .nf {
+  font-weight: 600;
+}
+
+/* Fences are the landing page's `.panel`: a raised card with a hairline edge. */
+.md-typeset pre > code {
+  border: 1px solid var(--line);
+}
+
+/* Inline code is the flatter `--bg2` chip, not the raised panel. */
+.md-typeset :not(pre) > code {
+  background-color: var(--bg2);
+  color: var(--ink);
+}
+
+.md-typeset a > code,
+.md-typeset a:hover > code {
+  color: inherit;
+}
+
+/* Tables get the landing page's `.cmp` treatment: hairline border, rounded, and
+   a mono uppercase header row. */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  box-shadow: none;
+}
+
+.md-typeset table:not([class]) th {
+  font-family: var(--mono);
+  font-size: 0.68em;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background-color: var(--bg2);
+}
+
+/* -- navigation ----------------------------------------------------------
+   `navigation.sections` gives each top-level group a label. Style it like the
+   landing page's footer column headings — mono, small, uppercase, muted — so the
+   tiangolo-shaped sidebar reads as Abang rather than as stock Material.
+   -------------------------------------------------------------------------- */
+
+.md-nav--primary .md-nav__item--section > .md-nav__link {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The section label is a real link when navigation.indexes is on; keep the
+   nested anchor in step with the label it sits inside. */
+.md-nav--primary .md-nav__item--section > .md-nav__link .md-nav__link {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+}
+
+.md-nav--primary .md-nav__item--section > .md-nav__link .md-nav__link--active {
+  color: var(--ember);
+}
+
+/* "You are here" is ember, not the chili that --md-accent-fg-color would give it. */
+.md-nav--primary .md-nav__item .md-nav__link--active {
+  background: color-mix(in srgb, var(--ember) 11%, transparent);
+  color: var(--ember);
+}
+
+/* Table-of-contents heading, same idiom. */
+.md-nav--secondary > .md-nav__title {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* -- admonitions ---------------------------------------------------------
+   The modern variant tints the whole block with the admonition type's colour and
+   draws the icon in it. Off the shelf those colours are Material blues, teals and
+   pinks, which fight a warm page hard, so every type gets mapped onto an Abang
+   accent: palm for neutral, pandan for good news, ember for caution, chili for bad.
+   -------------------------------------------------------------------------- */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border: 1px solid var(--line);
+}
+
+.md-typeset .admonition.note,
+.md-typeset details.note,
+.md-typeset .admonition.abstract,
+.md-typeset details.abstract,
+.md-typeset .admonition.info,
+.md-typeset details.info,
+.md-typeset .admonition.example,
+.md-typeset details.example {
+  background-color: color-mix(in srgb, var(--palm) 11%, transparent);
+}
+
+/* The type icon is a mask on ::before tinted with background-color; ::after is the
+   <details> chevron and takes `color`. Both need saying for each group. */
+.md-typeset .note > .admonition-title::before,
+.md-typeset .note > summary::before,
+.md-typeset .abstract > .admonition-title::before,
+.md-typeset .abstract > summary::before,
+.md-typeset .info > .admonition-title::before,
+.md-typeset .info > summary::before,
+.md-typeset .example > .admonition-title::before,
+.md-typeset .example > summary::before {
+  background-color: var(--palm);
+}
+
+.md-typeset .note > .admonition-title::after,
+.md-typeset .note > summary::after,
+.md-typeset .abstract > .admonition-title::after,
+.md-typeset .abstract > summary::after,
+.md-typeset .info > .admonition-title::after,
+.md-typeset .info > summary::after,
+.md-typeset .example > .admonition-title::after,
+.md-typeset .example > summary::after {
+  color: var(--palm);
+}
+
+.md-typeset .admonition.tip,
+.md-typeset details.tip,
+.md-typeset .admonition.success,
+.md-typeset details.success,
+.md-typeset .admonition.question,
+.md-typeset details.question {
+  background-color: color-mix(in srgb, var(--pandan) 12%, transparent);
+}
+
+.md-typeset .tip > .admonition-title::before,
+.md-typeset .tip > summary::before,
+.md-typeset .success > .admonition-title::before,
+.md-typeset .success > summary::before,
+.md-typeset .question > .admonition-title::before,
+.md-typeset .question > summary::before {
+  background-color: var(--pandan);
+}
+
+.md-typeset .tip > .admonition-title::after,
+.md-typeset .tip > summary::after,
+.md-typeset .success > .admonition-title::after,
+.md-typeset .success > summary::after,
+.md-typeset .question > .admonition-title::after,
+.md-typeset .question > summary::after {
+  color: var(--pandan);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  background-color: color-mix(in srgb, var(--ember) 12%, transparent);
+}
+
+.md-typeset .warning > .admonition-title::before,
+.md-typeset .warning > summary::before {
+  background-color: var(--ember);
+}
+
+.md-typeset .warning > .admonition-title::after,
+.md-typeset .warning > summary::after {
+  color: var(--ember);
+}
+
+.md-typeset .admonition.danger,
+.md-typeset details.danger,
+.md-typeset .admonition.failure,
+.md-typeset details.failure,
+.md-typeset .admonition.bug,
+.md-typeset details.bug {
+  background-color: color-mix(in srgb, var(--chili) 12%, transparent);
+}
+
+.md-typeset .danger > .admonition-title::before,
+.md-typeset .danger > summary::before,
+.md-typeset .failure > .admonition-title::before,
+.md-typeset .failure > summary::before,
+.md-typeset .bug > .admonition-title::before,
+.md-typeset .bug > summary::before {
+  background-color: var(--chili);
+}
+
+.md-typeset .danger > .admonition-title::after,
+.md-typeset .danger > summary::after,
+.md-typeset .failure > .admonition-title::after,
+.md-typeset .failure > summary::after,
+.md-typeset .bug > .admonition-title::after,
+.md-typeset .bug > summary::after {
+  color: var(--chili);
+}
+
+.md-typeset .admonition.quote,
+.md-typeset details.quote {
+  background-color: color-mix(in srgb, var(--muted) 12%, transparent);
+}
+
+.md-typeset .quote > .admonition-title::before,
+.md-typeset .quote > summary::before {
+  background-color: var(--muted);
+}
+
+.md-typeset .quote > .admonition-title::after,
+.md-typeset .quote > summary::after {
+  color: var(--muted);
+}
+
+/* -- footer --------------------------------------------------------------- */
+
+.md-footer {
+  border-top: 1px solid var(--line);
+}
+
+.md-footer-meta {
+  background-color: var(--bg2);
+  color: var(--muted);
+}
+
+.md-copyright,
+.md-copyright__highlight {
+  color: var(--muted);
+}
