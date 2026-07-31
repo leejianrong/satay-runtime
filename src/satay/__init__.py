@@ -17,6 +17,10 @@ The public surface (ARCHITECTURE §1):
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
+from pathlib import Path
+
 from satay.api import (
     EffectSafetyError,
     NondeterminismError,
@@ -35,7 +39,46 @@ from satay.api import (
 )
 from satay.versioning import VersionMismatchError
 
-__version__ = "0.0.0"
+
+def _version_from_source_tree() -> str | None:
+    """Read ``project.version`` out of the checkout's ``pyproject.toml``.
+
+    This is the fallback for a source tree whose distribution is not installed, so a
+    contributor running straight off ``src/`` still sees the real version instead of a
+    placeholder. Returns ``None`` when this file is not sitting in a Satay checkout —
+    which is the normal installed case, where the metadata above already answered.
+    """
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        with pyproject.open("rb") as handle:
+            data: dict[str, object] = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict) or project.get("name") != "satay":
+        return None
+    declared = project.get("version")
+    return declared if isinstance(declared, str) else None
+
+
+def _detect_version() -> str:
+    """Resolve the package version from metadata, never from a constant in this file.
+
+    ``pyproject.toml`` is the single source of truth: the installed distribution's
+    metadata is generated from it at build time, and the source-tree fallback reads it
+    directly. Hard-coding the version here is what shipped ``0.0.0`` in ``0.1.0a1``
+    (KAN-447) — the value must not be able to drift from ``pyproject.toml`` again.
+    """
+    try:
+        return _distribution_version("satay")
+    except PackageNotFoundError:
+        # Not installed: a bare source checkout, or an import off a path entry.
+        return _version_from_source_tree() or "0.0.0.dev0+unknown"
+
+
+__version__: str = _detect_version()
 
 __all__ = [
     "EffectSafetyError",

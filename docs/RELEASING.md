@@ -153,14 +153,21 @@ uv venv /tmp/satay-verify
 uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0a1'
 /tmp/satay-verify/bin/satay --help
 
+# The version the package reports must equal the tag you just shipped (KAN-447).
+/tmp/satay-verify/bin/python -c "
+import importlib.metadata as m, satay
+assert satay.__version__ == m.version('satay') == '0.1.0a1', satay.__version__
+print('version ok:', satay.__version__)"
+
 curl -fsSL \
   https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a1/examples/crash_recovery_demo.py \
   -o /tmp/crash_recovery_demo.py
 /tmp/satay-verify/bin/python /tmp/crash_recovery_demo.py
 ```
 
-Expect `phase 2: final result = 4 (expected 4)`, `step_one executions = 1 (REUSED, still
-1)`, and a timeline ending in `WorkflowCompleted` with a `⚡` on `WorkflowResumed`. Also
+Expect `version ok: 0.1.0a1`, then `phase 2: final result = 4 (expected 4)`, `step_one
+executions = 1 (REUSED, still 1)`, and a timeline ending in `WorkflowCompleted` with a `⚡`
+on `WorkflowResumed`. Also
 confirm the install stayed lean — `pip list` in that venv should show `satay` and nothing
 else of substance (ADR-0013/0016).
 
