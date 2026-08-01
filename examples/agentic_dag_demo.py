@@ -376,33 +376,36 @@ SYNTHESIS_PROMPT = "Write the dossier.\nVENDOR: {vendor}\nSTYLE: {style}\nFINDIN
 #
 # `attempt` is read from the task context, so the flaky provider fails on exactly the
 # attempts it is configured to fail on, and the retry ledger below is reproducible.
-
-
-#: Per-logical-task spend, keyed by ``ctx.idempotency_key`` (stable across retries,
-#: distinct across invocations — that is what it is for). The runtime flushes
-#: ``record_model_usage`` only onto ``TaskCompleted``, so a failed attempt's tokens would
-#: otherwise never reach the journal; a task that wants honest per-attempt cost has to
-#: carry them itself and re-report the lot when it finally succeeds.
-ATTEMPT_SPEND: dict[str, list[tuple[int, int, int]]] = {}
+#
+# There is no cost ledger in this file any more. There used to be: a module-level dict
+# keyed by ``ctx.idempotency_key``, because usage only ever reached the journal on
+# ``TaskCompleted`` and a failed attempt's tokens had to be carried by hand and re-reported
+# when the task finally succeeded (which a task that never succeeds never does). The runtime
+# flushes usage onto ``TaskAttemptFailed`` as well now, attributed to the same durable call
+# — the event carries the identity and the attempt number — so the key is not something a
+# task has to keep track of for cost. ``ctx.idempotency_key`` is still what you send a
+# provider as an idempotency token; it is just no longer load-bearing for accounting.
 
 
 def bill(ctx: satay.TaskContext, completion: Completion) -> None:
-    """Remember what this attempt cost, whether or not the attempt goes on to fail."""
-    ATTEMPT_SPEND.setdefault(ctx.idempotency_key, []).append(
-        (ctx.attempt, completion.input_tokens, completion.output_tokens)
+    """Record what the provider just charged — *before* anything can reject the answer.
+
+    That ordering is the whole technique. The runtime flushes ``record_model_usage`` onto
+    whichever outcome the attempt reaches, ``TaskCompleted`` or ``TaskAttemptFailed``, so a
+    call that was billed and then failed to parse is still priced on the journal. Report at
+    the moment of the charge and the retry ledger comes out right on its own; report after
+    the parse and you only ever record the attempts that worked.
+
+    ``attempt`` and ``usd`` are this example's own fields — the slot is schemaless
+    (ADR-0008) and carries whatever a task puts in it, verbatim.
+    """
+    ctx.record_model_usage(
+        model=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        attempt=ctx.attempt,
+        usd=round(usd(completion.input_tokens, completion.output_tokens), 6),
     )
-
-
-def report_every_attempt(ctx: satay.TaskContext, model: str) -> None:
-    """Record one usage entry per attempt this logical task made, not just the winner."""
-    for attempt, input_tokens, output_tokens in ATTEMPT_SPEND.get(ctx.idempotency_key, []):
-        ctx.record_model_usage(
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            attempt=attempt,
-            usd=round(usd(input_tokens, output_tokens), 6),
-        )
 
 
 @satay.task(retries=1)
@@ -412,7 +415,6 @@ async def plan_questions(brief: Brief) -> list[SubQuestion]:
     prompt = PLAN_PROMPT.format(vendor=brief.vendor, topics=", ".join(brief.topics))
     completion = await MODEL.complete(prompt, label="plan", attempt=ctx.attempt)
     bill(ctx, completion)
-    report_every_attempt(ctx, completion.model)
 
     questions = []
     for line in completion.text.splitlines():
@@ -452,7 +454,6 @@ async def research(question: SubQuestion) -> Finding:
             f"{question.slug}: no FINDING/CONFIDENCE in a {completion.output_tokens}-token reply"
         )
 
-    report_every_attempt(ctx, completion.model)
     return Finding(
         slug=question.slug,
         text=body,
@@ -472,7 +473,6 @@ async def synthesize(vendor: str, findings: list[Finding]) -> str:
     )
     completion = await MODEL.complete(prompt, label="synthesis", attempt=ctx.attempt)
     bill(ctx, completion)
-    report_every_attempt(ctx, completion.model)
     return completion.text
 
 
@@ -715,11 +715,13 @@ async def part_one(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> st
     print(
         f"     {len(set(completed_keys(events)))} answers sit on the journal and the resume"
         " re-ran only what had not committed;\n"
-        "     durable execution is a cost control before it is anything else. Two caveats:\n"
-        "     the fake answers instantly, so everything that started also committed, whereas\n"
-        "     a real call that returned without committing is billed AGAIN on the resume; and\n"
-        "     the totals match only because each task re-reports its failed attempts from an\n"
-        "     in-process ledger, which a real restart would lose."
+        "     durable execution is a cost control before it is anything else. The two totals\n"
+        "     agree because the runtime writes each attempt's usage as that attempt ends: the\n"
+        "     two unparseable answers are priced on their own TaskAttemptFailed events, which\n"
+        "     were durable before the worker died, so the crash cost the run time and not\n"
+        "     accounting. One caveat left: the fake answers instantly, so everything that\n"
+        "     started also committed, whereas a real call that returned without committing is\n"
+        "     billed AGAIN on the resume — and that second charge is on the journal too."
     )
     return resumed.run_id
 
@@ -788,9 +790,9 @@ async def part_three(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> 
     print(f"     spent, in total  {money(*spend(log))}")
     print(f"     on the journal   {money(*recorded_spend(events))}")
     print(
-        f"   ${spend(dead)[2]:.4f} of that never reaches the journal: usage is flushed onto\n"
-        "   TaskCompleted, so a task that never completes records no tokens. Studio shows the\n"
-        "   failed attempts but not what they cost.\n"
+        f"   ${spend(dead)[2]:.4f} of that bought nothing, and all of it is on the journal:\n"
+        "   usage is flushed onto TaskAttemptFailed as well, so a task that never completes\n"
+        "   still prices itself and Studio shows what each dead attempt cost.\n"
         "   The siblings' answers do survive and a resume or fork would reuse them — but this\n"
         "   workflow cannot say 'two of three answered, write it up anyway'. There is no\n"
         "   collect mode, so the caller gets an exception rather than the partial result that,\n"

@@ -159,14 +159,21 @@ async def test_usage_is_recorded_per_attempt_for_every_model_call(tmp_path: Path
         assert entry["usd"] >= 0.0
 
     # The retried question reports one entry per attempt it actually made, failed ones
-    # included: three attempts, three billable calls, three usage entries.
+    # included: three attempts, three billable calls, three usage entries. Two of them ride
+    # on TaskAttemptFailed, which is the only reason the failed ones are here at all — the
+    # task records at the moment of the charge, not after the parse (KAN-479).
     flaky = [
-        entry
-        for payload in payloads(events, EventType.TASK_COMPLETED)
-        if payload.get("key") == FLAKY_KEY
-        for entry in payload.get("usage", [])  # type: ignore[union-attr]
+        (event.type, entry)
+        for event in events
+        if event.payload.get("key") == FLAKY_KEY
+        for entry in event.payload.get("usage", [])  # type: ignore[union-attr]
     ]
-    assert [entry["attempt"] for entry in flaky] == [1, 2, 3]
+    assert [entry["attempt"] for _, entry in flaky] == [1, 2, 3]
+    assert [event_type for event_type, _ in flaky] == [
+        EventType.TASK_ATTEMPT_FAILED,
+        EventType.TASK_ATTEMPT_FAILED,
+        EventType.TASK_COMPLETED,
+    ]
 
 
 # -- the timeout branch of the gate ------------------------------------------------
@@ -193,15 +200,16 @@ async def test_unapproved_dossier_times_out_and_never_pays_for_synthesis(tmp_pat
 # -- fail-fast fan-out -------------------------------------------------------------
 
 
-async def test_dead_source_fails_the_whole_fan_out_and_its_cost_is_unrecorded(
+async def test_dead_source_fails_the_whole_fan_out_and_its_cost_is_still_recorded(
     tmp_path: Path,
 ) -> None:
     """ADR-0020 fail-fast, and the money it takes down with it.
 
     The dead question exhausts its retries; the ``map`` raises; the run fails. Its
-    siblings' answers survive on the journal, but the failed question's tokens do not —
-    usage is flushed onto ``TaskCompleted``, and this task never completes. That gap is the
-    thing the example quantifies in dollars, so assert it exists rather than trusting prose.
+    siblings' answers survive on the journal — and so does the dead question's bill, since
+    usage is flushed onto ``TaskAttemptFailed`` too (KAN-479). This is the run that used to
+    under-report its own spend by 77%, so assert the tokens are there rather than trusting
+    the prose the example prints.
     """
     stdout = run_example(tmp_path)
     runs = await read_runs(tmp_path)
@@ -226,10 +234,27 @@ async def test_dead_source_fails_the_whole_fan_out_and_its_cost_is_unrecorded(
     # Siblings that got there first are durably recorded — fail-fast loses the run, not
     # the results — but the workflow has no way to proceed on a partial fan-out.
     assert set(completed_keys(events)) == {"q-pricing", "q-references"}
-    # The dead question attaches ~21k context tokens per attempt; nothing that large is on
-    # the journal, because usage rides on TaskCompleted and it never got one.
-    assert max(int(entry["input_tokens"]) for entry in model_usage(events)) < 20_000
-    assert "never reaches the journal" in stdout
+
+    # The dead question attaches ~21k context tokens per attempt, and every one of those
+    # three attempts is priced on the journal even though the task never completed.
+    dead = [
+        entry
+        for payload in payloads(events, EventType.TASK_ATTEMPT_FAILED)
+        if payload.get("key") == "q-litigation"
+        for entry in payload.get("usage", [])  # type: ignore[union-attr]
+    ]
+    assert [entry["attempt"] for entry in dead] == [1, 2, 3]
+    assert min(int(entry["input_tokens"]) for entry in dead) > 20_000
+
+    # And the run's aggregate — "what did this cost" — is the whole bill, not just the two
+    # answers that survived. `include_failed_attempts=False` is what asks the old question.
+    complete = sum(int(e["input_tokens"]) for e in model_usage(events))
+    succeeded = sum(
+        int(e["input_tokens"]) for e in model_usage(events, include_failed_attempts=False)
+    )
+    assert complete == succeeded + sum(int(e["input_tokens"]) for e in dead)
+    assert succeeded < complete / 3  # the failed source was the bulk of the spend
+    assert "all of it is on the journal" in stdout
 
 
 # -- fork the finished dossier under a changed prompt ------------------------------

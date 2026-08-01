@@ -112,6 +112,9 @@ export interface Attempt extends Extensible {
   duration_seconds: number | null;
   error?: { type: string; message: string } & Extensible;
   next_delay?: number | null;
+  /** What this attempt reported spending. Present on failed attempts too — the provider
+   *  billed them (KAN-479) — and absent while an attempt is still running. */
+  usage?: UsageEntry[];
 }
 
 export interface TaskDetail extends Extensible {
@@ -123,6 +126,7 @@ export interface TaskDetail extends Extensible {
   key?: string;
   input: Json;
   output: Json;
+  /** Every attempt's usage, totalled — including the attempts that failed. */
   usage: UsageEntry[];
   attempts: Attempt[];
   error?: { type: string; message: string; traceback?: string } & Extensible;

@@ -21,7 +21,7 @@
       case "WorkflowCreated": return [{ t: "workflow=" }, { t: String(p.workflow_name), strong: true }, { t: ` · code_version=${p.code_version}` }];
       case "TaskScheduled": return [{ t: "task=" }, { t: String(p.task_name), strong: true }, { t: " " }, ...id()];
       case "TaskAttemptStarted": return [{ t: "task=" }, { t: String(p.task_name), strong: true }, { t: ` attempt=${p.attempt}` }];
-      case "TaskAttemptFailed": return [{ t: "task=" }, { t: String(p.task_name), strong: true }, { t: ` attempt=${p.attempt} · ` }, { t: String(p.error?.type), danger: true }, { t: p.next_delay != null ? ` · retry in ${p.next_delay}s` : " · exhausted" }];
+      case "TaskAttemptFailed": return [{ t: "task=" }, { t: String(p.task_name), strong: true }, { t: ` attempt=${p.attempt} · ` }, { t: String(p.error?.type), danger: true }, { t: p.next_delay != null ? ` · retry in ${p.next_delay}s` : " · exhausted" }, ...(p.usage ? [{ t: ` · usage×${p.usage.length}` }] : [])];
       case "TaskCompleted": return [{ t: "task=" }, { t: String(p.task_name), strong: true }, ...(p.usage ? [{ t: ` · usage×${p.usage.length}` }] : [])];
       case "TimerCreated": return [{ t: `kind=${p.kind} · ${p.duration_seconds}s → ${fmtClock(p.fire_at)}` }];
       case "TimerFired": return [{ t: `kind=${p.kind} · identity=${p.identity}` }];

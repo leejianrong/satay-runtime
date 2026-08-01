@@ -313,8 +313,13 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
     """``GET /runs/{id}/tasks/{identity}`` — a logical task and its physical attempts.
 
     Groups the attempts of one logical task with its input, output, per-attempt error /
-    retry-delay / duration, the recorded model-usage slot (V2), and — when the run
-    failed — the native traceback recorded on ``WorkflowFailed``.
+    retry-delay / duration / usage, and — when the run failed — the native traceback
+    recorded on ``WorkflowFailed``.
+
+    The recorded model-usage slot (V2) appears twice, deliberately: on each attempt that
+    reported any, and totalled in ``usage`` for the logical task. The total includes
+    **failed** attempts, since the provider billed those too, so a task that never
+    completed still prices itself (KAN-479).
     """
     record = await _require_run(store, run_id)
     events = await store.read_events(run_id)
@@ -362,13 +367,14 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
             current["next_delay"] = p.get("next_delay")
             current["ended_at"] = e.ts.isoformat()
             current["duration_seconds"] = _duration(current["started_at"], e.ts.isoformat())
+            _bill(detail, current, p)
         elif e.type is EventType.TASK_COMPLETED and current is not None:
             current["status"] = "completed"
             current["ended_at"] = e.ts.isoformat()
             current["duration_seconds"] = _duration(current["started_at"], e.ts.isoformat())
             if "output_ref" in p:
                 detail["output"] = decode(p["output_ref"])
-            detail["usage"] = list(p.get("usage", []))
+            _bill(detail, current, p)
             detail["status"] = "completed"
 
     detail["attempts"] = attempts
@@ -472,6 +478,13 @@ async def _compare_side(
         "summary": _run_summary(record, current_version, forked_from=_fork_lineage(events)),
         "calls": calls,
     }
+
+
+def _bill(detail: dict[str, Any], attempt: dict[str, Any], payload: Mapping[str, Any]) -> None:
+    """Attach an attempt's flushed usage to the attempt and to the logical-task total."""
+    usage = list(payload.get("usage", []))
+    attempt["usage"] = usage
+    detail["usage"].extend(usage)
 
 
 def _duration(start_iso: str, end_iso: str) -> float:

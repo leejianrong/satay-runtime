@@ -27,15 +27,28 @@ def interruption_seqs(events: Sequence[Event]) -> set[int]:
     return {e.seq for e in events if e.type is EventType.WORKFLOW_RESUMED}
 
 
-def model_usage(events: Sequence[Event]) -> list[dict[str, Any]]:
-    """Return every recorded model-usage entry across a run's ``TaskCompleted`` events.
+#: The event types an attempt's usage slot can ride on: the attempt completed, or it
+#: failed after the provider had already billed it (KAN-479).
+_USAGE_EVENTS = (EventType.TASK_COMPLETED, EventType.TASK_ATTEMPT_FAILED)
+
+
+def model_usage(
+    events: Sequence[Event], *, include_failed_attempts: bool = True
+) -> list[dict[str, Any]]:
+    """Return every recorded model-usage entry across a run, in journal order.
 
     The read path for the generic usage slot written by ``ctx.record_model_usage``
     (N14); Studio renders these in V6. Empty when no task self-reported usage.
+
+    Counts **failed** attempts by default, because they were billed too: a retried task
+    paid for every answer it threw away, and a task that never completed paid for all of
+    them (KAN-479). Pass ``include_failed_attempts=False`` for the narrower question —
+    the usage of work that actually produced a result, e.g. cost per successful item.
     """
+    wanted = _USAGE_EVENTS if include_failed_attempts else (EventType.TASK_COMPLETED,)
     entries: list[dict[str, Any]] = []
     for event in events:
-        if event.type is EventType.TASK_COMPLETED:
+        if event.type in wanted:
             entries.extend(event.payload.get("usage", []))
     return entries
 
