@@ -72,6 +72,10 @@ uv run pytest tests/integration --collect-only -q   # import-hygiene guard
 uv sync --extra studio && uv run pytest -q          # full suite
 ```
 
+**`.python-version` pins Python 3.13** — the newer of the two versions CI runs (3.12 and
+3.13) — so `uv sync` builds every checkout *and every agent worktree* on the same
+interpreter CI uses. If a failure looks version-shaped, check `uv run python -V` first.
+
 The full suite needs the `studio` extra — without it the FastAPI/Studio tests
 `importorskip` themselves away and the reported count silently drops.
 
