@@ -26,7 +26,7 @@ No broker, no scheduler, no control plane to operate. One process and one SQLite
 
 !!! warning "Alpha software"
 
-    `satay 0.1.0a2` is the current release, and everything on these pages was executed
+    `satay 0.1.0a3` is the current release, and everything on these pages was executed
     against it. The runtime works and its suite is green, but the API can still move between
     alpha versions and nothing is deprecated gracefully yet. Pin the exact version if you
     build on it. [Limits](limits.md) lists what is deliberately missing.
@@ -41,7 +41,7 @@ on a network filesystem is not supported.
 
 ```console
 $ pip install satay
-Successfully installed satay-0.1.0a2
+Successfully installed satay-0.1.0a3
 ```
 
 That is the whole install. `satay` declares no runtime dependencies, so `pip list` in a

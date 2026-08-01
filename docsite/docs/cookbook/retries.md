@@ -7,13 +7,13 @@ The interesting part is not that retries happen. It is that every attempt is a j
 so the retry schedule is durable state you can read back, weeks later, from a run that failed
 at 3am. It is not a log line you have to hope somebody kept.
 
-Source: [`examples/retries_backoff_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a2/examples/retries_backoff_demo.py)
+Source: [`examples/retries_backoff_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/retries_backoff_demo.py)
 
 ## Get It And Run It
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/retries_backoff_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/retries_backoff_demo.py
 SATAY_DATA_DIR=.satay-demo python retries_backoff_demo.py
 ```
 
@@ -147,46 +147,33 @@ Look at the timestamps: the run jumps a minute between attempts, while the recor
 under a second. Both are true, and the gap is the point.
 
 ```python
+from satay.testing import ManualClock, SeededRng, settle
+
 handle = satay.start(quote, 100.0, store=store, clock=clock, rng=SeededRng(JITTER_SEED))
-result = await drive(handle.result, clock)
+result = await settle(handle.result, clock)
 ```
 
 Backoff waits go through the **injected clock**. Pass `satay.testing.ManualClock` and nothing
 moves until someone calls `clock.advance(...)`, so a retry schedule replays in zero wall-clock
-time. The `drive` helper in the example is that someone:
+time. Somebody still has to move that clock, and that somebody ships with Satay: `settle` drives
+an awaitable and advances the clock through every wait the drive suspends on.
 
-```python
-async def drive(factory: Any, clock: ManualClock, *, step: float = 61.0) -> Any:
-    task = asyncio.ensure_future(factory())
-    try:
-        for _ in range(500):
-            for _ in range(4):
-                await asyncio.sleep(0)  # let the drive reach its next suspension point
-            if task.done():
-                return await task
-            if clock.pending_sleepers:
-                clock.advance(step)
-    finally:
-        if not task.done():
-            task.cancel()
-    raise RuntimeError("the run never settled — is something waiting on real time?")
-```
+Its default `step` is a deliberately coarse 61 seconds. One advance clears the 60-second backoff
+cap, which is why the journal timestamps move a minute at a time while the *recorded* delays stay
+sub-second. Virtual time is free, so precision buys nothing.
 
-The `step=61.0` is deliberately coarse: one advance clears the 60-second backoff cap, which is
-why the journal timestamps move a minute at a time. Virtual time is free, so there is no reason
-to be careful with it.
+Two behaviours worth knowing before you lean on it. A drive that **parks** — on a durable timer
+or an event wait — returns normally, because parking is a result rather than a stall, and only
+the caller can produce the worker tick that would unpark it. A drive that never finishes raises
+`NeverSettledError` after `max_steps` passes, having cancelled the drive first, so a test that
+accidentally waits on real time fails with a diagnosis instead of hanging your suite.
 
 !!! tip "This is the loop your tests want"
 
-    `drive` is a trimmed copy of the `drain` fixture in the project's own `tests/conftest.py`.
-    Test a retry policy this way and your suite asserts the real recorded delays without
-    sleeping for them. [Testing workflows](../tutorial/testing.md) has the full pattern.
-
-!!! info "You will not have to hand-write this for much longer"
-
-    The same loop now ships on `main` as `satay.testing.settle`, so a future release replaces the
-    helper above with `from satay.testing import settle`. It is not in `0.1.0a2`, which is the
-    version this page is pinned to, so the local copy is still what you need today.
+    `settle` is not demo scaffolding — it is the same helper your own tests want, and the `drain`
+    fixture in `satay.testing.fixtures` hands you this exact function. Test a retry policy this
+    way and your suite asserts the real recorded delays without sleeping for them.
+    [Testing workflows](../tutorial/testing.md) has the full pattern.
 
 ## The Guard On Side-Effecting Retries
 
