@@ -98,15 +98,13 @@ body**, so it distinguishes "the result came back" from "the work happened again
 Start `test_checkout.py` with the imports and one fixture that clears the counter:
 
 ```python title="test_checkout.py"
-import asyncio
-
 import pytest
 
 import satay
 from checkout import EXECUTIONS, charge, checkout, settlement, trial
 from satay.journal.events import EventType
 from satay.journal.store import SQLiteStore
-from satay.testing import FaultInjector, ManualClock, SeededRng, SimulatedCrash
+from satay.testing import FaultInjector, ManualClock, SeededRng, SimulatedCrash, settle
 from satay.timers import TimerEventWorker
 
 
@@ -265,36 +263,25 @@ was re-driven to completion inside that call.
 `capture` has `retries=2` and fails twice, so a real run of it sleeps for a jittered backoff delay
 between attempts. `SeededRng` makes that delay reproducible, and `ManualClock` makes it free.
 
-Backoff waits happen inside the drive, so the test needs to advance virtual time while the drive is
-suspended. That takes a small helper:
+Backoff waits happen inside the drive, so something has to advance virtual time while the drive is
+suspended. `satay.testing.settle` is that something, and it ships with the runtime:
 
 ```python
-async def drain(factory, clock, *, step=61.0, max_steps=500):
-    """Drive a coroutine, advancing virtual time whenever it parks on the clock."""
-    task = asyncio.ensure_future(factory())
-    try:
-        for _ in range(max_steps):
-            for _ in range(4):
-                await asyncio.sleep(0)
-            if task.done():
-                return await task
-            if clock.pending_sleepers:
-                clock.advance(step)
-    finally:
-        if not task.done():
-            task.cancel()
-    raise AssertionError("the run never settled")
+from satay.testing import settle
+
+result = await settle(handle.result, clock)
 ```
 
-`clock.pending_sleepers` is the count of coroutines currently suspended in `clock.sleep`. When it
-is non-zero the drive is waiting on time and nothing else, so advancing is safe. The `step=61.0`
-clears the 60-second backoff ceiling in one go.
+It awaits the target and advances the clock through every wait the drive suspends on, in coarse
+61-second steps by default — one step clears the 60-second backoff ceiling in one go. Pass either
+an awaitable or, as here, a zero-argument callable returning one.
 
-!!! info "This helper is becoming part of the library"
-
-    The same loop now ships on `main` as `satay.testing.settle`, and the `drain` fixture there
-    just returns it. A future release lets you write `from satay.testing import settle` instead of
-    the function above. It is not in `0.1.0a2`, which is the version these pages describe.
+Two behaviours to know. A drive that **parks** on a durable timer or an event wait returns
+normally, because parking is a result and only your test can produce the `tick()` that unparks it —
+that is why the timer test above calls `worker.tick()` itself rather than expecting `settle` to
+wait. And a drive that never finishes raises `NeverSettledError` instead of hanging your suite,
+cancelling the drive on its way out, which is the failure you want when a task is accidentally
+waiting on real time.
 
 ```python
 async def test_backoff_is_reproducible_under_a_seed() -> None:
@@ -303,7 +290,7 @@ async def test_backoff_is_reproducible_under_a_seed() -> None:
         clock = ManualClock()
         store = SQLiteStore.open(":memory:")
         handle = satay.start(settlement, 500, store=store, clock=clock, rng=SeededRng(seed))
-        assert await drain(handle.result, clock) == "captured-500"
+        assert await settle(handle.result, clock) == "captured-500"
         assert EXECUTIONS["capture"] == 3
         events = await store.read_events(handle.run_id)
         store.close()
@@ -388,8 +375,8 @@ async def test_with_fixtures(manual_clock, fault_injector, temp_db_path) -> None
 
 ## Recap
 
-- `satay.testing` ships `ManualClock`, `SeededRng`, and `FaultInjector`, plus pytest fixtures for
-  all three and for temp store paths. Load them with
+- `satay.testing` ships `ManualClock`, `SeededRng`, `FaultInjector`, and `settle`, plus pytest
+  fixtures for them and for temp store paths. Load them with
   `pytest_plugins = ["satay.testing.fixtures"]`.
 - Tasks are ordinary coroutines outside a workflow, so test them directly.
 - Pass `store=SQLiteStore.open(":memory:")` to `satay.start` to keep a run off disk.
@@ -397,8 +384,8 @@ async def test_with_fixtures(manual_clock, fault_injector, temp_db_path) -> None
   the crash-recovery test. A module-level counter is what proves the finished task was reused.
 - `ManualClock` plus `TimerEventWorker.tick()` fires a fourteen-day timer immediately, and
   `tick()` returns how many fired.
-- `SeededRng` pins backoff jitter, and a small drain loop advances virtual time while the drive is
-  suspended.
+- `SeededRng` pins backoff jitter, and `satay.testing.settle` advances virtual time while the drive
+  is suspended, raising `NeverSettledError` rather than hanging if it never finishes.
 - Assert on results, statuses, exceptions, journal events, and your own counters. Nothing deeper.
 
 ## Next

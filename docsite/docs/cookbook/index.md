@@ -17,13 +17,13 @@ That is the published package from PyPI, and all seven recipes run against it.
 
 !!! tip "These pages are pinned to one version"
 
-    Every `curl` below fetches from the **`v0.1.0a2`** tag, not from `main`, so the file you
+    Every `curl` below fetches from the **`v0.1.0a3`** tag, not from `main`, so the file you
     download is the file that matches the wheel you just installed. `main` moves; the tag does
     not.
 
     Satay is alpha. There is no compatibility promise between alpha versions and nothing is
     deprecated gracefully yet, so pin the exact version in anything you build:
-    `pip install 'satay[studio]==0.1.0a2'`. The [limits page](../limits.md) lists what is
+    `pip install 'satay[studio]==0.1.0a3'`. The [limits page](../limits.md) lists what is
     deliberately absent.
 
 The core runtime declares **no dependencies**, and all seven recipes run on it alone. The
@@ -42,7 +42,7 @@ fetch it, run it:
 ```bash
 mkdir satay-cookbook && cd satay-cookbook
 
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/crash_recovery_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/crash_recovery_demo.py
 
 python crash_recovery_demo.py
 ```

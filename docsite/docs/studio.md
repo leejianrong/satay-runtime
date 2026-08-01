@@ -196,7 +196,9 @@ grouped under its parent call, and child workflows nested where they were starte
 
 **Task detail.** One durable call in full: its identity, every attempt with its error and backoff,
 the recorded input and output, and any model usage a task self-reported through
-`ctx.record_model_usage(...)`.
+`ctx.record_model_usage(...)`. Usage appears twice, deliberately: on each attempt that reported
+any, and totalled for the logical call. A task that paid for three answers and kept one shows you
+both figures, and failed attempts are in the total.
 
 **Compare.** Two runs side by side, matched by durable-call identity rather than by sequence number,
 so you can see which calls a fork replayed from the journal and which it re-ran. Fork a run and then

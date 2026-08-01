@@ -8,14 +8,14 @@ That is the shape most agent code wants and most frameworks make you hand-roll. 
 recipe carrying the single most important lesson in these docs, and the lesson fits in one
 sentence: the model call lives in a **task**, never in the workflow body.
 
-Source: [`examples/agentic_dag_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a2/examples/agentic_dag_demo.py)
-(917 lines, so this page excerpts it)
+Source: [`examples/agentic_dag_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/agentic_dag_demo.py)
+(919 lines, so this page excerpts it)
 
 ## Get It And Run It
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a2/examples/agentic_dag_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/agentic_dag_demo.py
 SATAY_DATA_DIR=.satay-demo python agentic_dag_demo.py
 ```
 
@@ -144,7 +144,7 @@ data dir: …/.satay-demo
 model:    fake-scribe-1 (fake, deterministic)
 
 1) plan → fan out 5 questions → (crash) → approval gate → synthesise
-   run fb81c4421cd1408f8f8e5dc0676d0fa4
+   run 8d75038de27b4f5a883c3ecce351760f
    worker died: simulated crash after event 'TaskAttemptFailed'
    model calls made before the crash: ['plan', 'research:pricing', 'research:security', 'research:references']
    fan-out results durably committed: ['q-pricing', 'q-references']
@@ -170,11 +170,13 @@ model:    fake-scribe-1 (fake, deterministic)
      actually spent    90,547 in /   225 out  $0.2750
      on the journal    90,547 in /   225 out  $0.2750   (record_model_usage)
      5 answers sit on the journal and the resume re-ran only what had not committed;
-     durable execution is a cost control before it is anything else. Two caveats:
-     the fake answers instantly, so everything that started also committed, whereas
-     a real call that returned without committing is billed AGAIN on the resume; and
-     the totals match only because each task re-reports its failed attempts from an
-     in-process ledger, which a real restart would lose.
+     durable execution is a cost control before it is anything else. The two totals
+     agree because the runtime writes each attempt's usage as that attempt ends: the
+     two unparseable answers are priced on their own TaskAttemptFailed events, which
+     were durable before the worker died, so the crash cost the run time and not
+     accounting. One caveat left: the fake answers instantly, so everything that
+     started also committed, whereas a real call that returned without committing is
+     billed AGAIN on the resume — and that second charge is on the journal too.
 ```
 
 The crash is armed after `TaskAttemptFailed`, so the worker dies mid-fan-out at the worst moment:
@@ -187,21 +189,22 @@ That ledger is the argument for durable execution in an agent, stated as money. 
 without a journal re-plans and re-researches from scratch after a crash, and you pay for all of it
 again.
 
-The two caveats the example prints itself are worth reading twice, because they are the difference
-between the demo and your production run:
+The two totals agreeing is not the example being tidy with its own bookkeeping. Recorded usage
+rides on whichever event ends an attempt — `TaskCompleted` **or** `TaskAttemptFailed` — so
+`q-security`'s two rejected answers were priced on their own failure events, and those events were
+durable before the worker died. The crash cost this run time, not accounting.
 
-- **The fake answers instantly.** Everything that started also committed. A real provider call
-  that returned a response the process died before recording is billed and then billed **again**
-  on the resume. At-least-once applies to money.
-- **The totals only match because the tasks cheat.** Each task keeps its own in-process ledger of
-  failed attempts and re-reports the lot when it finally succeeds. A real restart loses that
-  ledger. Which brings us to part 3.
+The one caveat the example still prints is the difference between the demo and your production run.
+**The fake answers instantly**, so everything that started also committed. A real provider call
+that returned a response the process died before recording is billed, and then billed **again** on
+the resume. At-least-once applies to money — and both charges land on the journal, so at least the
+number you read is the number you paid.
 
 ## Part 2: Nobody Approves
 
 ```console
 2) the same gate, with nobody on the other side of it
-   run d71c6de122a64c45869c11d95db336ba
+   run 19fd3b5f76614e87a5fc9573f2cbac13
    status waiting — parked, holding no coroutine and no memory
    4h later, one tick: 1 run(s) woken
    status completed — escalated: no reviewer within 4h
@@ -218,68 +221,87 @@ never pays for the expensive call. A human approval gate that costs nothing to h
 hours is a budget control, and it is one primitive:
 see [Timers And Events](timers-events.md) for the mechanics.
 
-## Part 3: Fail-Fast, And The 77% Under-Report
+## Part 3: Fail-Fast, And Paying For Nothing
 
 ```console
 3) one source never parses — fan-out is fail-fast (ADR-0020)
-   run f2eb6eccb39b466e856f35e74c95de0b
+   run 3a4f9b9cbc0f4c58962b2f91433c177f
    run failed with MalformedResponseError: litigation: no FINDING/CONFIDENCE in a 17-token reply
    research answers that did commit: ['q-pricing', 'q-references']
    attempts burned on the dead source: 3 (retries=2, all of them billed)
      dead source       64,065 in /    51 out  $0.1930
      its siblings      18,309 in /    39 out  $0.0555
      spent, in total   82,415 in /   129 out  $0.2492
-     on the journal    18,350 in /    78 out  $0.0562
-   $0.1930 of that never reaches the journal: usage is flushed onto
-   TaskCompleted, so a task that never completes records no tokens. Studio shows the
-   failed attempts but not what they cost.
+     on the journal    82,415 in /   129 out  $0.2492
+   $0.1930 of that bought nothing, and all of it is on the journal:
+   usage is flushed onto TaskAttemptFailed as well, so a task that never completes
+   still prices itself and Studio shows what each dead attempt cost.
 ```
 
-Two failures stacked on top of each other here, and both are worth understanding.
+Two things worth pulling out of that, and only one of them is a limitation.
 
-### Model usage is only recorded on success
+### Every attempt is priced, including the ones that failed
 
-The run spent **$0.2492**. The journal says **$0.0562**. That is a 77% under-report, and it
-is not a rounding artefact: `$0.1930` of spend simply is not there.
+The run spent **$0.2492** and the journal says **$0.2492**. They agree on a run that *failed*, and
+that is the point. Recorded usage is flushed onto whichever event ends an attempt, `TaskCompleted`
+or `TaskAttemptFailed`. The dead source burned three full attempts, every one billed by the
+provider, and every one priced on the journal even though the task never produced a result.
 
-The cause is mechanical. `ctx.record_model_usage(...)` is flushed onto `TaskCompleted`, so a task
-that never completes records no tokens at all. The dead source burned three full attempts, every
-one of them billed by the provider, and because it never succeeded none of them reached the
-journal. Studio will show you the three failed attempts. It will not show you what they cost.
+So **journal-derived cost is the total, not a floor** — on failed runs too. Budget alerting off the
+journal is a supportable thing to build.
 
-Which means: **on failed runs, journal-derived cost is a floor, not a total.** Do not build
-budget alerting on it.
-
-The workaround the example uses is an out-of-band ledger:
+Reading it back is one call, and it counts failed attempts by default:
 
 ```python
-#: Per-logical-task spend, keyed by ``ctx.idempotency_key``. The runtime flushes
-#: ``record_model_usage`` only onto ``TaskCompleted``, so a failed attempt's tokens would
-#: otherwise never reach the journal; a task that wants honest per-attempt cost has to
-#: carry them itself and re-report the lot when it finally succeeds.
-ATTEMPT_SPEND: dict[str, list[tuple[int, int, int]]] = {}
+from satay.journal.timeline import model_usage
 
-
-def bill(ctx: satay.TaskContext, completion: Completion) -> None:
-    """Remember what this attempt cost, whether or not the attempt goes on to fail."""
-    ATTEMPT_SPEND.setdefault(ctx.idempotency_key, []).append(
-        (ctx.attempt, completion.input_tokens, completion.output_tokens)
-    )
-
-
-def report_every_attempt(ctx: satay.TaskContext, model: str) -> None:
-    """Record one usage entry per attempt this logical task made, not just the winner."""
-    for attempt, input_tokens, output_tokens in ATTEMPT_SPEND.get(ctx.idempotency_key, []):
-        ctx.record_model_usage(
-            model=model, input_tokens=input_tokens, output_tokens=output_tokens,
-            attempt=attempt, usd=round(usd(input_tokens, output_tokens), 6),
-        )
+model_usage(events)                                 # everything billed — $0.2492 here
+model_usage(events, include_failed_attempts=False)  # only work that produced a result
 ```
 
-That fixes part 1's numbers, and it is why they match there. It does not fix part 3, because the
-task never succeeds and so `report_every_attempt` is never reached. And `ATTEMPT_SPEND` is a
-process-local dict, so a real restart loses it. If you need honest agent spend today, meter it
-where the call is made and write it somewhere that does not depend on the task finishing.
+`include_failed_attempts` is a narrowing knob, not a correction. Leave it alone for "what did this
+run cost". Pass `False` for the narrower question — cost per successful item, say, where a retried
+task's discarded answers are noise rather than signal.
+
+The number that actually matters in part 3 is neither total. It is the **$0.1930 that bought
+nothing**: the gap between what the run cost and what it produced. For a retry-heavy agent that is
+the figure to watch, and it is a subtraction you can do now, because both sides of it are journal
+state rather than one side being a guess.
+
+Getting there takes one ordering decision in your own code, and it is the whole technique:
+
+```python
+def bill(ctx: satay.TaskContext, completion: Completion) -> None:
+    """Record what the provider just charged — *before* anything can reject the answer."""
+    ctx.record_model_usage(
+        model=completion.model,
+        input_tokens=completion.input_tokens,
+        output_tokens=completion.output_tokens,
+        attempt=ctx.attempt,
+        usd=round(usd(completion.input_tokens, completion.output_tokens), 6),
+    )
+```
+
+The example calls `bill` immediately after the model returns and **before** the parse that can
+raise. Report at the moment of the charge and the retry ledger comes out right on its own, because
+the runtime will flush whatever is in the slot onto the attempt's failure event. Report after the
+parse and you are back to recording only the attempts that worked — not because the runtime dropped
+anything, but because you never told it what the failed ones cost.
+
+!!! warning "One attempt still goes unpriced, on purpose: an abandoned one"
+
+    A worker death or a cancellation *mid-attempt* loses that attempt's tokens. The attempt reaches
+    neither `TaskCompleted` nor `TaskAttemptFailed`, so there is no event to carry the usage — and
+    nothing was committed, because the process stopped. Writing an event anyway would claim a
+    durability the runtime did not deliver. Those tokens come back only when the resume re-runs the
+    task, and then you are billed twice and the journal says so, which is the honest answer.
+
+    A task that **exhausts its retries** is not this case. Every one of its attempts reaches
+    `TaskAttemptFailed`, so every one is priced. That is exactly what part 3 above is showing.
+
+Studio reads the same slot. Task detail reports usage **per attempt** and **totalled across
+attempts**, so `research:litigation`'s three dead attempts each show what they cost and the logical
+call shows the sum.
 
 ### Fail-fast is worse when siblings cost money
 
@@ -306,12 +328,12 @@ rescued a transient error, because a task that returns is a task that succeeded.
 ```console
 4) fork: re-run last week's dossier under a sharper prompt
    (its own data dir: …/.satay-demo/reprompt)
-   source run 5bccf440bffc4fec937c103acfc76b73 — published
+   source run cedd8fb78b3b4ca7abfdf0f330ef78f6 — published
      | Recommendation: proceed.
    forked at seq 14 (just before synthesize was scheduled)
-   fork run 10c9478772904912bf8b573a57b07bea — published
+   fork run d5f855eef4ab4495a27b6ebd05a93dba — published
      | Recommendation: hold pending a second source.
-   RunForked: source=5bccf440bffc4fec937c103acfc76b73 fork_point_seq=14
+   RunForked: source=cedd8fb78b3b4ca7abfdf0f330ef78f6 fork_point_seq=14
    model calls the fork actually made: ['synthesis']
      re-synthesis      56 in /    29 out  $0.0006 — the research was reused from the
      journal, not bought again. The source run is untouched and still says
@@ -383,8 +405,8 @@ Open the printed URL with its `?token=` query string. Three things to look at:
    keyed items. Open `q-security` for three attempts with two recorded `MalformedResponseError`s
    and their backoff delays. Open `synthesize` for the recorded model usage.
 2. **`brittle_dossier`, the failed run.** Two `TaskCompleted` for the siblings, three failed
-   attempts on `research:litigation`. Now look for what those three attempts cost. It is not there,
-   which is the under-report from part 3 rendered as an absence.
+   attempts on `research:litigation`. Open that call and each dead attempt carries what it cost,
+   with the logical call totalling them — the `$0.1930` from part 3 that bought nothing, itemised.
 3. **The fork pair**, which lives in its own data directory so the two runs sit side by side:
 
     ```bash
@@ -400,10 +422,10 @@ Scripting it instead? Every request needs the token in an `X-Satay-Token` header
 `Authorization: Bearer`, and sending a bearer token gets you the same `401` as sending nothing:
 
 ```bash
-TOKEN=the-token-satay-dev-printed
+export SATAY_TOKEN="<the token satay dev printed>"
 
-curl -s -H "X-Satay-Token: $TOKEN" \
-  'http://127.0.0.1:8787/runs/5bccf440bffc4fec937c103acfc76b73/compare?to=10c9478772904912bf8b573a57b07bea'
+curl -s -H "X-Satay-Token: $SATAY_TOKEN" \
+  'http://127.0.0.1:8787/runs/cedd8fb78b3b4ca7abfdf0f330ef78f6/compare?to=d5f855eef4ab4495a27b6ebd05a93dba'
 ```
 
 ## Recap
@@ -417,8 +439,10 @@ curl -s -H "X-Satay-Token: $TOKEN" \
 - A crash mid-fan-out re-bills only what had not committed. That is a cost control, not just a
   correctness property.
 - A `wait_for_event` gate upstream of the expensive call means an unapproved run never pays for it.
-- **Model usage is only recorded on success.** This run spent $0.2492 and journalled $0.0562.
-  Journal-derived cost on a failed run is a floor. Meter spend out of band if you need the truth.
+- **Every attempt is priced, including the ones that failed.** Part 3 spent $0.2492 and journalled
+  $0.2492 on a run that failed. Record usage at the moment of the charge, before the parse that can
+  reject the answer, and `model_usage()` gives you the total rather than a floor. Only an
+  *abandoned* attempt — worker death mid-call — goes unpriced.
 - Fail-fast fan-out costs more when the siblings are paid calls. Committed answers survive on the
   journal but a terminal run cannot reach them.
 - Forking replays everything before the fork point off the journal, so prompt iteration costs one
