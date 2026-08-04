@@ -57,6 +57,16 @@ If you read four, read these.
 | [0016](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0016-core-dependency-boundary.md) | Core dependency boundary and data representation |
 | [0019](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0019-platform-release-and-tooling.md) | Platform support, release, and cross-cutting tooling |
 
+## Product direction and monetisation
+
+Where the project is going, and how it sustains itself. Read these before proposing
+roadmap work.
+
+| ADR | Subject |
+| --- | --- |
+| [0025](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0025-positioning-agents-first.md) | The debugger is the wedge; agents first, platform second |
+| [0026](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0026-license-and-hosted-journal-plane.md) | Apache-2.0 core plus a hosted journal plane; write-time redaction |
+
 ## Other repository documents
 
 The rest of `docs/` is planning material rather than user documentation, and it describes the
