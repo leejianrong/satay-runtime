@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
-# Satay pre-push hook — mirrors the cheap CI gates (ruff + mypy + unit tests).
+# Satay pre-push hook — mirrors the gates branch protection actually requires.
+#
+# Every step delegates to a `make` target rather than re-spelling its command, so
+# the hook cannot drift from `make ci` or from the workflows. The previous version
+# inlined `uv run mypy src` and `uv run pytest tests/unit -q`, and both were wrong
+# against CI: mypy needs the studio extra installed (without it, 21 errors that say
+# nothing about the code) and CI's "Unit tests" job actually runs the whole suite.
+#
+# Roughly 55s on a warm cache: ruff ~2s, mypy ~6s, full suite ~40s, docs ~2s.
 # Bypass with:  git push --no-verify
 set -euo pipefail
 
-echo "[pre-push] ruff check ..."
-uv run ruff check .
+echo "[pre-push] make check    — ruff, ruff format, mypy --strict (studio extra)"
+make check
 
-echo "[pre-push] ruff format --check ..."
-uv run ruff format --check .
+echo "[pre-push] make test-all — full suite: unit + integration + e2e"
+make test-all
 
-echo "[pre-push] mypy --strict ..."
-uv run mypy src
+echo "[pre-push] make docs     — repo-link check + zensical --strict"
+make docs
 
-echo "[pre-push] pytest tests/unit ..."
-uv run pytest tests/unit -q
+# Secret scanning is a required CI check, but it needs a gitleaks binary this repo
+# does not vendor. Run it when it is there; never fail a push over the tool being
+# absent, because CI's Security workflow scans full history either way.
+if command -v gitleaks >/dev/null 2>&1; then
+	echo "[pre-push] make secrets  — gitleaks over history + working tree"
+	make secrets
+else
+	echo "[pre-push] SKIP secrets  — gitleaks not on PATH ('make secrets' prints install hints)"
+fi
 
 echo "[pre-push] OK"
