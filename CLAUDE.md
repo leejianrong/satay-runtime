@@ -94,15 +94,40 @@ wins. See `docs/CONTEXT.md` § "Relationship to sibei-flow".
 
 ## Commands
 
+Prefer the `make` targets — the hook and CI both go through them, so they cannot
+drift. `make help` lists everything.
+
+```bash
+make dev          # uv sync (dev group)
+make dev-studio   # uv sync --extra studio --frozen  ← what every CI job installs
+make lint         # ruff check + ruff format --check
+make type         # mypy --strict over src (syncs the studio extra first)
+make check        # lint + type
+make test         # unit tests only — the fast inner loop
+make test-all     # the FULL suite (unit + integration + e2e), as CI runs it
+make docs         # check_repo_links.py + zensical build --strict
+make secrets      # gitleaks over history + tree (needs gitleaks on PATH)
+make ci           # everything CI gates on: check + test-all + docs
+```
+
+The raw commands, if you need one in isolation:
+
 ```bash
 uv sync                        # env + deps (installs the dev group)
 uv run ruff check .            # lint
 uv run ruff format .           # format (add --check in CI/hooks)
-uv run mypy src                # type-check, strict
+uv sync --extra studio --frozen && uv run mypy src   # type-check, strict
 uv run pytest tests/unit -q    # unit tests
 uv run pytest tests/integration --collect-only -q   # import-hygiene guard
 uv sync --extra studio && uv run pytest -q          # full suite
+python3 docsite/check_repo_links.py                 # links from the site into the repo
+cd docsite && uvx --from "zensical==0.0.52" zensical build --strict --clean
 ```
+
+**`mypy` needs the studio extra.** Without `fastapi`/`uvicorn`/`typer` installed it
+reports 21 `import-not-found` and `untyped-decorator` errors in `satay.control` and
+`satay.devstack` that say nothing about the code. `make type` syncs it for you; a
+bare `uv run mypy src` on a dev-only env will look broken when it is not.
 
 **`.python-version` pins Python 3.13** — the newer of the two versions CI runs (3.12 and
 3.13) — so `uv sync` builds every checkout *and every agent worktree* on the same
@@ -111,8 +136,12 @@ interpreter CI uses. If a failure looks version-shaped, check `uv run python -V`
 The full suite needs the `studio` extra — without it the FastAPI/Studio tests
 `importorskip` themselves away and the reported count silently drops.
 
-Shortcuts: `make check` (ruff + mypy), `make test` (unit), `make ci` (all).
-Install the pre-push hook with `make install-hooks`; bypass with `git push --no-verify`.
+**Install the pre-push hook: `make install-hooks`** (bypass with `git push --no-verify`).
+It runs `make check`, `make test-all` and `make docs`, plus `make secrets` when
+`gitleaks` happens to be on PATH — roughly 55s on a warm cache. That set is chosen to
+mirror what branch protection requires, including the two things the old hook missed:
+mypy needs the studio extra, and CI's job *named* "Unit tests" installs that extra and
+runs the **whole** suite (427 tests, not the 192 in `tests/unit`).
 
 ## Workflow conventions
 
