@@ -73,13 +73,41 @@ Terms below are canonical. Use them exactly in the PRD, shaping docs, code, and 
 | D22 | Event delivery: a matching event wins over a simultaneously-due `wait_for_event` timeout; multiple buffered matches consumed FIFO by `received_at` | Accepted | [ADR-0021](adr/0021-event-ordering-and-timeout-race.md) |
 | D23 | Replay-divergence policy split out of `effect_safety` into its own `nondeterminism` mode, defaulting to `strict`; `effect_safety` keeps its `warn` default and covers unguarded side effects only | Accepted | [ADR-0022](adr/0022-nondeterminism-policy-split.md) |
 | D24 | Code-version mismatch policy on resume split out of `effect_safety` into its own `version_mismatch` mode, keeping its `warn` default; `effect_safety` now has no remaining riders | Accepted | [ADR-0023](adr/0023-version-mismatch-policy-split.md) |
+| D25 | **Positioning:** the debugger (fork / replay / call-by-call compare) is the wedge, not durability; **first user is an app developer building AI features**, so the usability cards and collect-mode fan-out precede PostgreSQL and multi-worker; the no-agent-abstraction non-goal holds; the vendor-dossier app is **cut** in favour of sibei-flow's repair worker as the reference consumer | Accepted | [ADR-0025](adr/0025-positioning-agents-first.md) |
+| D26 | **Apache-2.0 core forever + a hosted journal plane (tier 1 only)** as the monetisation of record, after the `0.1.0` launch; **redaction moves to write time** before any journal leaves a process; the plane's tenancy stays product-agnostic with sibei-flow as the designated second tenant; the ingest contract is versioned | Accepted | [ADR-0026](adr/0026-license-and-hosted-journal-plane.md) |
 | D-name | Product/package/CLI name **Satay**; debugger "Satay Studio" | Accepted (provisional) | — pending PyPI/domain/trademark |
-| D-license | **Apache-2.0** license | Accepted | — |
+| D-license | **Apache-2.0** license | Accepted — permanence and the paid tier settled by D26 | [ADR-0026](adr/0026-license-and-hosted-journal-plane.md) |
 | D-python | **Python 3.12+** minimum | Accepted | — |
-| D-scope | MVP = runtime (5 primitives) + SQLite + Studio + two-task crash-recovery slice; dossier app is the next milestone | Accepted | — see docs/PRD.md |
+| D-scope | MVP = runtime (5 primitives) + SQLite + Studio + two-task crash-recovery slice. ~~Dossier app is the next milestone.~~ **Amended by D25:** the dossier app is cut; sibei-flow's repair worker is the reference consumer | Accepted (amended) | — see docs/PRD.md, [ADR-0025](adr/0025-positioning-agents-first.md) |
 
 ### Persistence backend ordering (decided in summary, recorded here)
 SQLite = default local/dev backend (MVP). PostgreSQL = first production backend
 (post-MVP). Redis is **not** the durable execution store. This ordering is the
 phased roadmap (SQLite → PostgreSQL → multi-worker) in ARCHITECTURE §9, carried by
 the `Store` and `TaskExecutor` seams (ADR-0007, ADR-0012).
+
+**Re-timed, not reordered, by D25.** The ordering above is unchanged, but it sits
+*after* the agents-first launch: an app developer can adopt Satay on SQLite today,
+whereas a platform team cannot adopt it at all until PostgreSQL and multi-worker
+exist. So the launch does not wait for them. See
+[ADR-0025](adr/0025-positioning-agents-first.md).
+
+### Relationship to sibei-flow (D25/D26)
+**sibei-flow** is the sibling Abang project: an AI SRE that repairs broken dbt
+models and opens the fix as a pull request. The two are **independent products that
+share one execution engine** — Satay's. sibei-flow's own ADR-0012 freezes its durable
+state at repair jobs and names Satay the engine of record for anything beyond that;
+its ADR-0013 widens the `RepairResult.transcript` contract so a journal-backed
+transcript is later an edit rather than a migration.
+
+Two things follow for work in *this* repo:
+
+- **sibei-flow's repair worker is the reference consumer** (D25), replacing the cut
+  dossier app. Expect its needs to surface API gaps; they are legitimate input.
+- **The coupling surface is the journal read format**, not the execution core, and
+  the eventual payoff is a verification tier only Satay can supply: fork a repair run
+  at the failing call and replay a candidate fix against the recorded inputs. Keep
+  the journal event model (stdlib frozen dataclasses) stable accordingly.
+
+Guardrail in the other direction: sibei-flow's requirements must not pull Satay's
+roadmap away from app developers. When the two conflict, D25 wins.

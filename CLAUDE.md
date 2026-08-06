@@ -60,6 +60,38 @@ Deliberate MVP gaps — do not "fix" these without a card:
 - **Windows is best-effort** (the cross-process data-dir lock is POSIX `flock` and
   degrades to a no-op elsewhere); SQLite on network filesystems is unsupported (ADR-0019).
 
+## Direction (decided 2026-08-05 — read before proposing roadmap work)
+
+Two ADRs set what Satay is aiming at, and they change what counts as important:
+
+- **[ADR-0025](docs/adr/0025-positioning-agents-first.md) — the debugger is the
+  wedge; agents first, platform second.** Durability is a commodity claim in 2026
+  (Temporal, Restate, DBOS, Inngest, Hatchet); fork-from-a-prefix, replay and
+  call-by-call compare, locally with no account, are what nobody else has. **The
+  first user is an app developer building AI features, not a platform team.** So:
+  the API-shape and usability cards (KAN-476/477/481/491/520/524/579 and kin) are
+  **launch blockers, not cleanup**, and collect-mode fan-out (KAN-473, reopening
+  ADR-0020) is **on the critical path** because "draft N candidates, keep the best"
+  is the shape of agentic work. PostgreSQL, multi-worker and distributed execution
+  keep their ARCHITECTURE §9 ordering but come **after** the launch.
+  The **no-agent-abstraction non-goal holds**: five primitives and cookbook
+  examples, no loop framework, no provider adapters, no graph DSL. The
+  **vendor-dossier reference app is cut**; sibei-flow's repair worker is the
+  reference consumer instead.
+- **[ADR-0026](docs/adr/0026-license-and-hosted-journal-plane.md) — Apache-2.0
+  forever plus a hosted journal plane.** Nothing is withheld from a self-hosted
+  user. The paid tier is tier-1 hosting only (journal ingest, retention, hosted
+  Studio, team sharing, cost reporting), **after** the `0.1.0` launch, never hosted
+  execution. One requirement lands early: **redaction must move to write time**
+  before any journal leaves a process for an external store. `Redactor` is
+  read-time today, which protects the API response and not the store.
+
+**sibei-flow** is the sibling project and the designated first tenant. The two are
+independent products sharing one engine; the coupling surface is the **journal read
+format** (stdlib frozen dataclasses), not the execution core. Its needs are
+legitimate input, but when they conflict with the app-developer roadmap, ADR-0025
+wins. See `docs/CONTEXT.md` § "Relationship to sibei-flow".
+
 ## Commands
 
 ```bash
