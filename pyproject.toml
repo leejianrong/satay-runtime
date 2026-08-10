@@ -80,6 +80,14 @@ include = ["src/satay", "README.md", "LICENSE"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# ruff 0.16 began formatting Markdown as well as Python. This repo adopted ruff as
+# a *Python* formatter, and its Markdown is hand-written prose — the README, the
+# ADRs, and the docsite pages — where line breaks and table alignment are chosen
+# deliberately. Letting a Python toolchain reflow them on every version bump is
+# churn nobody asked for, and it would have rewritten 8 files on this upgrade.
+# Excluding Markdown keeps `ruff format` doing the job it was adopted to do
+# (KAN-455; it blocked the 0.15.22 → 0.16.1 bump in Dependabot #45).
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
