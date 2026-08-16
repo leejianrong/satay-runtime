@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Sequence
+from contextvars import ContextVar
 from typing import Any, get_type_hints
 
 from satay.api.registry import REGISTRY, WorkflowDefinition
@@ -81,11 +82,20 @@ class TimerEventWorker:
     # -- loop control ------------------------------------------------------------
 
     async def run(self) -> None:
-        """Run the poll loop until :meth:`stop`, sleeping ``interval`` on the clock."""
+        """Run the poll loop until :meth:`stop`, sleeping ``interval`` on the clock.
+
+        Registers the loop against its store for the duration, so a ``RunHandle`` over
+        the same store knows a worker is there to unpark its run and can wait for the
+        outcome instead of handing back :data:`satay.PARKED` (ADR-0030).
+        """
         self._running = True
-        while self._running:
-            await self.tick()
-            await self._clock.sleep(self._interval)
+        register_poll_loop(self._store)
+        try:
+            while self._running:
+                await self.tick()
+                await self._clock.sleep(self._interval)
+        finally:
+            unregister_poll_loop(self._store)
 
     def stop(self) -> None:
         """Ask the background :meth:`run` loop to exit after its current tick."""
@@ -100,10 +110,14 @@ class TimerEventWorker:
         re-driven by event delivery + timer firing (V1-V4 semantics unchanged); a
         control write's effect is observed through those same paths.
         """
-        await self._apply_commands()
-        resumed = await self._deliver_events()
-        resumed += await self._fire_timers()
-        return resumed
+        token = _IN_TICK.set(True)
+        try:
+            await self._apply_commands()
+            resumed = await self._deliver_events()
+            resumed += await self._fire_timers()
+            return resumed
+        finally:
+            _IN_TICK.reset(token)
 
     # -- control writes (V5, ADR-0012) -------------------------------------------
 
@@ -232,6 +246,55 @@ class TimerEventWorker:
         return None  # pragma: no cover - a run always has a WorkflowCreated head.
 
 
+#: Stores with a poll loop running **in this process**, as ``id(store) -> (store, depth)``.
+#: The store is held so its id cannot be recycled under us; the depth makes the two
+#: registrars (``TimerEventWorker.run`` and ``satay.run_app``) safe to nest.
+_RUNNING_LOOPS: dict[int, tuple[Any, int]] = {}
+
+
+def register_poll_loop(store: Store) -> None:
+    """Record that a poll loop is running over ``store`` in this process (ADR-0030)."""
+    key = id(store)
+    _, depth = _RUNNING_LOOPS.get(key, (store, 0))
+    _RUNNING_LOOPS[key] = (store, depth + 1)
+
+
+def unregister_poll_loop(store: Store) -> None:
+    """Undo one :func:`register_poll_loop`; the last one out clears the entry."""
+    key = id(store)
+    entry = _RUNNING_LOOPS.get(key)
+    if entry is None:  # pragma: no cover - defensive: unbalanced unregister
+        return
+    _, depth = entry
+    if depth <= 1:
+        del _RUNNING_LOOPS[key]
+    else:
+        _RUNNING_LOOPS[key] = (entry[0], depth - 1)
+
+
+#: Set while the current task is inside :meth:`TimerEventWorker.tick`. A tick can itself
+#: drive a run — the control ``start`` command does — and that drive must never wait for
+#: "the poll loop" to unpark it, because the poll loop is the thing doing the waiting.
+_IN_TICK: ContextVar[bool] = ContextVar("satay_in_poll_tick", default=False)
+
+
+def in_poll_loop_tick() -> bool:
+    """Whether this task is executing inside a poll-loop tick (ADR-0030)."""
+    return _IN_TICK.get()
+
+
+def poll_loop_running(store: Store) -> bool:
+    """Whether a poll loop over ``store`` is running in this process (ADR-0030).
+
+    Deliberately process-local and identity-based: it answers "is there something here
+    that will wake a parked run", which is what ``await handle.result()`` needs in order
+    to decide between waiting and returning :data:`satay.PARKED`. A worker in *another*
+    process — ``satay dev``, say — is invisible to it, and is meant to be: this process
+    cannot promise that one is alive.
+    """
+    return id(store) in _RUNNING_LOOPS
+
+
 def _has_timer_fired(events: Sequence[Event], identity: str, kind: TimerKind) -> bool:
     return any(
         e.type is EventType.TIMER_FIRED
@@ -292,4 +355,10 @@ def _input_annotation(fn: Any) -> Any:
 
 
 # Re-exported so callers can start the poll loop as ``from satay.timers import ...``.
-__all__ = ["TimerEventWorker"]
+__all__ = [
+    "TimerEventWorker",
+    "in_poll_loop_tick",
+    "poll_loop_running",
+    "register_poll_loop",
+    "unregister_poll_loop",
+]

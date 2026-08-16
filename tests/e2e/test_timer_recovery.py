@@ -27,7 +27,7 @@ from datetime import timedelta
 
 import pytest
 
-from satay import demo
+from satay import PARKED, demo
 from satay.api.primitives import send_event, start
 from satay.demo import REVIEW_KEY, ReviewDecision
 from satay.journal.events import EventType, RunStatus, TimerRecord
@@ -96,7 +96,7 @@ async def test_crash_between_timer_created_and_the_timers_row_stays_recoverable(
 
     # Resume: the derived row is repaired from the recorded TimerCreated payload.
     resumed = start(demo.sleep_demo, 1, run_id=handle.run_id, store=store, clock=clock)
-    assert await resumed.result() is None  # parks again on the same sleep
+    assert await resumed.result() is PARKED  # parks again on the same sleep
     assert await resumed.status() == RunStatus.WAITING.value
 
     rows = await _pending_timers(store, handle.run_id, clock)
@@ -135,7 +135,7 @@ async def test_repairing_the_timers_row_twice_creates_only_one_row() -> None:
 
     for _ in range(3):
         resumed = start(demo.sleep_demo, 1, run_id=handle.run_id, store=store, clock=clock)
-        assert await resumed.result() is None
+        assert await resumed.result() is PARKED
         assert len(await _pending_timers(store, handle.run_id, clock)) == 1
         assert await _timer_created_identities(store, handle.run_id) == ["sleep#0"]
         await _assert_no_orphan_rows(store, handle.run_id, clock)
@@ -162,12 +162,12 @@ async def test_a_healthy_sleep_park_is_unaffected_by_the_repair() -> None:
     store = SQLiteStore.open(":memory:")
 
     handle = start(demo.sleep_demo, 1, store=store, clock=clock)
-    assert await handle.result() is None
+    assert await handle.result() is PARKED
     assert len(await _pending_timers(store, handle.run_id, clock)) == 1
 
     # A resume that is not repairing anything still adds no duplicate row.
     resumed = start(demo.sleep_demo, 1, run_id=handle.run_id, store=store, clock=clock)
-    assert await resumed.result() is None
+    assert await resumed.result() is PARKED
     assert len(await _pending_timers(store, handle.run_id, clock)) == 1
     assert await _timer_created_identities(store, handle.run_id) == ["sleep#0"]
 
@@ -207,7 +207,7 @@ async def test_crash_after_the_event_timeout_timer_created_keeps_one_timer() -> 
 
     # Resume: one repaired row, one recorded creation, the original deadline.
     resumed = start(demo.review_timeout_demo, 1, run_id=handle.run_id, store=store, clock=clock)
-    assert await resumed.result() is None
+    assert await resumed.result() is PARKED
     assert await resumed.status() == RunStatus.WAITING.value
 
     assert await _timer_created_identities(store, handle.run_id) == ["event#0"]
@@ -241,7 +241,7 @@ async def test_repaired_event_timeout_still_loses_to_a_delivered_event() -> None
         await handle.result()
 
     resumed = start(demo.review_timeout_demo, 1, run_id=handle.run_id, store=store, clock=clock)
-    assert await resumed.result() is None
+    assert await resumed.result() is PARKED
     assert len(await _pending_timers(store, handle.run_id, clock)) == 1
 
     # Deliver the decision and co-schedule the repaired timeout in the same tick.
@@ -275,7 +275,7 @@ async def test_crash_after_event_wait_started_does_not_duplicate_the_timer() -> 
     await _assert_no_orphan_rows(store, handle.run_id, clock)
 
     resumed = start(demo.review_timeout_demo, 1, run_id=handle.run_id, store=store, clock=clock)
-    assert await resumed.result() is None
+    assert await resumed.result() is PARKED
     assert await _timer_created_identities(store, handle.run_id) == ["event#0"]
     assert len(await _pending_timers(store, handle.run_id, clock)) == 1
 

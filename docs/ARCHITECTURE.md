@@ -32,7 +32,8 @@ satay/
   src/satay/
     __init__.py             # public surface: workflow, task, start, sleep,
                             #   wait_for_event, send_event, map, gather,
-                            #   start_child, fork, TaskContext, run handle
+                            #   start_child, fork, run_app, TaskContext,
+                            #   run handle, PARKED
     api/                    # decorators, run handle, TaskContext, primitives   (A1, N1-N5)
     replay/                 # replay engine, identity resolver, nondeterminism   (A2, N6/N7/N9)
     journal/                # event model, Store interface, SQLiteStore, codec   (A3, N8/N12)
@@ -203,6 +204,16 @@ fork-point resolution and journal seeding live in `satay.control.commands`, whic
 Python and lazily imported from the core; the HTTP route and the in-process call converge
 on the same seed-and-drive path, and the HTTP route still enqueues onto the command queue
 so the worker remains the single writer (ADR-0012).
+
+**So is the poll loop.** `async with satay.run_app() as store:` (`satay.api.app`) opens the
+project-local journal, runs a `TimerEventWorker` over it, and tears both down on exit — the
+supported way to wake a run parked by `sleep` or `wait_for_event` without booting `satay dev`
+(ADR-0030). It imports the store and the worker lazily, so `import satay` still pulls no
+studio dependency, and `tests/integration/test_import_hygiene.py` proves it by driving a
+parked run to completion in a clean child interpreter rather than only by scanning imports.
+The same ADR makes `await handle.result()` on a parked run answer the `satay.PARKED`
+sentinel instead of `None` when nothing in the process will wake it; `satay.start` and
+`satay.fork` share one `await_unpark` helper so the two handles cannot diverge.
 
 ### 3.7. Satay Studio (U2-U8)
 

@@ -49,6 +49,7 @@ If you read four, read these.
 | [0018](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0018-frontend-and-studio-delivery.md) | Frontend and Studio delivery specifics |
 | [0024](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0024-dev-stack-app-module-loading.md) | `satay dev` imports the user's app modules (`--app`) |
 | [0029](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0029-write-time-redaction.md) | Write-time redaction: slot-scoped, off by default |
+| [0030](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0030-run-app-and-the-parked-result.md) | `satay.run_app`, and what `result()` answers for a parked run |
 
 ## Packaging, tooling, and process
 

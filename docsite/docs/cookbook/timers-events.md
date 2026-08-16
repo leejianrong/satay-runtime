@@ -66,7 +66,7 @@ Satay — durable sleep, events, and the timeout path
 data dir: …/.satay-demo
 
 1) overnight_restock sleeps 8h — run dfda89e0f6ea4ce29ba925360cb88c1c
-  first drive returned None — status waiting (parked)
+  first drive returned <parked> — status waiting (parked)
   count_stock executions: 1  reorder: not yet reached
   worker tick with nothing due: 0 run(s) woken
   after advancing 8h, worker tick: 1 run(s) woken
@@ -88,7 +88,7 @@ Run dfda89e0f6ea4ce29ba925360cb88c1c — 11 event(s)
    11  2026-01-01T08:00:00+00:00  WorkflowCompleted
 
 2) await_shipment blocks on an event — run 2ea2c3cb195a4d36aaf4a99a9c4f97b8
-  first drive returned None — status waiting
+  first drive returned <parked> — status waiting
   sent ShipmentArrived(key='order-7') — it sits in the durable inbox
   worker tick: 1 run(s) woken
   result: 4 crates received via DHL   status: completed
@@ -102,7 +102,7 @@ Run 2ea2c3cb195a4d36aaf4a99a9c4f97b8 — 5 event(s)
     5  2026-01-01T08:00:00+00:00  WorkflowCompleted
 
 3) await_shipment_or_escalate times out — run 10b6f4ba03f94e9b8d28435ae6ea235f
-  first drive returned None — status waiting
+  first drive returned <parked> — status waiting
   after advancing 6h, worker tick: 1 run(s) woken
   result: escalated: nothing arrived for order-8 within 6h   status: completed
   the wait resolved to None and the workflow chose its own escalation branch
@@ -124,13 +124,17 @@ all three runs are on the run list:  satay dev --data-dir …/.satay-demo
 Section 1's first line is the surprising one:
 
 ```
-first drive returned None — status waiting (parked)
+first drive returned <parked> — status waiting (parked)
 ```
 
-`await handle.result()` returned `None` and the run is not finished. That is not an error. The
-workflow reached `satay.sleep(8 * _HOUR)`, the runtime wrote `TimerCreated` and
+`await handle.result()` returned `satay.PARKED` and the run is not finished. That is not an
+error. The workflow reached `satay.sleep(8 * _HOUR)`, the runtime wrote `TimerCreated` and
 `WorkflowWaiting`, and the drive **returned**. The coroutine is gone. Nothing about this run
 lives in memory any more; all of it is three rows in SQLite.
+
+`PARKED` is a sentinel with no other meaning, which is the point: this demo drives the worker by
+hand, so `None` here would have been indistinguishable from a workflow that finished and returned
+`None`. Test for it with `is satay.PARKED`, never `== None`.
 
 Then when the deadline comes due, a worker re-drives the run from the top. `count_stock` answers
 from the journal, `satay.sleep` sees a fired timer and returns immediately, and `reorder` runs
@@ -209,10 +213,16 @@ print(f"  after advancing 8h, worker tick: {await worker.tick()} run(s) woken")
 `tick()` returns how many runs it woke, which is why the first tick prints `0` and the one after
 the clock advance prints `1`. Nothing was due yet, then something was.
 
-In production you do not write this loop. `satay dev` runs `TimerEventWorker` in the background
-against a real clock, and it is the same class doing the same job. The only reason it appears here
-is that a demo cannot wait eight real hours, and `ManualClock` plus an explicit `tick()` is how
-you compress that to a microsecond.
+In an application you do not write this loop. `async with satay.run_app() as store:` starts the
+same worker against a real clock and stops it on the way out, and `satay dev` does it for a whole
+process with Studio attached. Both are the same class doing the same job. The only reason it
+appears by hand here is that a demo cannot wait eight real hours, and `ManualClock` plus an
+explicit `tick()` is how you compress that to a microsecond.
+
+The trade is visible in what `result()` answers. With a loop running, `await handle.result()` on a
+parked run waits for the wake and gives you the outcome. Driving ticks by hand there is no loop, so
+it returns `satay.PARKED` — the sentinel that means "no outcome yet", distinct from a workflow that
+returned `None` on purpose. See [The Five Primitives](../primitives.md#running-the-worker).
 
 Which is also how you should test this. `clock.advance(...)` then `await worker.tick()` is the
 whole pattern for asserting on a workflow that sleeps overnight or waits three days for a human.
@@ -243,8 +253,9 @@ so you can see both mechanisms armed and watch which one resolved the wait.
 
 - `satay.sleep` records a timer and parks the run. The coroutine is released; only SQLite rows
   remain. An eight-hour wait costs nothing to hold.
-- A parked run's first drive returns `None` with status `waiting`. That is the normal shape, not
-  a failure.
+- With no poll loop running, a parked run's first drive returns `satay.PARKED` with status
+  `waiting`. That is the normal shape, not a failure. Inside `async with satay.run_app()` the
+  loop is there, and `result()` waits for the wake instead.
 - Waking from a park is graceful. No `WorkflowResumed`, no `⚡`. That marker stays reserved for
   actual interruptions.
 - `send_event` writes to a durable inbox keyed by `key=`. An event that arrives before its wait

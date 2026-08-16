@@ -71,8 +71,8 @@ async def settle[T](
     Returns whatever the drive returns, and propagates whatever it raises: a
     ``WorkflowFailedError`` from a failed run, a ``SimulatedCrash`` from an injected
     fault. A drive that parks (on a durable timer or an event wait) returns normally —
-    parking is a result, not a stall, so ``settle`` hands it back rather than waiting for
-    a worker tick that only the caller can make.
+    parking is a result, not a stall, so ``settle`` hands back ``satay.PARKED`` rather
+    than waiting for a worker tick that only the caller can make (ADR-0030).
 
     Raises:
         NeverSettledError: after ``max_steps`` passes without the drive finishing. The

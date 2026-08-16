@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
+from satay import PARKED
 from satay.api.decorators import task, workflow
 from satay.api.primitives import send_event, sleep, start, wait_for_event
 from satay.journal.events import EventType, TimerStatus
@@ -61,8 +62,8 @@ async def test_poll_loop_fires_only_due_timers() -> None:
     store = SQLiteStore.open(":memory:")
     short = start(pl_short_sleep, 0, store=store, clock=clock)
     long = start(pl_long_sleep, 0, store=store, clock=clock)
-    assert await short.result() is None  # both park on their sleep
-    assert await long.result() is None
+    assert await short.result() is PARKED  # both park on their sleep
+    assert await long.result() is PARKED
 
     worker = TimerEventWorker(store=store, clock=clock)
 
@@ -88,7 +89,7 @@ async def test_poll_loop_checks_event_before_resolving_timeout() -> None:
     clock = ManualClock()
     store = SQLiteStore.open(":memory:")
     handle = start(pl_timeout_wait, 0, store=store, clock=clock)
-    assert await handle.result() is None  # parks with an event_timeout timer at +2h
+    assert await handle.result() is PARKED  # parks with an event_timeout timer at +2h
 
     # Advance to the timeout's fire_at AND deliver a matching event on the same tick.
     clock.advance(2 * 3600)
@@ -111,7 +112,7 @@ async def test_duplicate_timer_fire_does_not_double_resume() -> None:
     clock = ManualClock()
     store = SQLiteStore.open(":memory:")
     handle = start(pl_short_sleep, 0, store=store, clock=clock)
-    assert await handle.result() is None
+    assert await handle.result() is PARKED
 
     worker = TimerEventWorker(store=store, clock=clock)
     clock.advance(3600)
@@ -129,7 +130,7 @@ async def test_timeout_timer_status_after_firing() -> None:
     clock = ManualClock()
     store = SQLiteStore.open(":memory:")
     handle = start(pl_timeout_wait, 0, store=store, clock=clock)
-    assert await handle.result() is None
+    assert await handle.result() is PARKED
 
     worker = TimerEventWorker(store=store, clock=clock)
     clock.advance(2 * 3600)

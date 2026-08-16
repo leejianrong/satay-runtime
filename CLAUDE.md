@@ -33,6 +33,10 @@ What is real now:
   `nondeterminism` policy (ADR-0022).
 - **Time and events** (`timers/`): durable `sleep`, `wait_for_event`/`send_event` over a
   persistent inbox, and the timer + event poll loop (FIFO, event-wins-over-timeout).
+  `async with satay.run_app() as store:` (`api/app.py`) is the supported way to get that
+  loop without `satay dev` — **core, no studio extra** (ADR-0030). Inside it a parked
+  run's `result()` waits for the wake; outside it, `result()` returns `satay.PARKED`,
+  never `None`.
 - **Composition** (`api/primitives.py`): `map`/`gather`/`start_child` as keyed durable
   calls, with partial-completion recovery mid-fan-out.
 - **Control plane** (`control/`): HTTP control + read API, a `Redactor` forced on every
@@ -173,9 +177,18 @@ src/satay/
   cli/         core argparse CLI (`satay runs show`)                       (U1)
 ```
 
-Public surface (re-exported from `satay/__init__.py`): `workflow`, `task`, `start`,
-`sleep`, `wait_for_event`, `send_event`, `map`, `gather`, `start_child`,
-`TaskContext`, `RunHandle`.
+Public surface (re-exported from `satay/__init__.py`) — `tests/unit/test_public_surface.py`
+is the authority, keep the two in step:
+
+- **Authoring:** `workflow`, `task`, `TaskContext`, `task_context`
+- **Primitives:** `start`, `sleep`, `wait_for_event`, `send_event`, `map`, `gather`,
+  `start_child`
+- **Entry points:** `run_app` (ADR-0030 — `async with`: journal open, poll loop running,
+  **core, not `satay[studio]`**), `fork` (ADR-0028)
+- **Values:** `RunHandle`, `PARKED` (ADR-0030 — what `result()` returns for a run parked
+  with nothing in this process to wake it; **not `None`**)
+- **Errors:** `WorkflowFailedError`, `TaskFailedError`, `NondeterminismError`,
+  `EffectSafetyError`, `VersionMismatchError`
 
 ## The core-dependency boundary (do not cross)
 

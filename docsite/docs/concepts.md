@@ -252,9 +252,11 @@ the interesting one: a run parked on a `satay.sleep` or a `wait_for_event` has n
 at all. It was released from memory, and something has to wake it. Waking is a graceful resume, so
 it writes no `WorkflowResumed` and shows no `⚡`.
 
-Because a parked run has no frame, `await handle.result()` on one returns `None` rather than
-blocking forever. Check `await handle.status()` and call `result()` again once the worker has moved
-it along. [The Five Primitives](primitives.md#running-the-worker) shows the pattern.
+A parked run has no frame, so what `await handle.result()` does depends on whether anything in
+your process is going to wake it. Inside `async with satay.run_app() as store:` there is a poll
+loop, and `result()` waits for it and hands you the real outcome. Without one it returns
+`satay.PARKED` — a sentinel, not `None`, so it cannot be mistaken for a workflow that returned
+`None` on purpose. [The Five Primitives](primitives.md#running-the-worker) shows both.
 
 ## Recap
 
@@ -264,8 +266,9 @@ it along. [The Five Primitives](primitives.md#running-the-worker) shows the patt
 - Ordinary calls are identified by `(task_name, ordinal)`, counted per task name and reset on
   every drive. `map` items are identified by `(task_name, key)` and survive reordering.
 - Every logical call has an idempotency key that is stable across retries.
-- `satay.start` is a plain function. `await handle.result()` does the work, returns `None` on a
-  parked run, and raises `WorkflowFailedError` on a failed one.
+- `satay.start` is a plain function. `await handle.result()` does the work, and raises
+  `WorkflowFailedError` on a failed one. On a parked run it waits for the poll loop if
+  `satay.run_app` is running one, and returns `satay.PARKED` — not `None` — if nothing will.
 
 ## Next
 
