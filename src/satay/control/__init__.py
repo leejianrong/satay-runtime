@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from satay.control.api import ControlAPI, ReadAPI
 from satay.control.commands import (
+    INHERIT,
     CancelRun,
     Command,
     CommandQueue,
@@ -34,6 +35,8 @@ from satay.control.commands import (
     apply_command,
     apply_fork,
     create_fork,
+    drive_forked_run,
+    resolve_fork_point,
     validate_fork_request,
 )
 from satay.control.redaction import DEFAULT_REDACTION_PATTERNS, REDACTED, Redactor
@@ -78,6 +81,7 @@ def serve(*args: Any, **kwargs: Any) -> None:
 
 __all__ = [
     "DEFAULT_REDACTION_PATTERNS",
+    "INHERIT",
     "REDACTED",
     "TOKEN_HEADER",
     "AuthError",
@@ -102,9 +106,11 @@ __all__ = [
     "compare",
     "create_app",
     "create_fork",
+    "drive_forked_run",
     "ensure_loopback_bind",
     "generate_token",
     "is_loopback_host",
+    "resolve_fork_point",
     "run_list",
     "serve",
     "task_detail",

@@ -359,6 +359,23 @@ SYNTHESIS_STYLE["value"] = "sceptical"
 fork_id = await control.fork(handle.run_id, fork_point)
 ```
 
+!!! tip "The prompt does not have to be a global"
+
+    This example carries the synthesis style in a module-level dict because it predates
+    `workflow_input=`. Write it today and the prompt lives in the workflow's input, where it
+    belongs, and the fork point is a task name rather than a computed sequence number:
+
+    ```python
+    handle = await satay.fork(
+        run_id,
+        before_task="synthesize",
+        workflow_input={**brief, "style": "sceptical"},
+    )
+    print(await handle.result())
+    ```
+
+    See [Forking a run](../fork.md).
+
 !!! warning "Changing the prompt is safe. Changing the schedule is not"
 
     Nondeterminism detection is **strict by default**, and it compares the durable-call schedule.

@@ -65,6 +65,28 @@ class SendEvent:
     run_id: str | None = None
 
 
+class _Inherit:
+    """The type of :data:`INHERIT` — a sentinel distinct from every real input value."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "INHERIT"
+
+
+#: The journal events that make a run terminal — a prefix containing one is a whole
+#: finished run, which the replay engine short-circuits instead of re-executing.
+_TERMINAL_EVENT_TYPES = frozenset(
+    {EventType.WORKFLOW_COMPLETED, EventType.WORKFLOW_FAILED, EventType.WORKFLOW_CANCELLED}
+)
+
+
+#: "No input override": the fork rehydrates the source run's ``WorkflowCreated`` input.
+#: A sentinel rather than ``None`` because ``None`` is a perfectly good workflow input,
+#: so ``workflow_input=None`` must mean "run it with ``None``", not "inherit" (KAN-481).
+INHERIT: Any = _Inherit()
+
+
 @dataclass(frozen=True, slots=True)
 class ForkRun:
     """Fork a terminal run from a journal point (N15, V7).
@@ -74,11 +96,15 @@ class ForkRun:
     dropped downstream calls are journal misses in the new run, so they re-run under any
     changed code. The new ``run_id`` is allocated at enqueue time so the HTTP caller can
     return it immediately (write-then-poll, ADR-0012).
+
+    ``workflow_input`` overrides the input the fork runs under (KAN-481, ADR-0028); left
+    at :data:`INHERIT` the fork rehydrates the source's recorded input.
     """
 
     source_run_id: str
     fork_point_seq: int
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    workflow_input: Any = INHERIT
 
 
 #: The commands the worker applies as the single writer (ADR-0012). V7 adds ``ForkRun``:
@@ -225,7 +251,15 @@ async def validate_fork_request(store: Store, source_run_id: str, fork_point_seq
     it to quiescent ``waiting`` runs is a one-line change later); and a ``fork_point_seq``
     that is not a real event ``seq`` on that run. Validated synchronously so the caller
     fails fast before anything is enqueued.
+
+    Kept as the explicit-seq entry point; :func:`resolve_fork_point` is the general form
+    that also accepts ``before_task=`` and applies the same checks.
     """
+    await resolve_fork_point(store, source_run_id, fork_point_seq=fork_point_seq)
+
+
+async def _validate_source_run(store: Store, source_run_id: str) -> None:
+    """Reject an unknown or non-terminal fork source (shared by both entry points)."""
     record = await store.get_run(source_run_id)
     if record is None:
         raise ForkValidationError(f"source run {source_run_id!r} not found")
@@ -235,12 +269,87 @@ async def validate_fork_request(store: Store, source_run_id: str, fork_point_seq
             f"forks only terminal runs (completed/failed/cancelled). Forking an "
             f"actively-executing run is not supported (ADR-0004/Q53)."
         )
-    events = await store.read_events(source_run_id)
-    seqs = {e.seq for e in events}
-    if fork_point_seq not in seqs:
+
+
+async def resolve_fork_point(
+    store: Store,
+    source_run_id: str,
+    *,
+    fork_point_seq: int | None = None,
+    before_task: str | None = None,
+    before_ordinal: int | None = None,
+) -> int:
+    """Resolve a fork point from a task name, or validate an explicit seq (KAN-481).
+
+    Choosing where to cut used to be journal archaeology — scanning ``TaskScheduled``
+    events for a name, taking the ``min`` seq, then stepping back one event. This is
+    that scan, once, in the runtime:
+
+    - ``fork_point_seq=`` — the raw form, validated as before (a real event seq on a
+      terminal source run).
+    - ``before_task="synthesize"`` — cut so the fork's copied prefix ends immediately
+      **before** that task was scheduled, so it re-runs. When the name was scheduled
+      more than once this selects the **earliest** occurrence, deliberately: a fork
+      point later than that would leave results from earlier occurrences in the prefix,
+      recorded under exactly the code or input you are trying to change, and a
+      half-updated run is a worse default than an over-complete one. Pick a specific
+      occurrence with ``before_ordinal=``.
+    - ``before_ordinal=N`` — with ``before_task``, select that task's Nth durable call
+      (the ``ordinal`` half of the ``task:ordinal`` identity Studio and ``compare``
+      show). Keyed fan-out items have no ordinal and are not selectable this way.
+
+    Exactly one of ``fork_point_seq`` / ``before_task`` is required. A name that never
+    ran raises :class:`ForkValidationError` listing the names that did, so the error
+    tells the caller what to type instead.
+    """
+    await _validate_source_run(store, source_run_id)
+    if (fork_point_seq is None) == (before_task is None):
         raise ForkValidationError(
-            f"fork-point seq {fork_point_seq} is not an event of run {source_run_id!r}"
+            "pass exactly one of fork_point_seq= or before_task= to choose a fork point"
         )
+    if before_ordinal is not None and before_task is None:
+        raise ForkValidationError("before_ordinal= selects an occurrence of before_task=")
+
+    events = await store.read_events(source_run_id)
+    if fork_point_seq is not None:
+        if fork_point_seq not in {e.seq for e in events}:
+            raise ForkValidationError(
+                f"fork-point seq {fork_point_seq} is not an event of run {source_run_id!r}"
+            )
+        return fork_point_seq
+
+    scheduled = [
+        e
+        for e in events
+        if e.type is EventType.TASK_SCHEDULED and e.payload.get("task_name") == before_task
+    ]
+    if not scheduled:
+        ran = sorted(
+            {str(e.payload.get("task_name")) for e in events if e.type is EventType.TASK_SCHEDULED}
+        )
+        detail = ", ".join(repr(name) for name in ran) if ran else "no tasks at all"
+        raise ForkValidationError(
+            f"run {source_run_id!r} never scheduled a task named {before_task!r}; it ran {detail}"
+        )
+    if before_ordinal is None:
+        chosen = min(scheduled, key=lambda e: e.seq)
+    else:
+        matching = [e for e in scheduled if e.payload.get("ordinal") == before_ordinal]
+        if not matching:
+            available = sorted(str(e.payload.get("ordinal", "keyed")) for e in scheduled)
+            raise ForkValidationError(
+                f"task {before_task!r} has no ordinal {before_ordinal} in run "
+                f"{source_run_id!r}; it ran with ordinals {', '.join(available)}"
+            )
+        chosen = min(matching, key=lambda e: e.seq)
+
+    earlier = [e.seq for e in events if e.seq < chosen.seq]
+    if not earlier:  # pragma: no cover - WorkflowCreated always precedes a TaskScheduled
+        raise ForkValidationError(
+            f"task {before_task!r} is the first event of run {source_run_id!r}; "
+            f"there is no prefix to fork from"
+        )
+    return max(earlier)
 
 
 async def create_fork(
@@ -251,6 +360,7 @@ async def create_fork(
     new_run_id: str,
     now: datetime,
     code_version: str | None = None,
+    workflow_input: Any = INHERIT,
 ) -> str:
     """Seed ``new_run_id``'s journal from the source prefix and record lineage (N15).
 
@@ -262,7 +372,16 @@ async def create_fork(
     code); any spilled-blob payload is *referenced*, never copied, so the source stays
     byte-for-byte unchanged (blobs are immutable, ADR-0004/Q54). Returns the source
     workflow name. Does **not** drive — :func:`apply_fork` drives it.
+
+    With ``workflow_input`` set (anything but :data:`INHERIT`) the copied
+    ``WorkflowCreated`` carries the **new** input and ``RunForked`` gains
+    ``input_overridden: true`` plus the source's ``source_input_ref`` (KAN-481,
+    ADR-0028). The override is written into the fork's journal rather than passed at
+    drive time so it is durable: a fork that parks on a timer and is woken later by the
+    poll loop, or is resumed after a crash, reads its own recorded input and cannot
+    silently revert to the source's.
     """
+    from satay.journal.codec import encode
     from satay.versioning import current_code_version
 
     record = await store.get_run(source_run_id)
@@ -273,6 +392,17 @@ async def create_fork(
     if not prefix:
         raise ForkValidationError(
             f"fork-point seq {fork_point_seq} leaves nothing to seed from run {source_run_id!r}"
+        )
+    override = not isinstance(workflow_input, _Inherit)
+    if override and any(e.type in _TERMINAL_EVENT_TYPES for e in prefix):
+        # The copied prefix is a whole finished run, so the engine's idempotent-terminal
+        # short-circuit fires and nothing re-executes — the new input would be recorded
+        # and then silently ignored. Refuse rather than hand back the old answer under a
+        # new input (ADR-0028; the same reasoning as ADR-0022's silent-wrong-answer).
+        raise ForkValidationError(
+            f"fork point {fork_point_seq} copies run {source_run_id!r} through its terminal "
+            f"event, so nothing would re-execute and workflow_input= would have no effect; "
+            f"choose an earlier fork point (before_task= is the easy way)"
         )
     version = code_version if code_version is not None else current_code_version()
     await store.create_run(
@@ -285,18 +415,19 @@ async def create_fork(
             idempotency_key=None,
         )
     )
+    lineage: dict[str, Any] = {"source_run_id": source_run_id, "fork_point_seq": fork_point_seq}
     for event in prefix:
-        await store.append(
-            Event(run_id=new_run_id, type=event.type, payload=dict(event.payload), ts=event.ts)
+        payload = dict(event.payload)
+        if override and event.type is EventType.WORKFLOW_CREATED:
+            lineage["input_overridden"] = True
+            lineage["source_input_ref"] = payload.get("input_ref")
+            payload["input_ref"] = encode(workflow_input)
+        await store.append(Event(run_id=new_run_id, type=event.type, payload=payload, ts=event.ts))
+    if override and "input_overridden" not in lineage:  # pragma: no cover - defensive
+        raise ForkValidationError(
+            f"run {source_run_id!r} has no WorkflowCreated event to override the input on"
         )
-    await store.append(
-        Event(
-            run_id=new_run_id,
-            type=EventType.RUN_FORKED,
-            payload={"source_run_id": source_run_id, "fork_point_seq": fork_point_seq},
-            ts=now,
-        )
-    )
+    await store.append(Event(run_id=new_run_id, type=EventType.RUN_FORKED, payload=lineage, ts=now))
     return record.workflow_name
 
 
@@ -319,23 +450,56 @@ async def apply_fork(
     recovery. Replay reuses the copied completions as journal hits and re-executes the
     calls after the fork point as misses, picking up any changed task implementation.
     """
-    from satay.api.registry import REGISTRY
-    from satay.journal.codec import rehydrate
-    from satay.replay.engine import ReplayEngine
-
     workflow_name = await create_fork(
         store,
         source_run_id=command.source_run_id,
         fork_point_seq=command.fork_point_seq,
         new_run_id=command.run_id,
         now=now,
+        workflow_input=command.workflow_input,
     )
+    await drive_forked_run(
+        store,
+        command.run_id,
+        workflow_name=workflow_name,
+        clock=clock,
+        rng=rng,
+        injector=injector,
+        effect_safety=effect_safety,
+        nondeterminism=nondeterminism,
+        version_mismatch=version_mismatch,
+    )
+
+
+async def drive_forked_run(
+    store: Store,
+    run_id: str,
+    *,
+    workflow_name: str,
+    clock: Clock | None = None,
+    rng: Rng | None = None,
+    injector: FaultInjector | None = None,
+    effect_safety: EffectSafety = EffectSafety.WARN,
+    nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
+    version_mismatch: VersionMismatchPolicy = VersionMismatchPolicy.WARN,
+) -> None:
+    """Drive an already-seeded fork off its **own** recorded input (N15, KAN-481).
+
+    The input comes from the fork's journal, never from the caller, so an overridden
+    input survives a park-and-wake or a crash-and-resume (see :func:`create_fork`).
+    Shared by the worker's :func:`apply_fork` and the in-process ``satay.fork`` handle,
+    so a fork driven from code and one driven from Studio take the identical path.
+    """
+    from satay.api.registry import REGISTRY
+    from satay.journal.codec import rehydrate
+    from satay.replay.engine import ReplayEngine
+
     workflow_def = REGISTRY.get_workflow(workflow_name)
     if workflow_def is None:
         raise UnknownWorkflowError(workflow_name)
 
     workflow_input = None
-    for event in await store.read_events(command.run_id):
+    for event in await store.read_events(run_id):
         if event.type is EventType.WORKFLOW_CREATED:
             workflow_input = rehydrate(
                 event.payload.get("input_ref"), _input_annotation(workflow_def.fn)
@@ -344,7 +508,7 @@ async def apply_fork(
 
     engine = ReplayEngine(
         store=store,
-        run_id=command.run_id,
+        run_id=run_id,
         injector=injector,
         clock=clock,
         rng=rng,
@@ -376,6 +540,7 @@ def _input_annotation(fn: Any) -> Any:
 
 
 __all__ = [
+    "INHERIT",
     "CancelRun",
     "Command",
     "CommandQueue",
@@ -388,5 +553,7 @@ __all__ = [
     "apply_command",
     "apply_fork",
     "create_fork",
+    "drive_forked_run",
+    "resolve_fork_point",
     "validate_fork_request",
 ]

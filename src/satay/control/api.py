@@ -92,7 +92,15 @@ class ControlAPI:
             commands.SendEvent(event_type=event_type, key=key, payload=payload, run_id=run_id)
         )
 
-    async def fork(self, source_run_id: str, fork_point_seq: int) -> str:
+    async def fork(
+        self,
+        source_run_id: str,
+        fork_point_seq: int | None = None,
+        *,
+        before_task: str | None = None,
+        before_ordinal: int | None = None,
+        workflow_input: Any = commands.INHERIT,
+    ) -> str:
         """Validate a fork request, enqueue it, and return the new run id (N15, V7).
 
         Validation is synchronous (an unknown/non-terminal source or a bad fork point
@@ -100,14 +108,26 @@ class ControlAPI:
         anything is enqueued). The new run id is allocated here so the HTTP caller can
         navigate to it immediately; the worker seeds and drives it on its next poll tick
         (write-then-poll, single writer, ADR-0012).
+
+        The fork point is either an explicit ``fork_point_seq`` (what Studio sends, from
+        a clicked event) or a ``before_task=`` name resolved by
+        :func:`~satay.control.commands.resolve_fork_point`. ``workflow_input=`` runs the
+        fork under a different input (KAN-481, ADR-0028).
         """
-        await commands.validate_fork_request(self._store, source_run_id, fork_point_seq)
+        resolved_seq = await commands.resolve_fork_point(
+            self._store,
+            source_run_id,
+            fork_point_seq=fork_point_seq,
+            before_task=before_task,
+            before_ordinal=before_ordinal,
+        )
         new_run_id = uuid.uuid4().hex
         self._queue.submit(
             commands.ForkRun(
                 source_run_id=source_run_id,
-                fork_point_seq=fork_point_seq,
+                fork_point_seq=resolved_seq,
                 run_id=new_run_id,
+                workflow_input=workflow_input,
             )
         )
         return new_run_id

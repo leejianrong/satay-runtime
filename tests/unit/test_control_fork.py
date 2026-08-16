@@ -12,7 +12,13 @@ import pytest
 
 from satay.api.decorators import task, workflow
 from satay.api.primitives import start
-from satay.control.commands import ForkValidationError, create_fork, validate_fork_request
+from satay.control.commands import (
+    ForkValidationError,
+    create_fork,
+    resolve_fork_point,
+    validate_fork_request,
+)
+from satay.journal.codec import decode
 from satay.journal.events import Event, EventType, RunRecord, RunStatus, utc_now
 from satay.journal.store import SQLiteStore
 
@@ -25,6 +31,11 @@ async def fk_task(value: int) -> int:
 @workflow
 async def fk_wf(value: int) -> int:
     return await fk_task(value)
+
+
+@workflow
+async def fk_twice_wf(value: int) -> int:
+    return await fk_task(await fk_task(value))
 
 
 async def test_valid_fork_request_passes() -> None:
@@ -112,4 +123,75 @@ async def test_create_fork_seeds_prefix_verbatim_and_records_lineage() -> None:
 
     # The source run's journal is byte-for-byte unchanged (frozen-dataclass equality).
     assert list(await store.read_events("src")) == src_events
+    store.close()
+
+
+# -- fork-point resolution (KAN-481, ADR-0028) -----------------------------------
+
+
+async def test_before_task_resolves_to_the_event_just_before_the_first_schedule() -> None:
+    """``before_task`` cuts immediately before the task's earliest ``TaskScheduled``."""
+    store = SQLiteStore.open(":memory:")
+    await start(fk_twice_wf, 1, store=store, run_id="src").result()
+    events = list(await store.read_events("src"))
+    first_schedule = min(
+        e.seq
+        for e in events
+        if e.type is EventType.TASK_SCHEDULED and e.payload["task_name"] == "fk_task"
+    )
+
+    resolved = await resolve_fork_point(store, "src", before_task="fk_task")
+    assert resolved == first_schedule - 1
+
+    # ``before_ordinal`` picks a specific occurrence of the repeated name.
+    second_schedule = next(
+        e.seq
+        for e in events
+        if e.type is EventType.TASK_SCHEDULED
+        and e.payload["task_name"] == "fk_task"
+        and e.payload["ordinal"] == 1
+    )
+    assert await resolve_fork_point(store, "src", before_task="fk_task", before_ordinal=1) == (
+        second_schedule - 1
+    )
+    store.close()
+
+
+async def test_resolve_fork_point_applies_the_same_source_run_checks() -> None:
+    """One resolver, one set of guards: unknown source and bad seq behave identically."""
+    store = SQLiteStore.open(":memory:")
+    with pytest.raises(ForkValidationError):
+        await resolve_fork_point(store, "nope", before_task="fk_task")
+    await start(fk_wf, 1, store=store, run_id="src").result()
+    with pytest.raises(ForkValidationError):
+        await resolve_fork_point(store, "src", fork_point_seq=9999)
+    store.close()
+
+
+async def test_create_fork_records_the_input_override_in_the_forks_own_journal() -> None:
+    """An overridden input is durable in the fork's ``WorkflowCreated``, plus lineage."""
+    store = SQLiteStore.open(":memory:")
+    await start(fk_wf, 1, store=store, run_id="src").result()
+    point = await resolve_fork_point(store, "src", before_task="fk_task")
+
+    await create_fork(
+        store,
+        source_run_id="src",
+        fork_point_seq=point,
+        new_run_id="fk",
+        now=utc_now(),
+        workflow_input=41,
+    )
+
+    fk_events = list(await store.read_events("fk"))
+    created = next(e for e in fk_events if e.type is EventType.WORKFLOW_CREATED)
+    assert decode(created.payload["input_ref"]) == 41
+    forked = next(e for e in fk_events if e.type is EventType.RUN_FORKED)
+    assert forked.payload["input_overridden"] is True
+    assert decode(forked.payload["source_input_ref"]) == 1  # the source's input, kept
+    # And the source is still byte-for-byte what it was.
+    src_created = next(
+        e for e in await store.read_events("src") if e.type is EventType.WORKFLOW_CREATED
+    )
+    assert decode(src_created.payload["input_ref"]) == 1
     store.close()
