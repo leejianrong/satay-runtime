@@ -94,7 +94,13 @@ context manager composes with whatever `asyncio.run` the reader already has.
 **Why core and not `satay[studio]`.** A reader meets `satay.sleep` on page two, long
 before Studio. `satay.timers` is already pure Python; `run_app` imports the store and the
 worker lazily inside the function, so `import satay` still pulls no FastAPI, uvicorn,
-Pydantic, Typer or Click, and `tests/integration/test_import_hygiene.py` still passes.
+Pydantic, Typer or Click.
+
+That lazy import is also why the existing import-time guard is not sufficient evidence: it
+scans `sys.modules` after importing the core, which would stay green even if *entering* the
+block pulled the extra. So `tests/integration/test_import_hygiene.py` gained a case that
+drives a workflow parked on a durable sleep all the way to its result inside a clean child
+interpreter, and scans only afterwards.
 
 **It does not import your modules.** `--app` module loading (ADR-0024) is `satay dev`'s
 job, because that process has no other way to populate the registry. A script has already
@@ -135,7 +141,7 @@ Both controllers go through one helper, `satay.api.run_handle.await_unpark`, so
 **Breaking, deliberately, pre-`0.1.0`.** Any code that asserted
 `await handle.result() is None` for a parked run now sees `PARKED`. That is every place
 the old shape was load-bearing, and each one was a place a real result of `None` would
-have been silently wrong. The repository's own suite needed 19 such assertions updated,
+have been silently wrong. The repository's own suite needed 20 such assertions updated,
 and every one of them read better afterwards.
 
 **A parked run awaited under a running loop waits forever if nothing wakes it** — an event

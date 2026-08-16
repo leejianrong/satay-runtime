@@ -282,9 +282,9 @@ an awaitable or, as here, a zero-argument callable returning one.
 Two behaviours to know. A drive that **parks** on a durable timer or an event wait returns
 `satay.PARKED` normally, because parking is a result and only your test can produce the `tick()`
 that unparks it — that is why the timer test above calls `worker.tick()` itself rather than
-expecting `settle` to wait. And a drive that never finishes raises `NeverSettledError` instead of hanging your suite,
-cancelling the drive on its way out, which is the failure you want when a task is accidentally
-waiting on real time.
+expecting `settle` to wait. And a drive that never finishes raises `NeverSettledError` instead
+of hanging your suite, cancelling the drive on its way out, which is the failure you want when a
+task is accidentally waiting on real time.
 
 ```python
 async def test_backoff_is_reproducible_under_a_seed() -> None:

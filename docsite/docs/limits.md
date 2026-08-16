@@ -84,10 +84,12 @@ allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a sha
 `0.1.0a3` is the current release, and these pages describe it. There is no deprecation policy, no
 compatibility promise between alpha versions, and the public API can move. Pin the exact version.
 
-Some names this documentation uses sit below the top-level `satay` package: `TimerEventWorker`,
-`SQLiteStore`, `resolve_data_dir`, and `EventType` all live at deeper import paths and are more
-likely to change. There is no high-level "run my application" entry point yet, which is why the
-[worker pattern](primitives.md#running-the-worker) is something you assemble by hand.
+A few names this documentation uses sit below the top-level `satay` package: `SQLiteStore`,
+`EventType`, and `TimerEventWorker` live at deeper import paths and are more likely to change.
+They now appear only in [Testing workflows](tutorial/testing.md), where a test wants a throwaway
+journal, the event type it is asserting on, and a poll loop it can `tick()` by hand. An
+application needs none of them: `async with satay.run_app()` opens the journal and runs the loop
+from the public surface (ADR-0030), and `satay dev` does the same with Studio around it.
 
 ## Where to raise things
 

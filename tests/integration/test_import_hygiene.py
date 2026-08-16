@@ -66,3 +66,53 @@ def test_core_import_pulls_no_studio_dependency() -> None:
     assert result.returncode == 0, (
         f"core import pulled a studio-only dependency: {result.stdout} {result.stderr}"
     )
+
+
+def test_run_app_drives_a_parked_run_with_no_studio_dependency() -> None:
+    """``satay.run_app`` is core, and this proves it by *using* it (KAN-491, ADR-0030).
+
+    Importing ``satay`` is not enough to make the claim. ``run_app`` imports the store and
+    the worker **lazily, inside the function**, so the import-time scan above would stay
+    green even if entering the block pulled FastAPI. So this child interpreter actually
+    opens the journal, starts the poll loop, drives a workflow that parks on a durable
+    sleep through to its result, and only then scans ``sys.modules``.
+
+    A regression here means a plain ``pip install satay`` can no longer run a workflow that
+    sleeps or waits for an event — which is the whole reason ADR-0030 put this in the core
+    rather than in ``satay[studio]``.
+    """
+    program = textwrap.dedent(
+        f"""
+        import asyncio, sys, tempfile
+        import satay
+
+        @satay.workflow
+        async def _hygiene_naps(value: int) -> int:
+            await satay.sleep(0.01)
+            return value + 1
+
+        async def main() -> None:
+            with tempfile.TemporaryDirectory() as data_dir:
+                async with satay.run_app(data_dir=data_dir, interval=0.01) as store:
+                    handle = satay.start(_hygiene_naps, 1, store=store)
+                    outcome = await handle.result()
+                    assert outcome == 2, outcome
+                    assert outcome is not satay.PARKED
+
+        asyncio.run(main())
+        pulled = sorted(
+            n for n in sys.modules if n.split(".")[0] in {FORBIDDEN_IN_CORE!r}
+        )
+        if pulled:
+            sys.stdout.write("PULLED:" + ",".join(pulled))
+            raise SystemExit(1)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"satay.run_app needed a studio-only dependency: {result.stdout} {result.stderr}"
+    )

@@ -84,7 +84,7 @@ data dir: …/.satay-demo
    durably recorded before the crash: ['source-hn']
    feeds actually fetched: {'fetch:hn': 1}
 2. restart the same run — recorded feeds are reused, unresolved ones re-run
-   drive returned None; status waiting (parked on the 8h sleep)
+   drive returned <parked>; status waiting (parked on the 8h sleep)
      source-hn            fetched 1x — REUSED from the journal — never fetched twice
      source-lobsters      fetched 1x — had not started yet — fetched on the restart
      source-arxiv         fetched 2x — had not started yet — fetched on the restart

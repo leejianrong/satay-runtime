@@ -15,6 +15,7 @@ is well under a second of wall clock.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,7 +115,7 @@ async def test_teardown_happens_even_when_the_body_raises(tmp_path: Path) -> Non
 
     opened = captured[0]
     assert not poll_loop_running(opened), "the poll loop outlived the block"
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         # The store it opened is closed: a read through it no longer works.
         await opened.list_runs()
 

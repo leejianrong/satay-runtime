@@ -236,7 +236,7 @@ def _say(line: str) -> None:
     Every line ``satay dev`` prints is printed once and then the process blocks until
     Ctrl-C. Python only line-buffers stdout when it is a tty, so redirected —
     ``satay dev > dev.log``, a CI step, an agent capturing the output — the whole banner
-    sat in a 8 KiB buffer that nothing would flush for as long as the stack ran, and the
+    sat in an 8 KiB buffer that nothing would flush for as long as the stack ran, and the
     tokenized Studio URL, which is the one thing you cannot reconstruct by hand, never
     arrived. Flushing per line costs nothing here and makes the output honest under a
     pipe.

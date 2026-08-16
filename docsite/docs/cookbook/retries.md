@@ -163,8 +163,9 @@ cap, which is why the journal timestamps move a minute at a time while the *reco
 sub-second. Virtual time is free, so precision buys nothing.
 
 Two behaviours worth knowing before you lean on it. A drive that **parks** — on a durable timer
-or an event wait — returns normally, because parking is a result rather than a stall, and only
-the caller can produce the worker tick that would unpark it. A drive that never finishes raises
+or an event wait — returns `satay.PARKED` normally, because parking is a result rather than a
+stall, and only the caller can produce the worker tick that would unpark it. A drive that never
+finishes raises
 `NeverSettledError` after `max_steps` passes, having cancelled the drive first, so a test that
 accidentally waits on real time fails with a diagnosis instead of hanging your suite.
 

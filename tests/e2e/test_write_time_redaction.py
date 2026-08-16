@@ -26,6 +26,7 @@ from satay.api.decorators import task, workflow
 from satay.api.fork import fork
 from satay.api.primitives import map as durable_map
 from satay.api.primitives import send_event, sleep, start, wait_for_event
+from satay.api.run_handle import PARKED
 from satay.config import WRITE_REDACTION_ENV_VAR
 from satay.control.api import ReadAPI
 from satay.journal.events import EventType, RunStatus
@@ -356,7 +357,7 @@ async def test_a_redacted_workflow_input_warns_and_the_run_resumes_from_the_plac
     store = SQLiteStore.open(temp_db_path, write_redaction="on")
     with caplog.at_level(logging.WARNING, logger="satay"):
         handle = start(wr_seeded, {"api_key": SECRET}, store=store, clock=clock)
-        assert await handle.result() is None  # parked on the sleep
+        assert await handle.result() is PARKED  # parked on the sleep
     assert await handle.status() == RunStatus.WAITING.value
 
     warnings = [r.getMessage() for r in caplog.records if "write_redaction" in r.getMessage()]

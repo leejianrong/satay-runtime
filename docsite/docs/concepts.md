@@ -266,8 +266,9 @@ loop, and `result()` waits for it and hands you the real outcome. Without one it
 - Ordinary calls are identified by `(task_name, ordinal)`, counted per task name and reset on
   every drive. `map` items are identified by `(task_name, key)` and survive reordering.
 - Every logical call has an idempotency key that is stable across retries.
-- `satay.start` is a plain function. `await handle.result()` does the work, returns `None` on a
-  parked run, and raises `WorkflowFailedError` on a failed one.
+- `satay.start` is a plain function. `await handle.result()` does the work, and raises
+  `WorkflowFailedError` on a failed one. On a parked run it waits for the poll loop if
+  `satay.run_app` is running one, and returns `satay.PARKED` — not `None` — if nothing will.
 
 ## Next
 

@@ -150,7 +150,7 @@ model:    fake-scribe-1 (fake, deterministic)
    fan-out results durably committed: ['q-pricing', 'q-references']
 
    restart the same run — committed research is reused, the rest re-runs
-   drive returned None; status waiting (parked on the gate)
+   drive returned <parked>; status waiting (parked on the gate)
 
    a human approves it: send_event, then one worker tick delivers it
    tick woke 1 run(s)
