@@ -41,6 +41,15 @@ class ReadAPI:
         return self._redact(await views.task_detail(self._store, run_id, identity))
 
     async def compare(self, run_id: str, other_run_id: str) -> dict[str, Any]:
+        """Align two runs by durable-call identity.
+
+        **The wire spelling of ``other_run_id`` is ``to``**: the HTTP route is
+        ``GET /runs/{run_id}/compare?to={other_run_id}`` and the query parameter is
+        required, so ``?other_run_id=`` returns 422 (KAN-490). The names diverge on
+        purpose — ``to`` reads as prose in a URL the path has already scoped to runs,
+        ``other_run_id`` reads as a Python argument — so anything quoting a compare URL
+        must use ``to``.
+        """
         return self._redact(await views.compare(self._store, run_id, other_run_id))
 
     def _redact(self, payload: dict[str, Any]) -> dict[str, Any]:

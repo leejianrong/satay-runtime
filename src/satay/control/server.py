@@ -146,6 +146,9 @@ def create_app(
     async def run_task_detail(run_id: str, identity: str) -> dict[str, Any]:
         return await _read(reads.task_detail(run_id, identity))
 
+    # `to` is the wire name of what the Python side calls `other_run_id` (see
+    # ReadAPI.compare). It is REQUIRED, so a request spelling it any other way is a 422,
+    # not a default-to-something — keep docs, examples and the SPA on `?to=` (KAN-490).
     @app.get("/runs/{run_id}/compare")
     async def run_compare(run_id: str, to: str = Query(...)) -> dict[str, Any]:
         return await _read(reads.compare(run_id, to))
