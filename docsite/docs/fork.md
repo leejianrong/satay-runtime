@@ -17,6 +17,11 @@ print(await handle.result())
 That is the whole thing. No control API, no command queue, no worker tick. `satay.fork` is
 core — it does not need the `satay[studio]` extra.
 
+For the loop end to end — a run that completes and is wrong, a fork before the bad call, and a
+call-by-call comparison of the two — see the
+[Fork, Replay, Compare](cookbook/fork-and-compare.md) recipe. It is a runnable file, and the
+output on that page is what it printed.
+
 ## Choosing where to cut
 
 Pass exactly one of `before_task=` or `fork_point_seq=`.
@@ -130,7 +135,9 @@ silently ignored.
 - **Forks of forks compose.** Lineage is one hop at a time; follow `forked_from` on the run
   header or in the timeline JSON.
 - **Compare** a fork against its source to see, call by call, which results were replayed
-  from the journal and which were re-run. See [Studio](studio.md#fork).
+  from the journal and which were re-run. See [Studio](studio.md#fork), or
+  [Fork, Replay, Compare](cookbook/fork-and-compare.md) for the same table printed from
+  Python.
 
 ## From Studio and over HTTP
 

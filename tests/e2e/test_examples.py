@@ -121,8 +121,27 @@ class RunFacts:
 async def read_journal(data_dir: Path) -> dict[str, RunFacts]:
     """Read every run in ``data_dir``, keyed by workflow name.
 
-    Each example uses a distinct workflow per run, so the name is a stable handle for a
-    test to assert on — unlike a generated ``run_id``.
+    Each example uses a distinct workflow per *started* run, so the name is a stable
+    handle for a test to assert on — unlike a generated ``run_id``.
+
+    **Forks are the exception, and they used to be forbidden by this function** (KAN-480).
+    A fork is by construction a second run of the *same* workflow (ADR-0004: it copies a
+    prefix of its source's journal), so an example that forks — which is the demo ADR-0025
+    calls the wedge — collided with the uniqueness assertion and had to hide its fork in a
+    separate data directory. That is backwards: the fork and its source belong side by
+    side, which is exactly how Studio's compare view wants them.
+
+    So a run carrying a ``RunForked`` marker is keyed ``<workflow>@fork``, then
+    ``@fork2``, ``@fork3`` in whatever order the store lists them. **The order is the
+    store's, not a promise**: runs are listed by ``created_at`` and an example driving a
+    ``ManualClock`` stamps several runs at the same virtual instant, so a test with more
+    than one fork must assert over the *set* of them (see
+    :func:`test_fork_and_compare_example_reuses_the_prefix`) rather than on which one is
+    ``@fork2``.
+
+    Two *unforked* runs of one workflow are still an error. That is the case the original
+    assertion was protecting against, and it is still worth protecting against: the key
+    would be ambiguous and a test asserting on it would silently pick one of them.
     """
     store = SQLiteStore.open(db_path(data_dir))
     try:
@@ -130,15 +149,24 @@ async def read_journal(data_dir: Path) -> dict[str, RunFacts]:
         for run_id in await store.list_runs():
             record = await store.get_run(run_id)
             assert record is not None
-            assert record.workflow_name not in facts, "one run per workflow expected"
-            facts[record.workflow_name] = RunFacts(
-                run_id=run_id,
-                status=record.status.value,
-                events=list(await store.read_events(run_id)),
+            events = list(await store.read_events(run_id))
+            name = record.workflow_name
+            if any(event.type is EventType.RUN_FORKED for event in events):
+                nth = 1 + sum(1 for key in facts if key.startswith(f"{name}@fork"))
+                name = f"{name}@fork" if nth == 1 else f"{name}@fork{nth}"
+            assert name not in facts, (
+                f"two runs of {record.workflow_name!r} that are not forks of anything — "
+                "one run per workflow expected, so a test can name it"
             )
+            facts[name] = RunFacts(run_id=run_id, status=record.status.value, events=events)
         return facts
     finally:
         store.close()
+
+
+def forks_of(runs: dict[str, RunFacts], workflow: str) -> list[RunFacts]:
+    """Every forked run of ``workflow`` in a journal, in unspecified order."""
+    return [facts for name, facts in runs.items() if name.startswith(f"{workflow}@fork")]
 
 
 # -- the discovered set ----------------------------------------------------------
@@ -337,6 +365,102 @@ async def test_studio_walkthrough_builds_a_rich_run_and_explains_how_to_open_it(
     assert "Authorization: Bearer" in stdout  # named only to say it is NOT that
     assert digest.run_id in stdout
     assert runs["paywalled_digest"].run_id in stdout
+
+
+# -- the debugger wedge: fork a prefix, replay, compare ---------------------------
+
+
+async def test_fork_and_compare_example_reuses_the_prefix(tmp_path: Path) -> None:
+    """The wedge demo (KAN-656, ADR-0025): one bad run, three forks, one call re-run.
+
+    Everything asserted here is an observable outcome (ADR-0011): run statuses, the
+    ``RunForked`` lineage, which durable calls have a ``TaskAttemptStarted`` *above* the
+    fork marker (the only ones whose body actually ran), and the recorded outputs the
+    compare view aligns. No replay internals.
+    """
+    stdout = run_example("fork_and_compare_demo.py", data_dir=tmp_path)
+    runs = await read_journal(tmp_path)
+
+    source = runs["answer_ticket"]
+    forks = forks_of(runs, "answer_ticket")
+    assert source.status == RunStatus.COMPLETED.value
+    assert len(forks) == 3, "the demo forks three times: the fix, the trap, and the redo"
+    assert all(fork.status == RunStatus.COMPLETED.value for fork in forks)
+
+    # The bad run is bad on purpose, and it *completed*. That is the whole premise: no
+    # exception, no ⚡, just a wrong answer that a stack trace cannot find.
+    assert source.status == RunStatus.COMPLETED.value
+    assert EventType.WORKFLOW_FAILED.value not in source.types
+    assert interruption_seqs(source.events) == set()
+    assert "guardrail: FAILED" in stdout
+    assert "guardrail: PASSED" in stdout
+
+    # Six durable calls: the plan, four keyed lookups, the draft.
+    assert len(set(source.completed_keys())) == 4
+    assert source.count(EventType.TASK_COMPLETED) == 6
+
+    # Every fork carries lineage back to the one source run, with the input overridden.
+    for fork in forks:
+        lineage = fork.payloads(EventType.RUN_FORKED)
+        assert len(lineage) == 1
+        assert lineage[0]["source_run_id"] == source.run_id
+        assert lineage[0]["input_overridden"] is True
+
+    # What each fork *executed*, as opposed to what it copied: a TaskAttemptStarted above
+    # the RunForked marker means the executor entered the function body. Two forks cut
+    # before `draft_reply` and re-ran exactly that one call; the third cut before
+    # `plan_lookups` and re-ran the whole six. Asserted as a multiset because the store
+    # lists runs by `created_at` and the demo's ManualClock stamps them all identically —
+    # which fork is `@fork2` is not a promise (see `read_journal`).
+    assert sorted(_executed_after_fork(fork) for fork in forks) == [
+        ["draft_reply"],
+        ["draft_reply"],
+        ["plan_lookups", "look_up", "look_up", "look_up", "look_up", "draft_reply"],
+    ]
+
+    # And the reuse is byte-identical, which is the claim the demo makes in one line: the
+    # fork that re-ran only the draft has the source's recorded outputs everywhere else.
+    cheap = next(fork for fork in forks if _executed_after_fork(fork) == ["draft_reply"])
+    before, after = _outputs(source), _outputs(cheap)
+    assert set(before) == set(after), "the fork resolved a different set of durable calls"
+    assert after["draft_reply:0"] != before["draft_reply:0"], "the re-run call did not change"
+    reused = {identity for identity in before if identity != "draft_reply:0"}
+    assert len(reused) == 5
+    assert all(after[identity] == before[identity] for identity in reused)
+
+    # The printed headline number, and the compare URL a reader will paste. The URL is
+    # separately replayed against the real app by tests/e2e/test_example_urls.py.
+    assert "1 of 6 durable calls re-ran; 5 were reused byte-identical" in stdout
+    assert f"/runs/{source.run_id}/compare?to=" in stdout
+    assert "identical — replayed" in stdout
+    assert "DIFFERS  <- the fixed call" in stdout
+
+
+def _executed_after_fork(facts: RunFacts) -> list[str]:
+    """Task names whose body actually ran in this run, in journal order.
+
+    A fork's journal opens with a verbatim copy of its source's prefix — attempt events
+    included — so "did this run execute the call" is `seq > the RunForked marker`, not
+    "is there a TaskAttemptStarted".
+    """
+    marker = next(e.seq for e in facts.events if e.type is EventType.RUN_FORKED)
+    return [
+        str(event.payload["task_name"])
+        for event in facts.events
+        if event.seq > marker and event.type is EventType.TASK_ATTEMPT_STARTED
+    ]
+
+
+def _outputs(facts: RunFacts) -> dict[str, Any]:
+    """Recorded output per durable-call identity, as the compare view aligns them."""
+    return {
+        (
+            f"{p['task_name']}:key:{p['key']}"
+            if p.get("key") is not None
+            else f"{p['task_name']}:{p.get('ordinal')}"
+        ): p.get("output_ref")
+        for p in facts.payloads(EventType.TASK_COMPLETED)
+    }
 
 
 # -- the V1 crash-recovery headline ----------------------------------------------

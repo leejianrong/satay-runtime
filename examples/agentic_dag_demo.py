@@ -31,8 +31,10 @@ What each part shows:
    escalation branch, and the expensive synthesis is never paid for.
 3. **brittle_dossier** — one source never parses. Fan-out is fail-fast (ADR-0020), so the
    run dies and the money already spent on its siblings buys nothing.
-4. **fork** — the finished dossier, re-cut under a changed prompt. The research is reused
-   from the journal; only the synthesis re-runs.
+4. **reprompted_dossier** — the finished dossier, re-cut under a changed prompt with one
+   ``satay.fork(..., before_task="synthesize", workflow_input=...)``. The research is
+   reused from the journal; only the synthesis re-runs. ``examples/fork_and_compare_demo``
+   is the file that takes that loop apart call by call.
 
 Nothing waits on real time: ``ManualClock`` is the clock the retry backoff and the
 approval timeout are measured against, and ``SeededRng`` pins the backoff jitter, so a
@@ -57,15 +59,13 @@ import statistics
 import sys
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
 
 import satay
 from satay.config import DATA_DIR_ENV_VAR, db_path
-from satay.control.api import ControlAPI
-from satay.control.commands import CommandQueue
 from satay.journal.events import Event, EventType
 from satay.journal.store import SQLiteStore
 from satay.journal.timeline import model_usage, render_timeline
@@ -305,6 +305,11 @@ class Brief:
     review_key: str
     #: How long the gate waits for a human before escalating.
     review_window_hours: int = 4
+    #: The synthesis prompt's one tunable, and the reason it lives *here* rather than in a
+    #: module global: part 4 forks this run under a changed ``style`` by passing a new
+    #: brief to ``satay.fork(workflow_input=...)``. A prompt is data, not schedule, so the
+    #: fork replays cleanly even with nondeterminism detection strict (ADR-0022/0028).
+    style: str = "balanced"
 
 
 @dataclass(frozen=True)
@@ -349,11 +354,6 @@ CORPUS_TOKENS = {
     "support": 7_500,
     "litigation": 21_300,
 }
-
-#: The synthesis prompt's one tunable. Mutable at module scope so part 4 can change it
-#: between the source run and its fork — a prompt is data, not schedule, so a fork under a
-#: changed prompt replays cleanly even with nondeterminism detection strict (ADR-0022).
-SYNTHESIS_STYLE = {"value": "balanced"}
 
 PLAN_PROMPT = (
     "You are scoping a vendor dossier.\n"
@@ -464,13 +464,16 @@ async def research(question: SubQuestion) -> Finding:
 
 
 @satay.task(retries=1)
-async def synthesize(vendor: str, findings: list[Finding]) -> str:
-    """The expensive write-up. Deliberately downstream of the human gate."""
+async def synthesize(brief: Brief, findings: list[Finding]) -> str:
+    """The expensive write-up. Deliberately downstream of the human gate.
+
+    Takes the whole brief rather than a vendor string, so the style it writes in arrives
+    as *input* — which is what lets part 4 change it with ``fork(workflow_input=...)``
+    instead of reaching into module state.
+    """
     ctx = satay.task_context()
     bullets = "\n".join(f"- {f.slug} ({f.confidence:.2f}): {f.text}" for f in findings)
-    prompt = SYNTHESIS_PROMPT.format(
-        vendor=vendor, style=SYNTHESIS_STYLE["value"], findings=bullets
-    )
+    prompt = SYNTHESIS_PROMPT.format(vendor=brief.vendor, style=brief.style, findings=bullets)
     completion = await MODEL.complete(prompt, label="synthesis", attempt=ctx.attempt)
     bill(ctx, completion)
     return completion.text
@@ -529,7 +532,7 @@ async def dossier_body(brief: Brief) -> dict[str, object]:
             "questions": len(ranked),
         }
 
-    dossier = await synthesize(brief.vendor, ranked)
+    dossier = await synthesize(brief, ranked)
     return {
         "vendor": brief.vendor,
         "status": "published",
@@ -540,9 +543,9 @@ async def dossier_body(brief: Brief) -> dict[str, object]:
     }
 
 
-# Three named scenarios over one body. They are separate workflows rather than three runs
-# of one workflow because the shared example test keys a data dir's runs by workflow name
-# and expects them unique — see the note above ``fork_workdir``.
+# Four named scenarios over one body. They are separate workflows rather than four runs of
+# one workflow so that each is nameable — in ``satay dev``'s run list, and in the shared
+# example test, which keys a data dir's runs by workflow name.
 
 
 @satay.workflow
@@ -563,6 +566,12 @@ async def brittle_dossier(brief: Brief) -> dict[str, object]:
     return await dossier_body(brief)
 
 
+@satay.workflow
+async def reprompted_dossier(brief: Brief) -> dict[str, object]:
+    """Published once, then re-cut under a sharper prompt by ``satay.fork`` in part 4."""
+    return await dossier_body(brief)
+
+
 # -- plumbing ---------------------------------------------------------------------
 
 
@@ -579,21 +588,6 @@ def resolve_workdir() -> tuple[Path, bool]:
         workdir.mkdir(parents=True, exist_ok=True)
         return workdir, True
     return Path(tempfile.mkdtemp(prefix="satay-agentic-")), False
-
-
-def fork_workdir(workdir: Path) -> Path:
-    """A second data dir, for part 4 only.
-
-    A fork is by construction a *second run of the same workflow*, and
-    ``tests/e2e/test_examples.py`` reads a data dir into a dict keyed by workflow name and
-    asserts those names are unique — so a fork alongside its source in the main data dir
-    fails a test this file is not allowed to edit. Keeping the fork pair in its own
-    directory sidesteps that, and has the side benefit that ``satay dev --data-dir`` on it
-    shows nothing but the source and the fork, side by side.
-    """
-    forkdir = workdir / "reprompt"
-    forkdir.mkdir(parents=True, exist_ok=True)
-    return forkdir
 
 
 def spend(calls: list[tuple[str, int, int, int]]) -> tuple[int, int, float]:
@@ -806,12 +800,9 @@ async def part_three(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> 
 # -- part 4: fork the finished dossier under a changed prompt ----------------------
 
 
-async def part_four(forkdir: Path, clock: ManualClock, rng: SeededRng) -> tuple[str, str, Path]:
+async def part_four(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> tuple[str, str]:
     """Re-cut a completed dossier with a different synthesis prompt, reusing the research."""
-    store = SQLiteStore.open(db_path(forkdir))
-    queue = CommandQueue()
-    control = ControlAPI(store, queue)
-    worker = TimerEventWorker(store=store, clock=clock, rng=rng, commands=queue)
+    worker = TimerEventWorker(store=store, clock=clock, rng=rng)
     brief = Brief(
         vendor="Northwind Logistics",
         topics=["pricing", "roadmap"],
@@ -819,8 +810,7 @@ async def part_four(forkdir: Path, clock: ManualClock, rng: SeededRng) -> tuple[
     )
 
     print("\n4) fork: re-run last week's dossier under a sharper prompt")
-    print(f"   (its own data dir: {forkdir})")
-    handle = satay.start(vendor_dossier, brief, store=store, clock=clock, rng=rng)
+    handle = satay.start(reprompted_dossier, brief, store=store, clock=clock, rng=rng)
     await settle(handle.result, clock)
     await satay.send_event(
         ReviewDecision(approved=True, reviewer="ravi"), key=brief.review_key, store=store
@@ -828,45 +818,48 @@ async def part_four(forkdir: Path, clock: ManualClock, rng: SeededRng) -> tuple[
     await settle(lambda: worker.tick(), clock)
     source: dict[str, object] = await handle.result()
     before = len(call_log(MODEL))
-    print(f"   source run {handle.run_id} — {source['status']}")
+    print(f"   source run {handle.run_id} — {source['status']} ({brief.style})")
     print(f"     | {str(source['dossier']).splitlines()[-1]}")
 
-    events = list(await store.read_events(handle.run_id))
-    synthesis_seq = min(
-        e.seq
-        for e in events
-        if e.type is EventType.TASK_SCHEDULED and e.payload.get("task_name") == "synthesize"
-    )
-    fork_point = max(e.seq for e in events if e.seq < synthesis_seq)
-
-    # A prompt is data, not schedule. Changing it leaves the workflow's durable-call
+    # The whole fork, in one call. `before_task=` names the cut instead of scanning raw
+    # journal seqs for it, and `workflow_input=` carries the new prompt — which lives in
+    # the brief, where a prompt belongs, rather than in a module-level global (ADR-0028).
+    #
+    # A prompt is data, not schedule: changing it leaves the workflow's durable-call
     # sequence identical, so the fork replays cleanly under strict nondeterminism
-    # detection; changing which calls the workflow makes would not.
-    SYNTHESIS_STYLE["value"] = "sceptical"
-    fork_id = await control.fork(handle.run_id, fork_point)
-    print(f"   forked at seq {fork_point} (just before synthesize was scheduled)")
-    await settle(lambda: worker.tick(), clock)
-
-    forked: dict[str, object] = await satay.start(
-        vendor_dossier, brief, run_id=fork_id, store=store, clock=clock, rng=rng
-    ).result()
-    fork_events = list(await store.read_events(fork_id))
+    # detection. Changing which calls the workflow makes would not. And because the copied
+    # prefix is never re-executed, the new brief reaches only `synthesize` — which is the
+    # whole point of cutting immediately before it.
+    fork_handle = await satay.fork(
+        handle.run_id,
+        before_task="synthesize",
+        workflow_input=replace(brief, style="sceptical"),
+        store=store,
+        clock=clock,
+        rng=rng,
+    )
+    forked: dict[str, object] = await fork_handle.result()
+    fork_events = list(await store.read_events(fork_handle.run_id))
     lineage = next(e for e in fork_events if e.type is EventType.RUN_FORKED)
     replayed = call_log(MODEL, before)
 
-    print(f"   fork run {fork_id} — {forked['status']}")
+    print(f"   fork run {fork_handle.run_id} — {forked['status']} (sceptical)")
     print(f"     | {str(forked['dossier']).splitlines()[-1]}")
     print(
         f"   RunForked: source={lineage.payload['source_run_id']} "
-        f"fork_point_seq={lineage.payload['fork_point_seq']}"
+        f"fork_point_seq={lineage.payload['fork_point_seq']} "
+        f"input_overridden={lineage.payload.get('input_overridden', False)}"
     )
     print(f"   model calls the fork actually made: {[c[0] for c in replayed]}")
     print(f"     re-synthesis {money(*spend(replayed))} — the research was reused from the")
     print("     journal, not bought again. The source run is untouched and still says")
     print(f"     '{str(source['dossier']).splitlines()[-1]}'.")
+    print(
+        "   examples/fork_and_compare_demo.py takes this loop apart properly: what the\n"
+        "   fork reused, what it re-ran, and the call-by-call compare against its source."
+    )
 
-    store.close()
-    return handle.run_id, fork_id, forkdir
+    return handle.run_id, fork_handle.run_id
 
 
 # -- main --------------------------------------------------------------------------
@@ -889,8 +882,7 @@ async def main() -> None:
     published = await part_one(store, clock, rng)
     await part_two(store, clock, rng)
     await part_three(store, clock, rng)
-    forkdir = fork_workdir(workdir)
-    source_id, fork_id, forkdir = await part_four(forkdir, clock, rng)
+    source_id, fork_id = await part_four(store, clock, rng)
 
     print(f"\ntimeline of the published dossier ({published})\n")
     print(render_timeline(list(await store.read_events(published)), run_id=published))
@@ -899,15 +891,10 @@ async def main() -> None:
     if durable:
         print(f"\njournals kept in {workdir}")
         print(
-            f"open the three scenarios:  satay dev --app examples.agentic_dag_demo "
-            f"--data-dir {workdir}"
-        )
-        print(
-            f"open the fork pair:        satay dev --app examples.agentic_dag_demo "
-            f"--data-dir {forkdir}"
+            f"open all five runs:  satay dev --app examples.agentic_dag_demo --data-dir {workdir}"
         )
         print(f"  compare {source_id} against its fork {fork_id} in Studio")
-        print(f"or as text:                satay runs show {published} --data-dir {workdir}")
+        print(f"or as text:          satay runs show {published} --data-dir {workdir}")
     else:
         print(
             f"\njournals went to a temp dir ({workdir}) and are not worth keeping.\n"
