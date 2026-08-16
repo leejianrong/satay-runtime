@@ -295,7 +295,7 @@ def print_walkthrough(workdir: Path, durable: bool, run_id: str, failed_run_id: 
             http://127.0.0.1:{STUDIO_DEFAULT_PORT}/runs/{run_id}/timeline
 
    Also available: /runs, /runs/<id>/tree, /runs/<id>/tasks/<identity>,
-   /runs/<id>/compare?other_run_id=<id>.
+   /runs/<id>/compare?to=<id>.
 """)
 
 
