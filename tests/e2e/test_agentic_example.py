@@ -27,9 +27,6 @@ from satay.journal.timeline import interruption_seqs, model_usage
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = REPO_ROOT / "examples" / "agentic_dag_demo.py"
 
-#: The nested data dir the example puts the fork pair in (see its ``fork_workdir``).
-FORK_SUBDIR = "reprompt"
-
 #: The fan-out key of the research question whose answers are unparseable twice over.
 FLAKY_KEY = "q-security"
 
@@ -265,26 +262,28 @@ async def test_fork_reruns_only_the_synthesis_under_the_changed_prompt(tmp_path:
 
     A prompt is data, not schedule, so changing it leaves the durable-call sequence
     identical and the fork replays cleanly under strict nondeterminism detection.
+
+    The pair used to live in a nested ``reprompt/`` data dir purely to dodge the
+    one-run-per-workflow rule in ``test_examples.py`` (KAN-480). That rule now understands
+    forks, so the source and its fork sit in the main journal beside the other three runs,
+    which is where Studio's compare view wants them.
     """
     stdout = run_example(tmp_path)
-    forkdir = tmp_path / FORK_SUBDIR
-    assert db_path(forkdir).exists(), "the fork pair's data dir is missing"
 
-    store = SQLiteStore.open(db_path(forkdir))
+    store = SQLiteStore.open(db_path(tmp_path))
     try:
-        run_ids = await store.list_runs()
-        assert len(run_ids) == 2, f"expected a source run and its fork, got {run_ids}"
-        journals = {run_id: list(await store.read_events(run_id)) for run_id in run_ids}
-        statuses = {}
-        for run_id in run_ids:
+        pair = {}
+        for run_id in await store.list_runs():
             record = await store.get_run(run_id)
             assert record is not None
-            assert record.workflow_name == "vendor_dossier"
-            statuses[run_id] = record.status.value
+            if record.workflow_name == "reprompted_dossier":
+                pair[run_id] = (record.status.value, list(await store.read_events(run_id)))
     finally:
         store.close()
 
-    assert set(statuses.values()) == {RunStatus.COMPLETED.value}
+    assert len(pair) == 2, f"expected a source run and its fork, got {sorted(pair)}"
+    journals = {run_id: events for run_id, (_, events) in pair.items()}
+    assert {status for status, _ in pair.values()} == {RunStatus.COMPLETED.value}
 
     forked = [run_id for run_id, events in journals.items() if _run_forked(events)]
     assert len(forked) == 1, "exactly one of the two runs should carry RunForked lineage"
@@ -294,6 +293,18 @@ async def test_fork_reruns_only_the_synthesis_under_the_changed_prompt(tmp_path:
     lineage = _run_forked(journals[fork_id])
     assert lineage is not None
     assert lineage.payload["source_run_id"] == source_id
+    # `satay.fork(workflow_input=...)` writes the new brief into the fork's own
+    # WorkflowCreated and says so in its lineage (ADR-0028). That is what replaced the
+    # module-level `SYNTHESIS_STYLE` global the example used to mutate between runs.
+    assert lineage.payload["input_overridden"] is True
+
+    # And the style really does arrive as *input*: the two runs' recorded workflow inputs
+    # differ, where the old global-mutating version left them identical.
+    created = {
+        run_id: next(e for e in events if e.type is EventType.WORKFLOW_CREATED).payload
+        for run_id, events in journals.items()
+    }
+    assert created[fork_id]["input_ref"] != created[source_id]["input_ref"]
 
     # The fork point sits before synthesis, so the copied research is a journal hit and only
     # the write-up re-runs: after the RunForked marker, one attempt, and it is synthesize.

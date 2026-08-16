@@ -1,6 +1,6 @@
 # Cookbook
 
-Seven runnable programs, one per page. Each is a real file in the repository, each runs in CI
+Eight runnable programs, one per page. Each is a real file in the repository, each runs in CI
 on every commit, and each page shows you the code, the command, and the output that command
 actually printed.
 
@@ -13,20 +13,23 @@ the whole setup, and it is the same three steps on every page.
 pip install 'satay[studio]'
 ```
 
-That is the published package from PyPI, and all seven recipes run against it.
+That is the published package from PyPI, and seven of the eight recipes run against it.
+[Fork, Replay, Compare](fork-and-compare.md) is the exception: it needs `satay.fork`, which
+landed after the tag, so install from the repository for that one.
 
 !!! tip "These pages are pinned to one version"
 
     Every `curl` below fetches from the **`v0.1.0a3`** tag, not from `main`, so the file you
     download is the file that matches the wheel you just installed. `main` moves; the tag does
-    not.
+    not. [Fork, Replay, Compare](fork-and-compare.md) is newer than the tag and says so on the
+    page.
 
     Satay is alpha. There is no compatibility promise between alpha versions and nothing is
     deprecated gracefully yet, so pin the exact version in anything you build:
     `pip install 'satay[studio]==0.1.0a3'`. The [limits page](../limits.md) lists what is
     deliberately absent.
 
-The core runtime declares **no dependencies**, and all seven recipes run on it alone. The
+The core runtime declares **no dependencies**, and every recipe runs on it alone. The
 `[studio]` extra above only adds the debugger and the HTTP API, which is the last step of most of
 these pages:
 
@@ -47,10 +50,10 @@ curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0
 python crash_recovery_demo.py
 ```
 
-That works from an empty directory. Swap the filename for any of the seven in the table
+That works from an empty directory. Swap the filename for any of the eight in the table
 below.
 
-If you would rather have all seven at once, clone the repository and use `uv run`:
+If you would rather have all eight at once, clone the repository and use `uv run`:
 
 ```bash
 git clone https://github.com/leejianrong/satay-runtime
@@ -96,6 +99,7 @@ satay dev --data-dir .satay-demo
 | [Fan-Out With Crash Recovery](fan-out.md) | `satay.map` over five items, two crashes, five executions in total. The keyed durable call doing its job. |
 | [An ELT Pipeline](elt-pipeline.md) | Extract, transform, load with an idempotent writer, payload spill to a blob, and an honest look at fail-fast fan-out. |
 | [An Agentic DAG](agentic-dag.md) | Plan, fan out research calls, gate on a human, synthesise. Why the model call has to live in a task. |
+| [Fork, Replay, Compare](fork-and-compare.md) | A run that completes and is *wrong*. Fork it before the bad call under a better prompt, re-run 1 of 6 calls, and diff the two runs call by call. |
 | [A Studio Tour](studio-tour.md) | One run that touches nearly every primitive, then a click-by-click tour of the debugger. |
 
 ## Reading Order
@@ -109,6 +113,10 @@ guarantee applied to a batch, and it is the demo that tends to convince people.
 [An ELT Pipeline](elt-pipeline.md) and [An Agentic DAG](agentic-dag.md) are the two long ones.
 They sit closest to real workloads, and both spend as much space on what Satay does badly
 today as on what it does well.
+
+[Fork, Replay, Compare](fork-and-compare.md) is the one to read if you are here for the
+debugger rather than for durability. It is the only recipe where nothing crashes and the run
+is still wrong.
 
 If you want the concepts behind all this rather than a program to run, the
 [Tutorial](../tutorial/index.md) covers the same ground in prose, and

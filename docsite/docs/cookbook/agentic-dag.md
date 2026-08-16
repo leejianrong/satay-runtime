@@ -9,7 +9,7 @@ recipe carrying the single most important lesson in these docs, and the lesson f
 sentence: the model call lives in a **task**, never in the workflow body.
 
 Source: [`examples/agentic_dag_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/agentic_dag_demo.py)
-(919 lines, so this page excerpts it)
+(900-odd lines, so this page excerpts it)
 
 ## Get It And Run It
 
@@ -62,7 +62,7 @@ async def dossier_body(brief: Brief) -> dict[str, object]:
     if not decision.approved:
         return {..., "status": "rejected"}
 
-    dossier = await synthesize(brief.vendor, ranked)
+    dossier = await synthesize(brief, ranked)
     return {..., "status": "published", "dossier": dossier}
 ```
 
@@ -341,17 +341,17 @@ from the journal entirely.
 
 ```console
 4) fork: re-run last week's dossier under a sharper prompt
-   (its own data dir: …/.satay-demo/reprompt)
-   source run cedd8fb78b3b4ca7abfdf0f330ef78f6 — published
+   source run 0ffb35cb4bef42969b0a422af8b9335f — published (balanced)
      | Recommendation: proceed.
-   forked at seq 14 (just before synthesize was scheduled)
-   fork run d5f855eef4ab4495a27b6ebd05a93dba — published
+   fork run 5aa5fec05a234fa68f55b7879c3b37c5 — published (sceptical)
      | Recommendation: hold pending a second source.
-   RunForked: source=cedd8fb78b3b4ca7abfdf0f330ef78f6 fork_point_seq=14
+   RunForked: source=0ffb35cb4bef42969b0a422af8b9335f fork_point_seq=14 input_overridden=True
    model calls the fork actually made: ['synthesis']
      re-synthesis      56 in /    29 out  $0.0006 — the research was reused from the
      journal, not bought again. The source run is untouched and still says
      'Recommendation: proceed.'.
+   examples/fork_and_compare_demo.py takes this loop apart properly: what the
+   fork reused, what it re-ran, and the call-by-call compare against its source.
 ```
 
 The finished dossier said `proceed`. Change the synthesis prompt from `balanced` to `sceptical`,
@@ -369,26 +369,29 @@ answer to compare against.
 # A prompt is data, not schedule. Changing it leaves the workflow's durable-call
 # sequence identical, so the fork replays cleanly under strict nondeterminism
 # detection; changing which calls the workflow makes would not.
-SYNTHESIS_STYLE["value"] = "sceptical"
-fork_id = await control.fork(handle.run_id, fork_point)
+fork_handle = await satay.fork(
+    handle.run_id,
+    before_task="synthesize",
+    workflow_input=replace(brief, style="sceptical"),
+    store=store,
+    clock=clock,
+    rng=rng,
+)
+forked = await fork_handle.result()
 ```
 
-!!! tip "The prompt does not have to be a global"
+`style` is a field on `Brief`, so the changed prompt travels as **workflow input** rather than as
+module state, and `before_task="synthesize"` names the cut instead of scanning the journal for the
+sequence number just below it. That is the whole thing: no `ControlAPI`, no `CommandQueue`, no
+worker tick, and no `satay[studio]` extra. See [Forking a run](../fork.md).
 
-    This example carries the synthesis style in a module-level dict because it predates
-    `workflow_input=`. Write it today and the prompt lives in the workflow's input, where it
-    belongs, and the fork point is a task name rather than a computed sequence number:
+!!! info "The override reaches only the calls after the cut"
 
-    ```python
-    handle = await satay.fork(
-        run_id,
-        before_task="synthesize",
-        workflow_input={**brief, "style": "sceptical"},
-    )
-    print(await handle.result())
-    ```
-
-    See [Forking a run](../fork.md).
+    The copied prefix is history and is never re-executed, so the new brief reaches `synthesize`
+    and nothing upstream of it. Cutting immediately before the call you are changing is how you
+    say "this, and only this". Change the *vendor* instead of the style and you would have to fork
+    before `plan_questions`, or the research would still be about the old one —
+    [Fork, Replay, Compare](fork-and-compare.md) shows that trap and its fix side by side.
 
 !!! warning "Changing the prompt is safe. Changing the schedule is not"
 
@@ -412,7 +415,7 @@ satay dev --app agentic_dag_demo --data-dir .satay-demo
 ```console
 $ satay dev --app agentic_dag_demo --data-dir .satay-demo
 app modules (--app): agentic_dag_demo
-registered: 3 workflows (brittle_dossier, unattended_dossier, vendor_dossier); 3 tasks (plan_questions, research, synthesize)
+registered: 4 workflows (brittle_dossier, reprompted_dossier, unattended_dossier, vendor_dossier); 3 tasks (plan_questions, research, synthesize)
 policies: effect_safety=warn, nondeterminism=strict, version_mismatch=warn
 INFO:     Started server process [769873]
 INFO:     Waiting for application startup.
@@ -423,7 +426,7 @@ Satay Studio:  http://127.0.0.1:8787/?token=THE_TOKEN_SATAY_DEV_PRINTED
   press Ctrl-C to stop
 ```
 
-`registered: 3 workflows` is the difference `--app` makes. Without it the dev stack serves Studio
+`registered: 4 workflows` is the difference `--app` makes. Without it the dev stack serves Studio
 and reads the journal but cannot start a run or wake one parked on a gate. With it, the poll loop
 can wake your parked runs and `POST /runs` can start new ones. `--app` takes a **dotted module
 path**, and the directory you ran from is on `sys.path`, so the bare filename works for a file you
@@ -438,11 +441,8 @@ Open the printed URL with its `?token=` query string. Three things to look at:
 2. **`brittle_dossier`, the failed run.** Two `TaskCompleted` for the siblings, three failed
    attempts on `research:litigation`. Open that call and each dead attempt carries what it cost,
    with the logical call totalling them — the `$0.1930` from part 3 that bought nothing, itemised.
-3. **The fork pair**, which lives in its own data directory so the two runs sit side by side:
-
-    ```bash
-    satay dev --app agentic_dag_demo --data-dir .satay-demo/reprompt
-    ```
+3. **The fork pair** — `reprompted_dossier` and the fork of it, in the same journal as the other
+   three runs.
 
     Open either run and follow the lineage chip in the header to **Compare**. It matches the two
     runs by durable-call identity rather than by sequence number, so you can see the plan and the
@@ -456,7 +456,7 @@ Scripting it instead? Every request needs the token in an `X-Satay-Token` header
 export SATAY_TOKEN="<the token satay dev printed>"
 
 curl -s -H "X-Satay-Token: $SATAY_TOKEN" \
-  'http://127.0.0.1:8787/runs/cedd8fb78b3b4ca7abfdf0f330ef78f6/compare?to=d5f855eef4ab4495a27b6ebd05a93dba'
+  'http://127.0.0.1:8787/runs/0ffb35cb4bef42969b0a422af8b9335f/compare?to=5aa5fec05a234fa68f55b7879c3b37c5'
 ```
 
 ## Recap
