@@ -34,6 +34,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history, which is what brings the tags with it. `check_repo_links.py`
+          # resolves a link that pins a ref — `blob/v0.1.0/…` — *at that ref* rather than
+          # against the working tree (KAN-489), and treats a ref this checkout does not
+          # have as a failure rather than a skip. actions/checkout defaults to a depth-1
+          # clone with no tags, so on the default every pinned link would be unverifiable
+          # and the job would go red on links that are perfectly fine. A second of clone
+          # time on a repo this size buys a check that actually means something.
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v7
         with:
