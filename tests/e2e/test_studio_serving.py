@@ -13,6 +13,16 @@ made that regression invisible to CI, so absence is now an error unless a checko
 explicitly opts out via ``SATAY_ALLOW_MISSING_STUDIO_BUNDLE=1``, which downgrades it
 back to a skip so the rest of the suite still runs (e.g. mid-``pnpm build`` work in
 ``studio/``). The failure names both fixes.
+
+**A missing extra fails too, from elsewhere (KAN-460).** The ``importorskip`` lines below
+mean that without ``satay[studio]`` this whole file — bundle gate included — removes
+itself from the run, so the gate above protected against a missing bundle but not against
+a missing extra. That hole cannot be closed here: ``studio_index()`` lives in
+``satay.control.server``, which imports FastAPI at module scope, so the bundle path is
+unreachable without the extra by construction. It is closed one level up instead, by the
+session gate in ``tests/conftest.py`` / ``tests/_extra_guard.py``, which fails a
+whole-suite run that is missing the extra. Same strict-by-default shape, same
+one-environment-variable opt-out.
 """
 
 from __future__ import annotations
