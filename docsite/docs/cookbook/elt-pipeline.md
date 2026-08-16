@@ -193,7 +193,9 @@ you can see it, and the warning still goes to stderr:
 
 ```console
 effect_safety: task 'load_carelessly' is side-effecting and retryable but declares no
-idempotency or compensation strategy (set @task(idempotent=True) or accept a ctx parameter)
+idempotency or compensation strategy. Set @task(idempotent=True) and key the effect on
+ctx.idempotency_key — that covers retries and resumes of this run; a re-trigger needs
+satay.start(idempotency_key=...) as well
 ```
 
 `warn` is the default. Set `effect_safety=strict` and that task is refused at schedule time
@@ -222,8 +224,25 @@ want.
     run had already completed, the repeated key is a no-op that hands back the recorded result.
     Derive that key from the logical batch date and pass it on every scheduled invocation.
 
+    This example does **not** pass one, so it trips the warning that exists for exactly this
+    shape — a keyed effect in a run whose id nothing can name again:
+
+    ```console
+    effect_safety: task 'load' keys its side effect on ctx.idempotency_key, but this run was
+    started without an idempotency key of its own, so that key is derived from a run id nothing
+    can name again. It deduplicates retries and resumes of THIS run only — trigger the same work
+    a second time and the new run gets new keys and repeats the effect. Pass satay.start(...,
+    idempotency_key=<stable id for this trigger>) if this run can ever be triggered twice; if it
+    genuinely cannot, effect_safety='off' silences this
+    ```
+
+    It warns rather than raises, in every mode, because a pipeline that really does fire once is
+    correct without a start key and the runtime cannot tell which one you are. See
+    [Guarantees](../guarantees.md#a-re-trigger-is-a-different-run).
+
     And remember the row-level half from earlier: one call key covers one call, so a multi-row
-    effect still has to compose `key#record_id` itself.
+    effect still has to compose `key#record_id` itself. There is no warning for that half —
+    nothing outside your loader can see how many rows one call was supposed to write.
 
 ## Section 3: Payload Spill
 

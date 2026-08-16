@@ -39,8 +39,15 @@ class EffectSafetyError(RuntimeError):
     """Raised in ``strict`` mode for an unguarded retryable side-effecting task (ADR-0006).
 
     A ``@task(side_effect=True, retries>0)`` must declare an idempotency or
-    compensation strategy — set ``@task(idempotent=True)`` or accept a ``ctx``
-    parameter and guard the effect with ``ctx.idempotency_key``.
+    compensation strategy — set ``@task(idempotent=True)`` and key the effect on
+    ``ctx.idempotency_key``.
+
+    The message names the *whole* fix, not just this task's half (KAN-476).
+    ``ctx.idempotency_key`` embeds the ``run_id``, so it deduplicates retries and
+    resumes of one run; surviving a **re-trigger** additionally needs the run itself to
+    be keyed, with ``satay.start(..., idempotency_key=...)``. A developer who does only
+    what this error asks still double-loads on the second trigger, which is why the
+    sentence is here rather than only in the docs.
     """
 
     def __init__(self, task_name: str) -> None:
@@ -48,6 +55,7 @@ class EffectSafetyError(RuntimeError):
         super().__init__(
             f"effect_safety=strict rejects task {task_name!r}: it is side-effecting and "
             f"retryable but declares no idempotency or compensation strategy. Set "
-            f"@task(idempotent=True) or accept a ctx parameter and guard the effect with "
-            f"ctx.idempotency_key."
+            f"@task(idempotent=True) and key the effect on ctx.idempotency_key. That key "
+            f"covers retries and resumes of THIS run; to survive a re-trigger of the same "
+            f"work, start the run with satay.start(..., idempotency_key=...) too."
         )

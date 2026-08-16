@@ -32,6 +32,18 @@ developers tools to make external effects safe, and a policy for retries.
 > moved to a separate `nondeterminism` policy that defaults to `strict`. The modes and the
 > `warn` default of `effect_safety` itself are unchanged.
 
+> **Extended 2026-08-17 (KAN-476).** The setting now carries a **second** check, still
+> about unsafe effects and still nothing else: a task that *does* declare
+> `idempotent=True`, running in a run started **without** `satay.start(idempotency_key=)`.
+> `ctx.idempotency_key` embeds the `run_id`, so it deduplicates retries and resumes of one
+> run and not a re-trigger — the composition of both keys is what makes an effect survive
+> being triggered twice. The new check **warns in `warn` and in `strict` alike and never
+> raises**: a genuinely one-shot run has no start-level key and is correct, and the
+> evidence that would distinguish it (a second trigger) is by construction not in this
+> journal, so escalating a guess to `EffectSafetyError` would reject correct programs.
+> The row-level half of the same trap — one call key covering an N-row effect — is not
+> detectable at all from inside the runtime and is documented rather than checked.
+
 Exactly-once for external systems is **not** claimed; safety depends on
 provider idempotency keys, DB transactions, transactional outbox, or explicit
 compensation. Full Saga/compensation orchestration is out of scope for the MVP.

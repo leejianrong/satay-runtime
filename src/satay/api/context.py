@@ -4,7 +4,9 @@ A running task reads its context with :func:`task_context`, which returns the
 :class:`TaskContext` bound for the current attempt. The context carries the durable
 identity of the attempt and the opt-in model-usage recording slot (ADR-0008). A task
 reads ``ctx.idempotency_key`` — stable across retries, distinct across invocations
-(A4.3) — to make external effects safe under at-least-once execution.
+(A4.3) — to make external effects safe under at-least-once execution. What that key
+covers, and the two things it silently does not (a re-trigger, and a multi-row effect),
+are spelled out on :attr:`TaskContext.idempotency_key` itself.
 
 Injection is via a ``ContextVar`` (the same pattern the replay driver uses), so task
 signatures stay ordinary and tasks remain independently callable. Usage is buffered on
@@ -42,7 +44,51 @@ class TaskContext:
 
     @property
     def idempotency_key(self) -> str:
-        """The stable idempotency key of this logical task (read-only, A4.3)."""
+        """The stable idempotency key of this logical task (read-only, A4.3).
+
+        ``sha256(run_id, task_name, ordinal-or-map-key)``. Arguments are excluded, so it
+        is identical across every physical attempt of one logical call and different for
+        every other call, map item, and run. Key an external effect on it and
+        at-least-once execution stops being able to duplicate that effect.
+
+        Two things it does **not** do. Both fail silently, and neither is a bug you can
+        find by reading a stack trace (KAN-476).
+
+        **It embeds the run id, so it does not survive a re-trigger.** It deduplicates
+        retries and resumes *of this run*. Run the same logical work again — an operator
+        re-running last night's load — and ``satay.start`` mints a fresh ``run_id``, so
+        every key here changes and every effect lands a second time. ``idempotent=True``
+        stays true and the runtime stays quiet, because at the task level nothing is
+        wrong. What closes it is keying the **run** as well as the effect::
+
+            # the trigger: a repeated key resolves to the same run instead of a new one
+            satay.start(nightly_load, sources, idempotency_key="load-2026-08-16")
+
+            # the effect: keyed on ctx, which is now stable across that re-trigger
+            @satay.task(side_effect=True, retries=2, idempotent=True)
+            async def load(batch: Batch) -> int:
+                ctx = satay.task_context()
+                return await warehouse.insert_or_ignore(key=ctx.idempotency_key, ...)
+
+        A run started without that key gets a warning naming this, once per task per
+        drive, unless ``effect_safety='off'``.
+
+        **It identifies one durable call, not one row.** A call that writes N rows needs
+        N distinct dedupe keys and has to compose them itself, conventionally with a
+        separator::
+
+            for row in batch.rows:
+                await warehouse.insert_or_ignore(
+                    key=f"{ctx.idempotency_key}#{row.record_id}", body=row.body
+                )
+
+        Write the bare key as the unique column on a four-row batch and the first insert
+        wins, the other three are silently ignored as duplicates of it, and the task
+        returns success having loaded one row of four. **The runtime cannot detect this
+        and will never warn about it** — the composition happens inside your effect,
+        which Satay does not see; only your own row counts can catch it. If your effect
+        writes more than one thing, compose the key per thing.
+        """
         return self._idempotency_key
 
     def record_model_usage(

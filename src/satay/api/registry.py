@@ -42,6 +42,11 @@ class TaskDefinition:
         Guarded means the author flagged ``idempotent=True`` — a promise that the body
         keys its effect on ``ctx.idempotency_key`` (or otherwise compensates). Unguarded
         retryable side effects are rejected under ``effect_safety=strict`` (ADR-0006).
+
+        Guarded is guarded **within one run**: ``ctx.idempotency_key`` embeds the
+        ``run_id``, so this flag says nothing about a re-trigger, which the engine checks
+        separately and only ever warns about (``ReplayEngine._warn_unnameable_run``). See
+        :attr:`satay.TaskContext.idempotency_key` for both traps (KAN-476).
         """
         return self.idempotent
 
