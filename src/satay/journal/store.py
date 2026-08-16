@@ -345,6 +345,12 @@ class SQLiteStore:
         rehydration is invisible to every reader above the store (replay, read API,
         Studio), and redaction (which runs later, on the read view) therefore scrubs a
         spilled field identically to an inline one (ADR-0004/ADR-0014).
+
+        ``decode`` collapses a tagged dataclass/model to a
+        :class:`~satay.journal.codec.TaggedDict` — a plain mapping of its fields that
+        keeps the encoder's ``"type"`` discriminator as an *attribute*. Readers that just
+        walk the payload see the same dict they always did; ``rehydrate`` on the replay
+        path gets the exact signal it needs to pick a union arm (KAN-520, ADR-0031).
         """
         raw = json.loads(payload_json)
         raw = rehydrate_encoded(raw, self._blobs)

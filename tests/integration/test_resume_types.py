@@ -19,6 +19,7 @@ import dataclasses
 
 import pytest
 
+import satay
 from satay.api.decorators import task, workflow
 from satay.api.primitives import start
 from satay.journal.store import SQLiteStore
@@ -49,6 +50,25 @@ class Failure:
 class Batch:
     rows: list[Row]
     head: Row | None = None
+
+
+# Two arms with *identical* field names (KAN-520). Nothing structural separates them, so
+# resolving them across a resume depends entirely on the ``type`` discriminator the
+# encoder records surviving the store's decode on read.
+@dataclasses.dataclass
+class Approved:
+    reason: str
+
+
+@dataclasses.dataclass
+class Rejected:
+    reason: str
+
+
+@dataclasses.dataclass
+class Verdict:
+    outcome: Approved | Rejected
+    note: str
 
 
 _EXEC: dict[str, int] = {}
@@ -108,6 +128,31 @@ async def rt_union_two_arms(n: int) -> Extracted | Failure:
 @workflow
 async def rt_wf_union_two_arms(n: int) -> str:
     return _shape(await rt_union_two_arms(n))
+
+
+@task()
+async def rt_union_identical_fields(n: int) -> Approved | Rejected:
+    _ran("rt_union_identical_fields")
+    return Approved(reason="clean") if n >= 0 else Rejected(reason="negative")
+
+
+@workflow
+async def rt_wf_union_identical_fields(n: int) -> str:
+    return _shape(await rt_union_identical_fields(n))
+
+
+@task()
+async def rt_union_identical_fields_nested(n: int) -> Verdict:
+    """The same ambiguous union, one level down — a *field* of the returned dataclass."""
+    _ran("rt_union_identical_fields_nested")
+    outcome = Approved(reason="clean") if n >= 0 else Rejected(reason="negative")
+    return Verdict(outcome=outcome, note=f"n={n}")
+
+
+@workflow
+async def rt_wf_union_identical_fields_nested(n: int) -> str:
+    verdict = await rt_union_identical_fields_nested(n)
+    return f"{_shape(verdict)}/{_shape(verdict.outcome)}"
 
 
 @task()
@@ -217,6 +262,29 @@ CASES = [
     ("rt_wf_union_optional_none", rt_wf_union_optional, 0, "rt_union_optional", "NoneType"),
     ("rt_wf_union_two_arms", rt_wf_union_two_arms, 1, "rt_union_two_arms", "Extracted"),
     ("rt_wf_union_two_arms_other", rt_wf_union_two_arms, -1, "rt_union_two_arms", "Failure"),
+    # KAN-520: arms with identical field names, so only the recorded discriminator can
+    # separate them. Both arms, and once nested inside a dataclass field.
+    (
+        "rt_wf_union_identical_fields",
+        rt_wf_union_identical_fields,
+        1,
+        "rt_union_identical_fields",
+        "Approved",
+    ),
+    (
+        "rt_wf_union_identical_fields_other",
+        rt_wf_union_identical_fields,
+        -1,
+        "rt_union_identical_fields",
+        "Rejected",
+    ),
+    (
+        "rt_wf_union_identical_fields_nested",
+        rt_wf_union_identical_fields_nested,
+        -1,
+        "rt_union_identical_fields_nested",
+        "Verdict/Rejected",
+    ),
     ("rt_wf_list", rt_wf_list, 2, "rt_list", "list[Row,Row]"),
     ("rt_wf_dict", rt_wf_dict, 1, "rt_dict", "dict{a:Batch}"),
     ("rt_wf_list_of_dict", rt_wf_list_of_dict, 1, "rt_list_of_dict", "list[dict{k:Row}]"),
@@ -272,3 +340,46 @@ async def test_resumed_result_has_the_same_type_as_first_execution(
 
     assert first == expected  # sanity: the shape fingerprint is what we think it is
     assert resumed == first  # the actual guard: no type drift across replay
+
+
+# ---------------------------------------------------------------------------
+# Fork copies a prefix *through* the recording path, so it is the one place a
+# journal is read and written back. Before KAN-520 that round trip dropped the
+# encoder's type discriminator, and a forked run replayed an anonymous field
+# dict where the source had a typed value.
+# ---------------------------------------------------------------------------
+
+
+@task()
+async def rt_classify(n: int) -> Approved | Rejected:
+    _ran("rt_classify")
+    return Approved(reason="clean") if n >= 0 else Rejected(reason="negative")
+
+
+@task()
+async def rt_report(shape: str) -> str:
+    _ran("rt_report")
+    return f"report:{shape}"
+
+
+@workflow
+async def rt_wf_classify_then_report(n: int) -> str:
+    outcome = await rt_classify(n)
+    return await rt_report(_shape(outcome))
+
+
+async def test_a_forked_prefix_keeps_the_type_of_a_copied_union_result() -> None:
+    """The fork replays the copied completion as the same arm the source produced."""
+    store = SQLiteStore.open(":memory:")
+    try:
+        assert await start(rt_wf_classify_then_report, -1, store=store, run_id="src").result() == (
+            "report:Rejected"
+        )
+        assert _EXEC["rt_classify"] == 1
+
+        handle = await satay.fork("src", before_task="rt_report", store=store)
+        assert await handle.result() == "report:Rejected"  # not Approved, not a dict
+        assert _EXEC["rt_classify"] == 1  # the copied completion was a replay hit
+        assert _EXEC["rt_report"] == 2  # ...and the task after the cut re-ran
+    finally:
+        store.close()

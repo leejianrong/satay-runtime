@@ -27,6 +27,7 @@ If you read four, read these.
 | [0003](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0003-nondeterminism-detection.md) | Nondeterminism detection |
 | [0004](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0004-append-only-journal.md) | Append-only journal as the single source of truth |
 | [0005](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0005-serialization-and-rehydration.md) | Serialization and typed rehydration |
+| [0031](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0031-decoded-type-discriminator.md) | The recorded type discriminator survives decode, and is a hint, never a resolver |
 | [0006](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0006-execution-guarantees.md) | Execution guarantees, idempotency, and effect safety |
 | [0007](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0007-runtime-and-worker-model.md) | Local-first single-process asyncio runtime |
 | [0010](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0010-code-versioning.md) | Code-version recording and mismatch policy |

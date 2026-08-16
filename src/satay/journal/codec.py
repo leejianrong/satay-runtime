@@ -15,12 +15,12 @@ annotation is absent.
 Rehydration recurses through parametrized annotations — ``list[X]``, ``tuple[X, Y]``,
 ``dict[str, X]``, ``X | None``, ``X | Y`` and any nesting of them — so a **resumed**
 value has the same Python type as the **first-execution** value (KAN-474). Union arms
-are discriminated by the ``"type"`` qualname the encoder records on tagged values when
-that tag is still present, and by encoded shape and field names once it is not (the
-journal store decodes payloads on read, so the replay path sees decoded data). An
+are discriminated by the ``"type"`` qualname the encoder records on tagged values, which
+survives :func:`decode` on a :class:`TaggedDict` (KAN-520, ADR-0031) and so is available
+on the replay path too; falling back to the encoded shape when it is absent. An
 annotation whose reconstruction cannot be resolved raises :class:`DecodeError` naming
 the annotation, rather than silently degrading to a plain dict on the recovery path
-only.
+only, or — worse — guessing an arm.
 """
 
 from __future__ import annotations
@@ -30,14 +30,59 @@ import enum
 import json
 import types
 import typing
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any, get_args, get_origin, get_type_hints
+
+from satay.redaction import REDACTED
 
 #: The discriminator key marking a tagged (non-JSON-native) value.
 TAG_KEY = "$satay"
 
+#: The tagged kinds that carry a ``"type"`` qualname discriminator.
+_TYPED_KINDS = ("dataclass", "model", "enum")
+
 #: ``type(None)``, the arm ``X | None`` adds to a union.
 _NONE_TYPE = type(None)
+
+
+class TaggedDict(dict[str, Any]):
+    """A decoded dataclass/model value that remembers the encoder's discriminator.
+
+    :func:`decode` collapses a tagged dataclass or model to the plain mapping of its
+    fields, which is what every reader above the store wants — the CLI timeline, the read
+    API, an equality assertion in a test. But the ``"type"`` qualname the encoder recorded
+    is the only **exact** signal for choosing a union arm, and dropping it forced arm
+    selection to guess from field names (KAN-520).
+
+    So the decoded value is a ``dict`` *subclass*: it compares, iterates, serializes and
+    reprs exactly like the plain dict it replaces, and carries the discriminator
+    **out of band** — as an attribute, not a key — where no reader can trip over it, no
+    ``json.dumps`` will emit it, and no field-name redaction pattern can match it.
+
+    The qualname is a **hint that is compared, never an import target**: nothing here
+    resolves it to a class, so ADR-0005's rejection of "embed the Python class path in the
+    data" still holds — a renamed or moved class degrades to a loud
+    :class:`DecodeError`, never to a wrong type (ADR-0031).
+    """
+
+    __slots__ = ("satay_kind", "satay_type")
+
+    #: The tagged kind this value decoded from — ``"dataclass"`` or ``"model"``.
+    satay_kind: str
+    #: The recorded ``module.QualName`` of the encoded type, or ``None`` if absent.
+    satay_type: str | None
+
+    def __init__(
+        self,
+        fields: Mapping[str, Any],
+        *,
+        satay_kind: str,
+        satay_type: str | None = None,
+    ) -> None:
+        super().__init__(fields)
+        self.satay_kind = satay_kind
+        self.satay_type = satay_type
 
 
 class EncodeError(TypeError):
@@ -85,6 +130,18 @@ def encode(value: Any, *, _path_str: str = "$") -> Any:
     if isinstance(value, list | tuple):
         return [encode(item, _path_str=_index(_path_str, i)) for i, item in enumerate(value)]
 
+    if isinstance(value, TaggedDict):
+        # Re-emit the tagged form this value decoded from, so a payload that is *read and
+        # written back* keeps its discriminator instead of degrading to an anonymous field
+        # dict. The live case is ``create_fork``, which copies a source prefix verbatim
+        # through the recording path (N15, ADR-0004); before KAN-520 every forked journal
+        # lost its tags on the way through.
+        return {
+            TAG_KEY: value.satay_kind,
+            "type": value.satay_type,
+            "fields": {k: encode(v, _path_str=_path(_path_str, k)) for k, v in value.items()},
+        }
+
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         fields = {
             f.name: encode(getattr(value, f.name), _path_str=_path(_path_str, f.name))
@@ -122,10 +179,17 @@ def encode(value: Any, *, _path_str: str = "$") -> Any:
 def decode(data: Any) -> Any:
     """Decode a JSON-compatible structure, resolving tagged non-native values.
 
-    Enums, dataclasses, and Pydantic models decode to a plain dict of fields here;
-    :func:`rehydrate` reconstructs the declared Python type when an annotation is
-    supplied. Datetimes and timedeltas decode to their native Python objects because
-    they are unambiguous from the tag alone.
+    Dataclasses and Pydantic models decode to a :class:`TaggedDict` — a mapping of their
+    fields that is indistinguishable from a plain dict to a reader, but keeps the
+    encoder's ``"type"`` discriminator as an attribute so union arm selection stays exact
+    on the replay path (KAN-520). Enums decode to their raw value; :func:`rehydrate`
+    reconstructs the declared Python type when an annotation is supplied. Datetimes and
+    timedeltas decode to their native Python objects because they are unambiguous from
+    the tag alone.
+
+    Idempotent on its own output: decoding an already-decoded value returns it unchanged
+    (a :class:`TaggedDict` flattens back to a plain dict, which is the ADR-0005 fallback
+    shape an untyped reader expects).
     """
     if isinstance(data, list):
         return [decode(item) for item in data]
@@ -141,7 +205,18 @@ def decode(data: Any) -> Any:
         if tag == "enum":
             return decode(data["v"])
         if tag in ("dataclass", "model"):
-            return {k: decode(v) for k, v in data["fields"].items()}
+            fields = data.get("fields")
+            if not isinstance(fields, dict):
+                raise DecodeError(
+                    f"tagged {tag} value has a {type(fields).__name__!r} 'fields' entry "
+                    f"instead of an object; the payload is corrupt, or a redaction pattern "
+                    f"matched the 'fields' key and masked the whole value"
+                )
+            return TaggedDict(
+                {k: decode(v) for k, v in fields.items()},
+                satay_kind=tag,
+                satay_type=data.get("type"),
+            )
         raise DecodeError(f"unknown tagged kind {tag!r}")
 
     return data
@@ -310,69 +385,71 @@ def _rehydrate_union(data: Any, annotation: Any, args: tuple[Any, ...]) -> Any:
 def _select_union_arm(data: Any, arms: list[Any], annotation: Any) -> Any:
     """Pick the union arm for ``data``, preferring the discriminator the encoder wrote.
 
-    Three signals, in order of strength:
+    Two signals, in order of strength:
 
-    1. the ``"type"`` qualname on a tagged value — exact, but only present when
-       rehydrating a *still-encoded* payload. The journal store decodes payloads on read
-       (``SQLiteStore._decode_payload``), so on the replay path the tag is already gone;
-    2. the encoded shape (array / object / primitive / natively-decoded object);
-    3. for objects, the field-name set, against each structured arm's declared fields.
+    1. the ``"type"`` qualname the encoder records on a tagged value — exact, and since
+       KAN-520 it survives :func:`decode` on a :class:`TaggedDict`, so the replay path
+       gets it too. It is only ever **compared** to each arm's qualname, never resolved
+       or imported, so no module-path coupling is created (ADR-0005/ADR-0031);
+    2. the encoded shape (array / object / primitive / natively-decoded object).
 
-    None of them narrowing to exactly one arm is a hard error, never a guess.
+    Neither narrowing to exactly one arm is a hard error, never a guess. There used to be
+    a third signal — narrowing objects by their declared field names — and it was only
+    ever needed because signal 1 was thrown away on read; it is deleted with the cause,
+    because "two arms with the same fields" is precisely where guessing is dangerous.
     """
-    tag = data.get(TAG_KEY) if isinstance(data, dict) else None
-    if tag in ("dataclass", "model", "enum"):
-        recorded = data.get("type")
+    kind, recorded = _tag_of(data)
+    if kind in _TYPED_KINDS and isinstance(recorded, str):
         for arm in arms:
             if isinstance(arm, type) and _qualname(arm) == recorded:
                 return arm
 
-    candidates = [arm for arm in arms if _arm_accepts(data, tag, arm)]
+    candidates = [arm for arm in arms if _arm_accepts(data, kind, arm)]
     if len(candidates) == 1:
         return candidates[0]
-    if len(candidates) > 1 and isinstance(data, dict):
-        narrowed = _narrow_by_field_names(data, candidates)
-        if narrowed is not None:
-            return narrowed
     raise DecodeError(
         f"cannot tell which arm of {_annotation_name(annotation)} the recorded "
-        f"{_recorded_kind(data, tag)} belongs to"
+        f"{_recorded_kind(data, kind, recorded)} belongs to"
         + (f" ({len(candidates)} arms match)" if candidates else " (no arm matches)")
+        + _discriminator_hint(recorded)
         + "; annotate the task with a single concrete type, or with a union whose arms are "
         "distinguishable in the journal"
     )
 
 
-def _narrow_by_field_names(data: dict[str, Any], candidates: list[Any]) -> Any | None:
-    """Narrow structured union arms by the recorded object's field names, or ``None``.
+def _discriminator_hint(recorded: Any) -> str:
+    """Name the two ways the encoder's discriminator goes missing, when it has.
 
-    The fallback for a decoded payload, whose ``$satay`` tag the store has already
-    consumed: an exact field-name match wins, otherwise a single arm that declares a
-    superset of the recorded keys (the rest defaulted) wins.
+    Worth spelling out because neither is visible from the value in hand: write-time
+    redaction can mask it (ADR-0029 — a hostile pattern set reaches it, the default one
+    does not), and a journal recorded before KAN-520 by a *fork* lost it on the copy.
     """
-    keys = set(_encoded_fields(data))
-    exact = [arm for arm in candidates if _arm_field_names(arm) == keys]
-    if len(exact) == 1:
-        return exact[0]
-    covering = [
-        arm for arm in candidates if (names := _arm_field_names(arm)) is not None and keys <= names
-    ]
-    if len(covering) == 1:
-        return covering[0]
-    return None
+    if recorded == REDACTED:
+        return "; its type discriminator was masked by write-time redaction (ADR-0029)"
+    if recorded is None:
+        return "; the payload carries no recorded type discriminator"
+    return ""
 
 
-def _arm_field_names(arm: Any) -> set[str] | None:
-    """The declared field names of a structured type, or ``None`` if it has none."""
-    if dataclasses.is_dataclass(arm) and isinstance(arm, type):
-        return {f.name for f in dataclasses.fields(arm)}
-    model_fields = getattr(arm, "model_fields", None)  # duck-typed Pydantic v2
-    if isinstance(model_fields, dict):
-        return set(model_fields)
-    return None
+def _tag_of(data: Any) -> tuple[str | None, str | None]:
+    """Return ``(kind, recorded_type)`` for a value in either form the runtime sees.
+
+    Still-encoded (``rehydrate`` called on a payload straight off ``encode``) reads the
+    ``$satay``/``type`` keys; decoded (the replay path, via ``SQLiteStore``) reads the
+    :class:`TaggedDict` attributes. ``(None, None)`` for anything else — a plain JSON
+    value, or a structured payload whose tag never survived.
+    """
+    if isinstance(data, TaggedDict):
+        return data.satay_kind, data.satay_type
+    if isinstance(data, dict):
+        tag = data.get(TAG_KEY)
+        if isinstance(tag, str):
+            recorded = data.get("type")
+            return tag, recorded if isinstance(recorded, str) else None
+    return None, None
 
 
-def _arm_accepts(data: Any, tag: Any, arm: Any) -> bool:
+def _arm_accepts(data: Any, tag: str | None, arm: Any) -> bool:
     """Whether ``arm`` could be the type of the recorded ``data``, by encoded shape."""
     if tag is not None:
         if tag == "datetime":
@@ -406,10 +483,11 @@ def _arm_accepts(data: Any, tag: Any, arm: Any) -> bool:
     return isinstance(arm, type) and isinstance(data, arm)
 
 
-def _recorded_kind(data: Any, tag: Any) -> str:
-    if tag in ("dataclass", "model", "enum") and isinstance(data, dict):
-        return f"{tag} {data.get('type')!r}"
-    return f"{type(data).__name__!r} value"
+def _recorded_kind(data: Any, tag: str | None, recorded: str | None) -> str:
+    if tag in _TYPED_KINDS:
+        return f"{tag} {recorded!r}"
+    name = "dict" if isinstance(data, dict) else type(data).__name__
+    return f"{name!r} value"
 
 
 def _needs_rehydration(annotation: Any) -> bool:
@@ -465,7 +543,12 @@ def _raw_fields(data: Any) -> dict[str, Any]:
 
 
 def _encoded_fields(data: Any) -> dict[str, Any]:
-    """Return the still-encoded field dict for a structured value."""
+    """Return the field dict of a structured value, without unwrapping its own tags.
+
+    Fields come back exactly as recorded — still encoded for a tagged payload, already
+    decoded (but still :class:`TaggedDict`-carrying, so nested unions stay exact) for one
+    the store decoded. Either way :func:`rehydrate` recurses over them.
+    """
     if isinstance(data, dict):
         if data.get(TAG_KEY) in ("dataclass", "model"):
             fields: dict[str, Any] = data["fields"]

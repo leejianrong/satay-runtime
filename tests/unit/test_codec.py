@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Optional, Union
@@ -19,6 +20,7 @@ from satay.journal.codec import (
     rehydrate,
     to_json,
 )
+from satay.redaction import Redactor
 
 
 class Color(enum.Enum):
@@ -232,20 +234,111 @@ def test_union_arm_is_picked_by_the_recorded_type_tag_when_present() -> None:
     assert isinstance(rehydrate(encode(Beta(1)), Alpha | Beta), Beta)
 
 
-def test_indistinguishable_union_arms_fail_loudly() -> None:
-    """No tag and no distinguishing field: raise, never guess (the KAN-474 constraint)."""
+@dataclasses.dataclass
+class Alpha:
+    value: int
 
-    @dataclasses.dataclass
-    class Alpha:
-        value: int
 
-    @dataclasses.dataclass
-    class Beta:
-        value: int
+@dataclasses.dataclass
+class Beta:
+    """Structurally identical to :class:`Alpha` — only the discriminator tells them apart."""
 
+    value: int
+
+
+def test_identical_field_unions_resolve_on_the_decoded_path() -> None:
+    """The KAN-520 acceptance probe: ``rehydrate(decode(encode(A(1))), A | B)`` is an ``A``.
+
+    ``A`` and ``B`` declare the *same* field names, so no structural signal can separate
+    them. Before the discriminator survived ``decode()`` this was a hard ``DecodeError``
+    on the replay path while the still-encoded path resolved it correctly — the exact
+    asymmetry the card names.
+    """
+    assert isinstance(rehydrate(decode(encode(Alpha(1))), Alpha | Beta), Alpha)
+    assert isinstance(rehydrate(decode(encode(Beta(1))), Alpha | Beta), Beta)
+    # ...and the two paths now agree, which is the point.
+    assert isinstance(rehydrate(encode(Alpha(1)), Alpha | Beta), Alpha)
+    assert isinstance(rehydrate(from_json(to_json(Alpha(1))), Alpha | Beta), Alpha)
+
+
+def test_decoded_structured_value_is_indistinguishable_from_a_plain_dict() -> None:
+    """The discriminator rides out of band, so no reader above the store can see it."""
+    decoded = decode(encode(Point(1, 2)))
+    assert decoded == {"x": 1, "y": 2}
+    assert isinstance(decoded, dict)
+    assert sorted(decoded) == ["x", "y"]
+    assert json.loads(json.dumps(decoded)) == {"x": 1, "y": 2}
+    # Not a key: a redaction pattern set matches *field names*, and there is no field
+    # name here to match (ADR-0029).
+    assert "$satay" not in decoded and "type" not in decoded
+
+
+def test_decode_is_idempotent_and_flattens_to_a_plain_dict() -> None:
+    """Decoding twice is the ADR-0005 untyped fallback, not an error."""
+    once = decode(encode(Point(1, 2)))
+    twice = decode(once)
+    assert twice == {"x": 1, "y": 2}
+    assert type(twice) is dict
+    # Without the tag the ambiguous union is unresolvable again — loudly.
+    with pytest.raises(DecodeError):
+        rehydrate(decode(decode(encode(Alpha(1)))), Alpha | Beta)
+
+
+def test_re_encoding_a_decoded_value_keeps_the_discriminator() -> None:
+    """A payload read and written back (``create_fork`` copies a prefix) keeps its tag."""
+    round_tripped = encode(decode(encode(Alpha(1))))
+    assert round_tripped == encode(Alpha(1))
+    assert isinstance(rehydrate(decode(round_tripped), Alpha | Beta), Alpha)
+
+
+def test_union_without_a_recorded_discriminator_fails_loudly() -> None:
+    """No tag and no distinguishing shape: raise, never guess (the KAN-474 constraint).
+
+    This is what a payload written *before* KAN-520 by ``create_fork`` looks like, and
+    what a task whose annotation lies (``-> A | B``, returns a bare dict) produces. The
+    field-name heuristic that used to guess here is gone: with identical field names it
+    could not help anyway, and with distinguishable ones it was a guess dressed as a fact.
+    """
     with pytest.raises(DecodeError) as excinfo:
-        rehydrate(from_json(to_json(Alpha(1))), Alpha | Beta)
-    assert "Alpha" in str(excinfo.value) and "Beta" in str(excinfo.value)
+        rehydrate({"value": 1}, Alpha | Beta)
+    message = str(excinfo.value)
+    assert "Alpha" in message and "Beta" in message
+    assert "no recorded type discriminator" in message
+
+
+def test_a_redacted_discriminator_fails_loudly_rather_than_guessing() -> None:
+    """ADR-0029 interaction: a masked ``type`` must not silently select the wrong arm.
+
+    The discriminator lives inside an ``*_ref`` value slot, so a *custom* pattern set
+    matching ``type`` reaches it (the default set does not — see
+    ``tests/e2e/test_write_time_redaction.py``). When it does, rehydration must fail
+    loudly and say why, which is the same trade ADR-0029 already accepted for a redacted
+    value of the wrong Python type.
+    """
+    redacted = Redactor(["type"]).redact_value_slots({"output_ref": encode(Alpha(1))})
+    with pytest.raises(DecodeError) as excinfo:
+        rehydrate(decode(redacted["output_ref"]), Alpha | Beta)
+    assert "write-time redaction" in str(excinfo.value)
+
+    # A single structured arm is still recoverable: the discriminator was only ever a
+    # preference, so losing it degrades exactness, never correctness.
+    assert isinstance(rehydrate(decode(redacted["output_ref"]), Alpha | int), Alpha)
+
+
+def test_a_discriminator_naming_an_unknown_type_is_never_resolved_or_imported() -> None:
+    """ADR-0005 holds: the qualname is compared, never turned back into a class."""
+    encoded = encode(Alpha(1))
+    encoded["type"] = "some.module.ThatDoesNotExist"
+    with pytest.raises(DecodeError):
+        rehydrate(decode(encoded), Alpha | Beta)
+
+
+def test_a_masked_fields_entry_fails_loudly_instead_of_crashing() -> None:
+    """A pattern set matching ``fields`` masks the whole value; say so, don't AttributeError."""
+    redacted = Redactor(["fields"]).redact_value_slots({"output_ref": encode(Alpha(1))})
+    with pytest.raises(DecodeError) as excinfo:
+        decode(redacted["output_ref"])
+    assert "fields" in str(excinfo.value)
 
 
 def test_non_str_dict_keys_fail_loudly_and_name_the_annotation() -> None:
