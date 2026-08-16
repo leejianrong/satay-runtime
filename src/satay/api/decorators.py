@@ -47,6 +47,25 @@ def task(
     retryable side-effecting task must set ``idempotent=True`` (a promise it keys its
     effect on ``ctx.idempotency_key``), else ``effect_safety=strict`` rejects it at
     schedule time.
+
+    **``idempotent=True`` is a promise about one run, not about the work** (KAN-476).
+    It says the body derives its dedupe key from ``ctx.idempotency_key``, which is
+    ``sha256(run_id, task_name, ordinal-or-map-key)`` — so it holds across retries and
+    across a crash-and-resume of *this* run, and stops there. Two silent gaps come with
+    it, both documented in full on :attr:`satay.TaskContext.idempotency_key`:
+
+    - **A re-trigger is not deduplicated.** Starting the same logical work again mints a
+      new ``run_id``, hence new keys, hence a second copy of the effect. Compose the
+      declaration with a keyed start — ``satay.start(wf, x, idempotency_key=...)`` — so
+      the repeat resolves to the same run instead of a new one. Satay warns when a
+      task declared this way runs in a run with no start-level key of its own.
+    - **One key covers one call, not one row.** A body writing N rows must compose
+      ``f"{ctx.idempotency_key}#{row_id}"`` per row. Using the bare key as a unique
+      column writes the first row and silently ignores the rest. Nothing in the runtime
+      can see that, so nothing warns.
+
+    Declaring ``idempotent=True`` without keeping the promise is worse than not
+    declaring it: it turns the unguarded-effect warning off.
     """
 
     def decorator(fn: _AsyncFn) -> _AsyncFn:

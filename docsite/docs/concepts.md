@@ -184,6 +184,10 @@ A task body reads it with `satay.task_context()`, which is how you make an exter
 under at-least-once execution. That is covered in
 [Guarantees](guarantees.md#idempotency-keys).
 
+Note the `run_id` in that formula, and note that the key names a *call*. Both have consequences
+for what the key deduplicates and what it quietly does not:
+[What the key does not cover](guarantees.md#what-the-key-does-not-cover).
+
 ## Runs, handles, and status
 
 `satay.start(...)` returns a `RunHandle` and does no work. `await handle.result()` drives the run

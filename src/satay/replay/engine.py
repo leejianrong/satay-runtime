@@ -38,6 +38,19 @@ entry at that global position, the engine raises :class:`NondeterminismError`
 which is separate from ``effect_safety`` and defaults to ``strict``: ``strict`` fails,
 ``warn`` logs and lets the divergent call proceed as a fresh miss (so the run can
 complete with a wrong result), ``off`` does the same silently.
+
+**Effect safety (A10.2, ADR-0006)** is checked here too, at schedule time, and covers
+*two* failure shapes rather than one (KAN-476):
+
+- an **unguarded** retryable side effect — ``side_effect=True`` with retries and no
+  ``idempotent=True`` — which ``strict`` rejects with :class:`EffectSafetyError`;
+- a **guarded** side effect in a run **nothing can name again** — ``idempotent=True``,
+  so the effect is keyed on ``ctx.idempotency_key``, but the run itself was started
+  without ``satay.start(idempotency_key=...)``. The task key is derived from the
+  ``run_id``, so it deduplicates retries and resumes *of this run* and nothing else:
+  a second trigger of the same logical work mints a fresh ``run_id``, fresh keys, and
+  the effect happens twice. That one only ever **warns** — see
+  :meth:`ReplayEngine._warn_unnameable_run`, which explains why it cannot escalate.
 """
 
 from __future__ import annotations
@@ -146,6 +159,8 @@ class ReplayEngine:
         effect_safety: EffectSafety = EffectSafety.WARN,
         nondeterminism: NondeterminismPolicy = NondeterminismPolicy.STRICT,
         version_mismatch: VersionMismatchPolicy = VersionMismatchPolicy.WARN,
+        run_is_nameable: bool = False,
+        warned_tasks: set[str] | None = None,
     ) -> None:
         self._store = store
         self._run_id = run_id
@@ -161,6 +176,18 @@ class ReplayEngine:
         self._executor = executor or LocalTaskExecutor(
             self._commit, clock=self._clock, rng=self._rng
         )
+
+        #: Whether a re-trigger of this run's work can resolve back to **this** run —
+        #: true when its ``WorkflowCreated`` recorded an ``idempotency_key``
+        #: (:meth:`_load_journal` reads it, so every drive path agrees), or when a parent
+        #: engine passed its own answer down (a child's ``run_id`` is minted by the
+        #: parent, so the child is exactly as re-derivable as the parent is). ``False``
+        #: means the ``run_id`` is a fresh UUID nothing can name again, which is what
+        #: makes a keyed side effect inside it re-fire (KAN-476, trap 1).
+        self._run_is_nameable = run_is_nameable
+        #: Task names already warned about for that shape. Shared with child engines, so
+        #: a fan-out of children says it once for the whole tree rather than once each.
+        self._unnameable_warned: set[str] = set() if warned_tasks is None else warned_tasks
 
         self._resolver = IdentityResolver()
         #: Ordinals for child-workflow calls (``satay.start_child``), kept separate from
@@ -213,7 +240,11 @@ class ReplayEngine:
     def _load_journal(self, events: list[Event]) -> None:
         for event in events:
             payload = event.payload
-            if event.type is EventType.TASK_SCHEDULED:
+            if event.type is EventType.WORKFLOW_CREATED:
+                # A keyed start makes the run re-derivable; never clears an inherited
+                # ``True``, which is how a child learns its parent was keyed (KAN-476).
+                self._run_is_nameable |= payload.get("idempotency_key") is not None
+            elif event.type is EventType.TASK_SCHEDULED:
                 identity = CallIdentity.from_payload(payload)
                 self._scheduled.add(identity)
                 # Only ordinal (non-keyed) calls take a slot in the nondeterminism
@@ -848,6 +879,12 @@ class ReplayEngine:
             effect_safety=self._effect_safety,
             nondeterminism=self._nondeterminism,
             version_mismatch=self._version_mismatch,
+            # A child is exactly as re-triggerable as its parent: the parent's journal
+            # records the child ``run_id``, so replaying a keyed parent reuses it, while
+            # a fresh parent mints a fresh child. Inherit rather than re-derive, and
+            # share the warned-task set so one tree warns once (KAN-476).
+            run_is_nameable=self._run_is_nameable,
+            warned_tasks=self._unnameable_warned,
         )
         await child_engine.drive(workflow_def, workflow_input)
 
@@ -890,21 +927,76 @@ class ReplayEngine:
         # off: silent. Fall through — the divergent call proceeds as a fresh miss.
 
     def _enforce_effect_safety(self, definition: TaskDefinition) -> None:
-        """Reject/warn on an unguarded retryable side-effecting task (A10.2)."""
-        if not (definition.side_effect and definition.retries > 0):
+        """Apply the two schedule-time effect-safety checks (A10.2, KAN-476).
+
+        A task with no declared side effect is not this setting's business, and ``off``
+        silences both checks. Otherwise: an *unguarded* retryable side effect is the
+        original ADR-0006 condition (``strict`` raises, ``warn`` logs); a *guarded* one
+        gets the second check, for the run whose identity nothing can name again.
+        """
+        if not definition.side_effect or self._effect_safety is EffectSafety.OFF:
             return
-        if definition.is_effect_guarded:
-            return
-        if self._effect_safety is EffectSafety.STRICT:
-            raise EffectSafetyError(definition.name)
-        if self._effect_safety is EffectSafety.WARN:
+
+        if not definition.is_effect_guarded:
+            if definition.retries == 0:
+                return
+            if self._effect_safety is EffectSafety.STRICT:
+                raise EffectSafetyError(definition.name)
             _LOG.warning(
                 "effect_safety: task %r is side-effecting and retryable but declares no "
-                "idempotency or compensation strategy (set @task(idempotent=True) or accept "
-                "a ctx parameter)",
+                "idempotency or compensation strategy. Set @task(idempotent=True) and key "
+                "the effect on ctx.idempotency_key — that covers retries and resumes of "
+                "this run; a re-trigger needs satay.start(idempotency_key=...) as well",
                 definition.name,
             )
-        # off: silent.
+            return
+
+        self._warn_unnameable_run(definition)
+
+    def _warn_unnameable_run(self, definition: TaskDefinition) -> None:
+        """Warn that a keyed side effect sits in a run a re-trigger cannot resolve to.
+
+        ``ctx.idempotency_key`` is ``sha256(run_id, task_name, ordinal-or-map-key)``, so
+        keying an effect on it makes that effect survive retries and resumes **of this
+        run**. It does nothing about a re-trigger: run the same work again and
+        ``satay.start`` mints a fresh ``run_id``, every task key changes, and the effect
+        lands a second time — silently, with ``idempotent=True`` correctly declared and
+        the unguarded check above perfectly happy. That is the trap this warns about
+        (KAN-476, trap 1), and the composition that closes it is *both* keys::
+
+            satay.start(load, batch, idempotency_key=f"load-{batch.date}")   # the run
+            f"{ctx.idempotency_key}#{row.id}"                               # the effect
+
+        **It warns and never raises, in every mode**, because the condition is a risk and
+        not a defect: a run that genuinely fires once — a one-shot script, a trigger
+        deduplicated upstream — has no start-level key and is perfectly correct. The
+        runtime cannot tell the two apart from inside a single run (the distinguishing
+        evidence, a second trigger of the same logical work, is by construction not in
+        this journal, and an unkeyed run's ``run_id`` is a fresh UUID that no later
+        trigger can name). Escalating a guess to ``EffectSafetyError`` under ``strict``
+        would break correct programs, so ``strict`` gets the same warning ``warn`` does.
+
+        Three things keep it quiet on correct code: the run only qualifies if nothing can
+        name it again (``self._run_is_nameable`` — a keyed start, or a child of one); only
+        a declared ``side_effect=True, idempotent=True`` task triggers it, which is a
+        deliberate author annotation and not a default; and it fires at most once per task
+        name per drive tree, so a fan-out over 500 items says it once.
+        ``effect_safety='off'`` silences it outright, which is the answer for a run you
+        know to be one-shot.
+        """
+        if self._run_is_nameable or definition.name in self._unnameable_warned:
+            return
+        self._unnameable_warned.add(definition.name)
+        _LOG.warning(
+            "effect_safety: task %r keys its side effect on ctx.idempotency_key, but this "
+            "run was started without an idempotency key of its own, so that key is derived "
+            "from a run id nothing can name again. It deduplicates retries and resumes of "
+            "THIS run only — trigger the same work a second time and the new run gets new "
+            "keys and repeats the effect. Pass satay.start(..., idempotency_key=<stable id "
+            "for this trigger>) if this run can ever be triggered twice; if it genuinely "
+            "cannot, effect_safety='off' silences this",
+            definition.name,
+        )
 
     # -- drive -------------------------------------------------------------------
 

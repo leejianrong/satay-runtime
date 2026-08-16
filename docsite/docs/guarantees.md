@@ -88,6 +88,119 @@ check before acting.
 `ctx` also carries `run_id`, `task_name`, `ordinal`, and `attempt`. Put `attempt` in your log
 lines, because "this is attempt 3" explains a lot.
 
+## What the key does not cover
+
+Read the formula again: `sha256(run_id, task_name, ordinal-or-map-key)`. Two consequences fall
+straight out of it, and both of them bite people who have done everything else right. Neither
+raises. Neither shows up in the journal. You find out from the data.
+
+### A re-trigger is a different run
+
+**The run id is in the key.** So the key covers retries of a call and resumes of a run, and it
+stops there. Run the same work a second time — an operator re-running last night's load, a cron
+firing twice, a queue redelivering — and `satay.start` mints a fresh `run_id`, every key inside
+changes, and every effect lands again. `idempotent=True` is still true. `effect_safety` has nothing
+to complain about at the task level. You get a clean second copy of everything.
+
+Keying the effect is half the job. The other half is keying the **trigger**, so the repeat resolves
+to the run you already have instead of creating a new one:
+
+```python title="retrigger.py"
+import asyncio
+
+import satay
+
+warehouse: dict[str, str] = {}  # stands in for a table with a unique index
+
+
+@satay.task(side_effect=True, retries=2, idempotent=True)
+async def load(batch: str) -> int:
+    ctx = satay.task_context()
+    written = 0
+    for record_id in ("r1", "r2", "r3"):
+        key = f"{ctx.idempotency_key}#{record_id}"  # one key per ROW, not per call
+        if key not in warehouse:
+            warehouse[key] = record_id
+            written += 1
+    return written
+
+
+@satay.workflow
+async def nightly(batch: str) -> int:
+    return await load(batch)
+
+
+async def trigger_twice(store, key: str | None) -> None:
+    warehouse.clear()
+    for n in (1, 2):
+        handle = satay.start(nightly, "2026-08-16", store=store, idempotency_key=key)
+        await handle.result()
+        print(f"  trigger {n}: run {handle.run_id[:8]}, warehouse holds {len(warehouse)} row(s)")
+
+
+async def main() -> None:
+    async with satay.run_app() as store:
+        print("no key on start:")
+        await trigger_twice(store, None)
+        print("idempotency_key on start:")
+        await trigger_twice(store, "nightly-2026-08-16")
+
+
+asyncio.run(main())
+```
+
+```console
+$ python retrigger.py
+no key on start:
+  trigger 1: run 791da4b5, warehouse holds 3 row(s)
+  trigger 2: run 20d6d9fb, warehouse holds 6 row(s)
+idempotency_key on start:
+  trigger 1: run e6941e59, warehouse holds 3 row(s)
+  trigger 2: run e6941e59, warehouse holds 3 row(s)
+```
+
+Same task, same guard, same data. The only difference is the argument on `satay.start`, and it is
+the difference between three rows and six. The second trigger resolved to the run id the first one
+created, found it terminal, and handed back the recorded result without running anything.
+
+Derive that key from whatever identifies the work — a batch date, an order id, the message id of
+the event that triggered you — and pass it on every invocation. It costs one argument.
+
+The first half of that run also printed this, twice, on the `satay` logger:
+
+```console
+effect_safety: task 'load' keys its side effect on ctx.idempotency_key, but this run was started
+without an idempotency key of its own, so that key is derived from a run id nothing can name again.
+It deduplicates retries and resumes of THIS run only — trigger the same work a second time and the
+new run gets new keys and repeats the effect. Pass satay.start(..., idempotency_key=<stable id for
+this trigger>) if this run can ever be triggered twice; if it genuinely cannot, effect_safety='off'
+silences this
+```
+
+That is `effect_safety` spotting the shape: a task that declares a keyed side effect, running in a
+run whose id is a fresh UUID nothing can name again. It fires once per task per run and it never
+raises, in any mode, because a script that genuinely runs once is correct without a start key and
+the runtime cannot tell the two apart. If your run is one of those, `effect_safety="off"` on it
+says so.
+
+### One key covers one call, not one row
+
+The key identifies a durable **call**. A call that writes four rows needs four dedupe keys, and
+composing them is your job:
+
+```python
+for row in batch.rows:
+    await warehouse.insert_or_ignore(key=f"{ctx.idempotency_key}#{row.record_id}", body=row.body)
+```
+
+Write the bare key as the unique column on that four-row batch instead, and the first insert wins
+while the other three are ignored as duplicates of it. The task then returns success having loaded
+one row of four. Every count it reports is its own, and every count is wrong.
+
+There is no warning for this one and there cannot be. The composition happens inside your effect,
+in a database Satay never sees. If your task writes more than one thing per call, put something
+per-thing in the key.
+
 ## `effect_safety`
 
 The runtime cannot tell whether your task talks to the outside world, so you tell it:
@@ -113,6 +226,12 @@ the environment, then `warn`.
 `warn` is the default here because the flagged combination is a design smell rather than a present
 bug: the task may well be safe, the runtime just cannot tell. Promote it to `strict` in any
 environment where you would rather be told at schedule time than find out from a duplicate charge.
+
+The same setting carries the second check from [above](#a-re-trigger-is-a-different-run): a task
+that *does* declare `idempotent=True`, running in a run started without its own key. That one warns
+under both `warn` and `strict` and is silent under `off`. It never raises, because "this run might
+be triggered again" is a guess about the world outside the process, and the honest ceiling for a
+guess is a warning.
 
 !!! note "This setting does not cover replay divergence"
 
@@ -182,7 +301,9 @@ async def main() -> None:
     print("  ->", await satay.start(with_retries, 21).result())
 
     print("idempotency key:")
-    print("  ->", await satay.start(guarded, 1999).result())
+    # Both halves: the key on the start makes the trigger idempotent, the key inside
+    # `charge` makes the effect idempotent. Drop the first and a second run re-charges.
+    print("  ->", await satay.start(guarded, 1999, idempotency_key="charge-1999").result())
     print(f"  -> the effect ran {len(charged)} time(s)")
 
     print("effect_safety=strict:")
@@ -208,12 +329,17 @@ idempotency key:
   -> receipt-1999
   -> the effect ran 1 time(s)
 effect_safety=strict:
-  -> EffectSafetyError: effect_safety=strict rejects task 'unguarded': it is side-effecting and retryable but declares no idempotency or compensation strategy. Set @task(idempotent=True) or accept a ctx parameter and guard the effect with ctx.idempotency_key.
+  -> EffectSafetyError: effect_safety=strict rejects task 'unguarded': it is side-effecting and retryable but declares no idempotency or compensation strategy. Set @task(idempotent=True) and key the effect on ctx.idempotency_key. That key covers retries and resumes of THIS run; to survive a re-trigger of the same work, start the run with satay.start(..., idempotency_key=...) too.
 ```
 
 The middle block is the one to stare at. `charge` ran twice, the effect happened once, and the key
 is what made the difference. In real code `charged` would be a database table rather than a `set`,
 since a `set` does not survive the process it lives in.
+
+Take the `idempotency_key="charge-1999"` off that middle start and the output does not change — but
+a second `python guarantees.py` would charge again, and the run would carry the re-trigger warning
+from [above](#a-re-trigger-is-a-different-run). The error message at the bottom names both halves
+for the same reason: doing only what it asks fixes the retry and leaves the re-trigger open.
 
 ## Redaction
 

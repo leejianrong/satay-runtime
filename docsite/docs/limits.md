@@ -48,7 +48,7 @@ run that is still going.
 
 **At-least-once, not exactly-once.** A task body can run more than once for one logical call.
 [`ctx.idempotency_key`](guarantees.md#idempotency-keys) is the tool for making that safe, and using
-it is your job.
+it is your job. It covers retries and resumes of one run — [not a re-trigger, and not one row of a multi-row effect](guarantees.md#what-the-key-does-not-cover), the second of which nothing can warn you about.
 
 ## Correctness checking
 
