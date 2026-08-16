@@ -84,9 +84,12 @@ Two ADRs set what Satay is aiming at, and they change what counts as important:
   forever plus a hosted journal plane.** Nothing is withheld from a self-hosted
   user. The paid tier is tier-1 hosting only (journal ingest, retention, hosted
   Studio, team sharing, cost reporting), **after** the `0.1.0` launch, never hosted
-  execution. One requirement lands early: **redaction must move to write time**
-  before any journal leaves a process for an external store. `Redactor` is
-  read-time today, which protects the API response and not the store.
+  execution. One requirement landed early: **write-time redaction**, built in
+  [ADR-0029](docs/adr/0029-write-time-redaction.md) — `SATAY_WRITE_REDACTION=on` /
+  `SQLiteStore.open(..., write_redaction="on")`, **off by default**, slot-scoped to
+  the `*_ref` value fields so replay identity is untouched. Read-time redaction is
+  still the default and still protects only the API response. The seam only: there
+  is no hosting implementation and none is wanted before `0.1.0`.
 
 **sibei-flow** is the sibling project and the designated first tenant. The two are
 independent products sharing one engine; the coupling surface is the **journal read

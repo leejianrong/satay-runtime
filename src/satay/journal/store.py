@@ -9,12 +9,20 @@ makes sufficient without row locking.
 Schema is versioned with ``PRAGMA user_version`` and migrated forward on open. A
 temp-file path or ``":memory:"`` is supported (the latter keeps the one connection
 alive for the store's lifetime, since a fresh connection is a fresh in-memory DB).
+
+**Write-time redaction (ADR-0029) is off by default.** Turned on — with
+``write_redaction="on"`` or ``SATAY_WRITE_REDACTION=on`` — the recording path scrubs
+sensitive values out of the ``*_ref`` value slots before they are serialized or spilled,
+so the store never holds them and the redacted form is what a resumed run replays
+against. Off, the store records verbatim and the redactor runs only on the read path,
+which is the right shape for a local debugger (ADR-0009/0014).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -23,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from satay.blobs import BlobStore, rehydrate_encoded, spill_encoded
-from satay.config import BLOB_DIR_NAME
+from satay.config import BLOB_DIR_NAME, WriteRedaction, resolve_write_redaction
 from satay.journal.codec import decode, encode
 from satay.journal.events import (
     Event,
@@ -35,6 +43,9 @@ from satay.journal.events import (
     TimerRecord,
     TimerStatus,
 )
+from satay.redaction import Redactor
+
+_LOG = logging.getLogger("satay")
 
 #: The schema version this build writes. Forward-only migrations bring older DBs up.
 #: v2 (V2 slice) adds the ``runs.idempotency_key`` index backing keyed ``satay.start``.
@@ -105,22 +116,46 @@ class SQLiteStore:
     manager.
     """
 
-    def __init__(self, connection: sqlite3.Connection, blobs: BlobStore | None = None) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        blobs: BlobStore | None = None,
+        *,
+        write_redactor: Redactor | None = None,
+    ) -> None:
         self._conn = connection
         self._run_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         #: Where over-threshold payloads spill (N19). ``None`` disables spill entirely,
         #: which is the case for a purely in-memory store; a file-backed store derives a
         #: sibling ``blobs/`` directory automatically so spill "just works" (ADR-0004).
         self._blobs = blobs
+        #: Set when write-time redaction is on (ADR-0029): sensitive values are scrubbed
+        #: on the recording path, so they never reach SQLite or a blob. ``None`` — the
+        #: default — records verbatim and leaves redaction to the read path (ADR-0009).
+        self._write_redactor = write_redactor
 
     @classmethod
-    def open(cls, path: str | Path, *, blobs: BlobStore | None = None) -> SQLiteStore:
+    def open(
+        cls,
+        path: str | Path,
+        *,
+        blobs: BlobStore | None = None,
+        write_redaction: str | WriteRedaction | None = None,
+        redactor: Redactor | None = None,
+    ) -> SQLiteStore:
         """Open (creating if needed) a store at ``path`` (a file path or ``":memory:"``).
 
         A file-backed store auto-attaches a :class:`~satay.blobs.BlobStore` in a sibling
         ``blobs/`` directory (so spilled payloads survive across processes and rehydrate
         transparently on read); ``":memory:"`` stays spill-free. Pass ``blobs`` to
         override.
+
+        ``write_redaction`` selects the ADR-0029 recording-path mode, resolved explicit →
+        ``SATAY_WRITE_REDACTION`` → :attr:`~satay.config.WriteRedaction.OFF`. With it on,
+        the store scrubs sensitive values *before* they are serialized or spilled, so the
+        redacted form is what the journal holds and what the run resumes against. Pass
+        ``redactor`` to supply a non-default pattern set; it is used only when the mode
+        is on.
         """
         conn = sqlite3.connect(
             str(path),
@@ -132,9 +167,16 @@ class SQLiteStore:
         conn.execute("PRAGMA foreign_keys=ON")
         if blobs is None and str(path) != ":memory:":
             blobs = BlobStore(Path(path).parent / BLOB_DIR_NAME)
-        store = cls(conn, blobs)
+        mode = resolve_write_redaction(write_redaction)
+        write_redactor = (redactor or Redactor()) if mode.enabled else None
+        store = cls(conn, blobs, write_redactor=write_redactor)
         store._migrate()
         return store
+
+    @property
+    def write_redaction_enabled(self) -> bool:
+        """Whether this store redacts sensitive values on the write path (ADR-0029)."""
+        return self._write_redactor is not None
 
     def close(self) -> None:
         """Close the underlying connection."""
@@ -205,7 +247,7 @@ class SQLiteStore:
                         event.event_id,
                         event.type.value,
                         event.ts.isoformat(),
-                        self._encode_payload(event.payload),
+                        self._encode_payload(event.payload, event.type, event.run_id),
                     ),
                 )
                 conn.execute("COMMIT")
@@ -214,18 +256,67 @@ class SQLiteStore:
                 raise
             return event.with_seq(seq)
 
-    def _encode_payload(self, payload: object) -> str:
-        """Encode an event payload to JSON, spilling over-threshold values to blobs (N19).
+    def _encode_payload(
+        self,
+        payload: object,
+        event_type: EventType | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        """Encode an event payload to JSON, redacting then spilling as configured.
 
-        Below the threshold the payload serializes inline exactly as before; above it, an
-        over-threshold value is written to the blob store and replaced by a reference, so
-        the journal never inlines a large payload (ADR-0004). Spill is disabled (always
-        inline) when no blob store is attached.
+        Three steps, in this order:
+
+        1. **Encode** to the JSON-compatible tagged form (ADR-0005).
+        2. **Redact**, when write-time redaction is on (ADR-0029) — scoped to the
+           ``*_ref`` value slots, so the structural fields replay reads (``task_name``,
+           ``ordinal``, ``key``, ``identity``, ids) are handed through untouched.
+        3. **Spill** over-threshold values to blobs (N19), replacing them with a
+           reference so the journal never inlines a large payload (ADR-0004). Spill is
+           disabled (always inline) when no blob store is attached.
+
+        Redaction comes **before** spill deliberately: a redacted value must never reach
+        a blob file either, and the placeholder is small enough that it usually removes
+        the reason to spill at all.
         """
         encoded = encode(dict(payload) if isinstance(payload, Mapping) else payload)
+        if self._write_redactor is not None:
+            redacted = self._write_redactor.redact_value_slots(encoded)
+            self._warn_if_resume_seed_redacted(encoded, redacted, event_type, run_id)
+            encoded = redacted
         if self._blobs is not None:
             encoded = spill_encoded(encoded, self._blobs)
         return json.dumps(encoded, separators=(",", ":"))
+
+    @staticmethod
+    def _warn_if_resume_seed_redacted(
+        before: Any,
+        after: Any,
+        event_type: EventType | None,
+        run_id: str | None,
+    ) -> None:
+        """Warn when redaction rewrites a ``WorkflowCreated`` input — the resume seed.
+
+        Every other redacted slot is a *record* of something that already happened. A
+        workflow's ``input_ref`` is different: it is the value the run is re-entered with
+        on resume and on fork (:mod:`satay.timers`, :mod:`satay.control.commands`), so
+        redacting it changes what the workflow body computes from past the replay
+        frontier. That is the intended semantics of the mode — the redacted form is what
+        the run resumes against (ADR-0026/0029) — but it is worth saying out loud once
+        per run, because the fix is to fetch the secret inside a task rather than pass it
+        as workflow input.
+        """
+        if event_type is not EventType.WORKFLOW_CREATED:
+            return
+        if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+            return
+        if before.get("input_ref") == after.get("input_ref"):
+            return
+        _LOG.warning(
+            "write_redaction: redacted the workflow input of run %s; the run will resume "
+            "and fork from the redacted value, not the original (ADR-0029). Pass secrets "
+            "to a task, or fetch them inside one, rather than as workflow input.",
+            run_id,
+        )
 
     async def set_status(self, run_id: str, status: RunStatus) -> None:
         """Update a run's denormalised status."""
@@ -339,7 +430,17 @@ class SQLiteStore:
     # -- event inbox (V3, ADR-0021) ----------------------------------------------
 
     async def add_inbox_event(self, event: InboxEventRecord) -> InboxEventRecord:
-        """Persist an inbox event; returns it stamped with its assigned ``row_id``."""
+        """Persist an inbox event; returns it stamped with its assigned ``row_id``.
+
+        ``payload_ref`` is a value slot in its own column — the same indirection the
+        journal's ``event_ref`` uses — so write-time redaction scrubs it here too
+        (ADR-0029). The waiting workflow is then delivered the redacted form, and the
+        ``ExternalEventReceived`` the engine copies it into is already clean. Matching
+        keys on ``(event_type, key)``, both structural and both untouched.
+        """
+        payload_ref = event.payload_ref
+        if self._write_redactor is not None:
+            payload_ref = self._write_redactor.redact(payload_ref)
         conn = self._conn
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -351,7 +452,7 @@ class SQLiteStore:
                     event.run_id,
                     event.event_type,
                     event.key,
-                    json.dumps(event.payload_ref, separators=(",", ":")),
+                    json.dumps(payload_ref, separators=(",", ":")),
                     event.received_at.isoformat(),
                     1 if event.consumed else 0,
                 ),
@@ -364,7 +465,7 @@ class SQLiteStore:
         return InboxEventRecord(
             event_type=event.event_type,
             key=event.key,
-            payload_ref=event.payload_ref,
+            payload_ref=payload_ref,
             received_at=event.received_at,
             run_id=event.run_id,
             consumed=event.consumed,

@@ -29,6 +29,9 @@ NONDETERMINISM_ENV_VAR = "SATAY_NONDETERMINISM"
 #: Environment variable providing the project-level version-mismatch policy (ADR-0023).
 VERSION_MISMATCH_ENV_VAR = "SATAY_VERSION_MISMATCH"
 
+#: Environment variable providing the project-level write-time redaction mode (ADR-0029).
+WRITE_REDACTION_ENV_VAR = "SATAY_WRITE_REDACTION"
+
 
 def _parse_mode[ModeT: StrEnum](cls: type[ModeT], value: str | ModeT, *, setting: str) -> ModeT:
     """Coerce ``value`` to a member of ``cls``, case- and whitespace-insensitively.
@@ -144,6 +147,47 @@ class VersionMismatchPolicy(StrEnum):
         return _parse_mode(cls, value, setting="version_mismatch")
 
 
+class WriteRedaction(StrEnum):
+    """Whether the journal store redacts sensitive values **on write** (ADR-0029).
+
+    In :attr:`OFF` (the default) the runtime records values verbatim and the
+    :class:`~satay.redaction.Redactor` runs only on the read path (ADR-0009/0014): the raw
+    value is in ``satay.db`` and redaction protects the API response. That is the right
+    shape for a local debugger, where the store never leaves the machine.
+
+    In :attr:`ON` the redactor runs on the recording path instead, so a matching value
+    never reaches SQLite or a spilled blob — the requirement ADR-0026 decision 4 puts
+    **before any journal leaves a process for an external store**. The redacted form
+    becomes the journal's truth, which means it is also what the run resumes against:
+    a redacted ``output_ref`` replays as the placeholder, and a redacted workflow
+    ``input_ref`` re-enters the workflow as the placeholder (the store logs a warning
+    when that happens). Replay *identity* is untouched either way — write-time redaction
+    is scoped to :data:`~satay.redaction.VALUE_REF_FIELDS` and never rewrites the
+    ``task_name``/``ordinal``/``key`` fields identity is derived from (ADR-0002/0029).
+
+    Two modes, not the ``off``/``warn``/``strict`` triple of the policy enums above: this
+    is not a check that can pass or fail, it is a choice about what gets written.
+    """
+
+    OFF = "off"
+    ON = "on"
+
+    @property
+    def enabled(self) -> bool:
+        """Whether write-time redaction is on."""
+        return self is WriteRedaction.ON
+
+    @classmethod
+    def parse(cls, value: str | WriteRedaction | None) -> WriteRedaction:
+        """Parse a mode, defaulting to :attr:`OFF` when unset (read-time stays default).
+
+        Raises :class:`ValueError` naming the valid modes for an unknown value.
+        """
+        if value is None:
+            return cls.OFF
+        return _parse_mode(cls, value, setting="write_redaction")
+
+
 def resolve_effect_safety(override: str | EffectSafety | None = None) -> EffectSafety:
     """Resolve the effect-safety mode: explicit ``override`` then env var then default.
 
@@ -178,6 +222,20 @@ def resolve_version_mismatch(
     if override is not None:
         return VersionMismatchPolicy.parse(override)
     return VersionMismatchPolicy.parse(os.environ.get(VERSION_MISMATCH_ENV_VAR))
+
+
+def resolve_write_redaction(override: str | WriteRedaction | None = None) -> WriteRedaction:
+    """Resolve the write-time redaction mode: explicit ``override`` then env var then default.
+
+    The default is :attr:`WriteRedaction.OFF` (ADR-0029): read-time redaction stays the
+    default for the local case, and nothing changes about what a local run records unless
+    the operator asks for it. :meth:`satay.journal.store.SQLiteStore.open` calls this, so
+    ``SATAY_WRITE_REDACTION=on`` reaches every store the runtime opens — ``satay.start``'s
+    project-local default, ``satay dev``'s, and any test's.
+    """
+    if override is not None:
+        return WriteRedaction.parse(override)
+    return WriteRedaction.parse(os.environ.get(WRITE_REDACTION_ENV_VAR))
 
 
 #: Filename of the SQLite database inside the data directory.
