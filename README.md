@@ -44,6 +44,8 @@ What works today:
   `effect_safety` policy that guards retryable side-effecting tasks.
 - **Time and events.** Durable `sleep`, `wait_for_event`/`send_event` over a persistent
   inbox, and a timer + event poll loop with FIFO delivery and event-wins-over-timeout.
+  `async with satay.run_app() as store:` gives a plain script that loop — journal open,
+  worker running, both torn down on exit — with no `satay dev` and no optional extra.
 - **Composition.** `map`, `gather`, and `start_child`, each item a keyed durable call, so
   a crash mid-fan-out resumes with completed items reused and only unresolved items re-run.
 - **Control plane.** An HTTP control + read API (start, cancel, send event, fork; run
