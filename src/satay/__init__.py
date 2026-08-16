@@ -11,6 +11,7 @@ The public surface (ARCHITECTURE §1):
 - ``start`` — create/look up a run, returns a ``RunHandle``
 - ``sleep`` / ``wait_for_event`` / ``send_event`` — event & time primitives
 - ``map`` / ``gather`` / ``start_child`` — composition primitives
+- ``fork`` — re-cut a finished run from a chosen point, optionally under a new input
 - ``TaskContext`` — the task-body context
 - ``RunHandle`` — the run handle
 """
@@ -37,6 +38,7 @@ from satay.api import (
     wait_for_event,
     workflow,
 )
+from satay.api.fork import fork
 from satay.api.run_handle import WorkflowFailedError
 from satay.versioning import VersionMismatchError
 
@@ -89,6 +91,7 @@ __all__ = [
     "VersionMismatchError",
     "WorkflowFailedError",
     "__version__",
+    "fork",
     "gather",
     "map",
     "send_event",

@@ -34,6 +34,7 @@ If you read four, read these.
 | [0021](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0021-event-ordering-and-timeout-race.md) | Event delivery ordering and the `wait_for_event` timeout race |
 | [0022](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0022-nondeterminism-policy-split.md) | Splitting the nondeterminism policy out of `effect_safety`, strict by default |
 | [0023](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0023-version-mismatch-policy-split.md) | Splitting the code-version mismatch policy out of `effect_safety` |
+| [0028](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0028-fork-from-code-input-override.md) | Forking from code: `before_task=` fork points and the `workflow_input=` override |
 
 ## Storage and the local surface
 

@@ -32,7 +32,7 @@ satay/
   src/satay/
     __init__.py             # public surface: workflow, task, start, sleep,
                             #   wait_for_event, send_event, map, gather,
-                            #   start_child, TaskContext, run handle
+                            #   start_child, fork, TaskContext, run handle
     api/                    # decorators, run handle, TaskContext, primitives   (A1, N1-N5)
     replay/                 # replay engine, identity resolver, nondeterminism   (A2, N6/N7/N9)
     journal/                # event model, Store interface, SQLiteStore, codec   (A3, N8/N12)
@@ -186,6 +186,14 @@ applied to every response, and the surface is guarded by a per-session token plu
 `Origin`/`Host` allow-list (ADR-0014). The whole stack ships in the `satay[studio]`
 extra, not the core (ADR-0013). FastAPI emits OpenAPI, but the JSON contract is unversioned
 in the MVP since the server and Studio ship together (ADR-0018).
+
+**Fork is also a core, in-process operation.** `satay.fork(run_id, before_task=...,
+workflow_input=...)` seeds and returns a handle to the forked run without any of the HTTP
+stack, so the debugger wedge does not require the `satay[studio]` extra (ADR-0028). The
+fork-point resolution and journal seeding live in `satay.control.commands`, which is pure
+Python and lazily imported from the core; the HTTP route and the in-process call converge
+on the same seed-and-drive path, and the HTTP route still enqueues onto the command queue
+so the worker remains the single writer (ADR-0012).
 
 ### 3.7. Satay Studio (U2-U8)
 

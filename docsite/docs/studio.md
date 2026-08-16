@@ -219,6 +219,16 @@ migration across code versions. Let the old runs drain, or fork them.
 Forking accepts terminal runs only: completed, failed, or cancelled. A fork also shares blob files
 with its source run, which matters because there is no blob garbage collection.
 
+The same operation is available from code, without Studio and without the `satay[studio]` extra —
+including choosing the cut by task name and re-running under a different workflow input:
+
+```python
+handle = await satay.fork(run_id, before_task="synthesize", workflow_input=sharper_brief)
+```
+
+See [Forking a run](fork.md) for the full surface and for what an input override does and does not
+reach.
+
 ## The HTTP API
 
 Same base URL as Studio, same `X-Satay-Token` header on every request. Writes return `202` and land
