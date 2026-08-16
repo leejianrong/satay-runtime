@@ -36,6 +36,10 @@ type: dev-studio ## mypy --strict over src (needs the studio extra)
 
 check: lint type ## Lint + type-check
 
+# Deliberately does NOT depend on dev-studio: this is the fast loop and must run on a
+# plain `make dev` environment. Without the extra it warns that a couple of modules
+# skipped themselves and stays green; only a whole-suite run turns that into a hard
+# error (KAN-460, tests/_extra_guard.py).
 test: ## Unit tests only — the fast inner-loop target
 	uv run pytest tests/unit -q
 
@@ -43,6 +47,8 @@ test: ## Unit tests only — the fast inner-loop target
 # branch-protection required-check contract; it actually installs the studio
 # extra and runs the WHOLE suite. `make test` running tests/unit alone left 235
 # tests (427 vs 192) that never executed locally before a push (KAN-576).
+# The dev-studio dependency is now belt-and-braces: since KAN-460 a whole-suite run
+# without the extra aborts at collection instead of skipping a tier and going green.
 test-all: dev-studio ## The FULL suite (unit + integration + e2e), as CI runs it
 	uv run pytest tests/integration --collect-only -q
 	uv run pytest -q

@@ -142,8 +142,15 @@ bare `uv run mypy src` on a dev-only env will look broken when it is not.
 3.13) — so `uv sync` builds every checkout *and every agent worktree* on the same
 interpreter CI uses. If a failure looks version-shaped, check `uv run python -V` first.
 
-The full suite needs the `studio` extra — without it the FastAPI/Studio tests
-`importorskip` themselves away and the reported count silently drops.
+**The full suite needs the `studio` extra, and now says so.** Without it the
+FastAPI/Studio modules `importorskip` themselves away, so the run used to report a
+green, smaller count with a whole tier missing. Since KAN-460 a **whole-suite** run
+(`uv run pytest -q`, `make test-all`, CI) aborts at collection with a usage error
+naming the fix; a **narrowed** run (`tests/unit`, a file, a node id, `-k`, `-m`,
+`--lf`) only warns, so `make test` on a plain `make dev` environment stays green.
+Set `SATAY_ALLOW_MISSING_STUDIO_EXTRA=1` to downgrade the error to that warning —
+never in CI. The gate is `tests/_extra_guard.py` + the one hook in `tests/conftest.py`;
+it deliberately mirrors KAN-408's `SATAY_ALLOW_MISSING_STUDIO_BUNDLE`.
 
 **Install the pre-push hook: `make install-hooks`** (bypass with `git push --no-verify`).
 It runs `make check`, `make test-all` and `make docs`, plus `make secrets` when

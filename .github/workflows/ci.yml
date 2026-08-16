@@ -71,6 +71,12 @@ jobs:
       # subprocess-based import-hygiene test runs as part of the integration tier. The
       # job keeps the "Unit tests" name only for the branch-protection required-check
       # contract; it gates the whole suite.
+      #
+      # Dropping `--extra studio` from the sync above no longer degrades this step to a
+      # green run of a smaller suite: since KAN-460 a whole-suite session without the
+      # extra aborts at collection (tests/_extra_guard.py). Never set
+      # SATAY_ALLOW_MISSING_STUDIO_EXTRA here — that is the opt-out, and it belongs to a
+      # developer's checkout, not to CI.
       - name: pytest (full suite)
         run: uv run pytest -q
 
