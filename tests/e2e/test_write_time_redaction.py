@@ -26,7 +26,7 @@ from satay.api.decorators import task, workflow
 from satay.api.fork import fork
 from satay.api.primitives import map as durable_map
 from satay.api.primitives import send_event, sleep, start, wait_for_event
-from satay.api.run_handle import PARKED
+from satay.api.run_handle import PARKED, WorkflowFailedError
 from satay.config import WRITE_REDACTION_ENV_VAR
 from satay.control.api import ReadAPI
 from satay.journal.events import EventType, RunStatus
@@ -133,6 +133,39 @@ async def wr_collect(_: Any = None) -> list[str]:
 async def wr_from_input(payload: dict[str, Any]) -> str:
     used = await wr_use_credentials({"label": payload["label"]})
     return f"{used}|{payload['api_key']}"
+
+
+# -- the type discriminator under redaction (KAN-520, ADR-0031) --------------------
+
+
+@dataclass
+class WrApproved:
+    reason: str
+
+
+@dataclass
+class WrRejected:
+    """Structurally identical to :class:`WrApproved`: only the discriminator separates them."""
+
+    reason: str
+
+
+@task()
+async def wr_classify(flag: bool) -> WrApproved | WrRejected:
+    EXECUTIONS["wr_classify"] += 1
+    return WrApproved(reason="clean") if flag else WrRejected(reason="blocked")
+
+
+@task()
+async def wr_record(verdict: str) -> str:
+    EXECUTIONS["wr_record"] += 1
+    return f"recorded:{verdict}"
+
+
+@workflow
+async def wr_union_two_step(flag: bool) -> str:
+    outcome = await wr_classify(flag)
+    return await wr_record(type(outcome).__name__)
 
 
 @task()
@@ -419,6 +452,66 @@ async def test_a_collected_failure_keeps_its_error_intact_across_replay(
     store.close()
 
     assert SECRET not in raw_payloads(temp_db_path)
+
+
+async def test_a_union_typed_result_resolves_to_the_right_arm_across_a_redacted_resume(
+    temp_db_path: Path,
+) -> None:
+    """The KAN-520 discriminator survives the default write-time pattern set.
+
+    The recorded ``type`` qualname lives *inside* an ``output_ref`` value slot, so
+    ``redact_value_slots`` does walk over it — but it is matched by **field name**, and
+    neither ``$satay``, ``type`` nor ``fields`` is in the default pattern list. The
+    resumed run therefore rehydrates the same arm the first pass produced, for two arms
+    that nothing structural can tell apart.
+    """
+    store = SQLiteStore.open(temp_db_path, write_redaction="on")
+    injector = FaultInjector()
+    injector.crash_after("TaskCompleted")
+
+    handle = start(wr_union_two_step, False, store=store, injector=injector)
+    with pytest.raises(SimulatedCrash):
+        await handle.result()
+    assert EXECUTIONS["wr_classify"] == 1
+
+    resumed = start(wr_union_two_step, False, run_id=handle.run_id, store=store)
+    assert await resumed.result() == "recorded:WrRejected"  # not WrApproved, not a dict
+    assert EXECUTIONS["wr_classify"] == 1  # reused from the journal, not re-run
+    store.close()
+
+
+async def test_a_pattern_set_that_masks_the_discriminator_fails_loudly_on_resume(
+    temp_db_path: Path,
+) -> None:
+    """A masked discriminator must raise, never silently pick the other arm.
+
+    ``Redactor(["type"])`` is hostile on purpose: it reaches inside the ``output_ref``
+    slot and replaces the recorded qualname with the placeholder. That is a real (if
+    unusual) configuration, and the ADR-0029 rule for it is the ADR-0027 rule inverted —
+    the discriminator is *preferred*, never required, so losing it costs exactness, not
+    correctness. With two indistinguishable arms there is no exact answer left, so the
+    resume fails naming the cause instead of returning a ``WrApproved`` where the first
+    pass produced a ``WrRejected``.
+    """
+    hostile = Redactor(patterns=["type"])
+    store = SQLiteStore.open(temp_db_path, write_redaction="on", redactor=hostile)
+    injector = FaultInjector()
+    injector.crash_after("TaskCompleted")
+
+    handle = start(wr_union_two_step, False, store=store, injector=injector)
+    with pytest.raises(SimulatedCrash):
+        await handle.result()
+
+    resumed = start(wr_union_two_step, False, run_id=handle.run_id, store=store)
+    with pytest.raises(WorkflowFailedError) as excinfo:
+        await resumed.result()
+    assert "DecodeError" in str(excinfo.value)
+    assert "masked by write-time redaction" in str(excinfo.value)
+    assert EXECUTIONS["wr_record"] == 0  # nothing downstream ran on a guessed value
+
+    record = await store.get_run(handle.run_id)
+    assert record is not None and record.status is RunStatus.FAILED
+    store.close()
 
 
 # -- fork (ADR-0028) --------------------------------------------------------------

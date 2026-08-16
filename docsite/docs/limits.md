@@ -65,6 +65,8 @@ uninterrupted run of the same input would have returned `31`.
 options are to let them drain or to fork them. The code-version stamp tells you a run was written by
 different code; it does nothing about it.
 
+**A union arm is chosen by the type name the journal recorded** (ADR-0031), so the cases where that name is unavailable — two enum arms sharing a member value, a task annotated `-> A | B` that returns a bare dict, a type name a custom write-redaction pattern masked — raise `DecodeError` on resume instead of guessing an arm.
+
 ## Tooling
 
 **`satay runs show` is frozen at an early event subset** (ADR-0016). Timer, event, cancellation, and

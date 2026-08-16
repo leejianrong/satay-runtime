@@ -373,11 +373,15 @@ it no longer has to be a bare concrete type to manage it. `X | None`, `Optional[
 rehydrate to the type the first execution produced, so nothing forces `Outcome` to be flat. A
 resumed `Extracted | None` is an `Extracted`, not a dict.
 
-What a union does still owe you is a way to tell its arms apart. The codec picks the arm from the
-recorded shape and, for objects, the field-name set; two dataclass arms with identical fields are
-ambiguous, and an annotation it cannot resolve raises `DecodeError` naming the annotation rather
-than quietly handing back a dict on the recovery path only. Failing loudly is the change that
-matters — the old behaviour was a wrong type you found out about on the resume.
+What a union does still owe you is a way to tell its arms apart, and the journal records that for
+you: the codec writes the value's type name next to it, and picks the arm by matching that name
+against the arms your annotation already lists. Two dataclass arms with identical fields resolve
+exactly, and so does a resumed value, a forked one, and one read back through Studio. The name is
+only ever compared, never imported, so your data stays uncoupled from your module layout — rename
+the class and you get a loud `DecodeError` naming the annotation, not a wrong type on the recovery
+path. Where the name is genuinely unavailable (a task annotated `-> A | B` that returns a bare
+dict; a value whose type name a custom redaction pattern masked), the codec falls back to the
+recorded shape, and raises rather than guessing when that leaves more than one arm standing.
 
 !!! note "The docstring above is out of date"
 
