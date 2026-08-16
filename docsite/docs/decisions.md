@@ -30,7 +30,8 @@ If you read four, read these.
 | [0006](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0006-execution-guarantees.md) | Execution guarantees, idempotency, and effect safety |
 | [0007](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0007-runtime-and-worker-model.md) | Local-first single-process asyncio runtime |
 | [0010](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0010-code-versioning.md) | Code-version recording and mismatch policy |
-| [0020](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0020-composite-failure-semantics.md) | Failure semantics of `map`, `gather`, and child workflows |
+| [0020](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0020-composite-failure-semantics.md) | Failure semantics of `map`, `gather`, and child workflows *(superseded by 0027)* |
+| [0027](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0027-collect-mode-fan-out.md) | Collect-mode fan-out: `return_exceptions=True`, and a survivable failure is a recorded failure |
 | [0021](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0021-event-ordering-and-timeout-race.md) | Event delivery ordering and the `wait_for_event` timeout race |
 | [0022](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0022-nondeterminism-policy-split.md) | Splitting the nondeterminism policy out of `effect_safety`, strict by default |
 | [0023](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0023-version-mismatch-policy-split.md) | Splitting the code-version mismatch policy out of `effect_safety` |

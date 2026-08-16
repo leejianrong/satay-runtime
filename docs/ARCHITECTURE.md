@@ -140,6 +140,13 @@ identity by call-site ordinal plus task name (or explicit `key=` for fan-out), a
 consults the journal: a hit returns the recorded result, a miss schedules execution.
 It raises `NondeterminismError` on divergence, under the `nondeterminism` policy, which
 is **strict by default** and is a separate setting from `effect_safety` (ADR-0022).
+
+Fan-out (`map`/`gather`) is **fail-fast by default** and takes `return_exceptions=True`
+for collect mode (ADR-0027, superseding ADR-0020): every member settles, failed slots
+hold a `TaskFailedError`, and — because the run now survives a task failure — each such
+failure is recorded as a terminal `TaskFailed` event, which replays as a hit rather than
+re-executing. A crash is never a collected outcome; it still aborts the composite.
+
 Stack: pure Python asyncio. This is the heart of the system and has no external
 dependency by design.
 

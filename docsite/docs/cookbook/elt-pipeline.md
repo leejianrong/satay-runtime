@@ -263,6 +263,16 @@ would rehydrate the blob and hide exactly what it is trying to show.
 
 This is the section to read twice.
 
+!!! success "This is the section that got the feature built"
+
+    The transcript below is what the runtime did when this recipe was written, and it is still
+    what the **default** does. It is also the evidence that produced
+    [ADR-0027](../decisions.md): `map` and `gather` now take `return_exceptions=True`, which
+    keeps the five completed extracts *and* records the sixth source's failure in the journal as
+    a terminal `TaskFailed`. Read sections 4 and 5 as the argument, then use collect mode —
+    section 5's outcome-returning workaround is the anti-pattern collect mode replaces, and it is
+    no longer the advice.
+
 ```console
 4) one source fails — fan-out is fail-fast (ADR-0020)
      the map raised ValueError: ledger-eu: malformed record on line 2: 'ledger-eu-002'
@@ -284,15 +294,29 @@ and are sitting on the journal right now. The run cannot reach them, because a f
 terminal and `satay.start(run_id=...)` on it re-raises rather than resuming.
 
 That is 300,262 characters of completed work, including the whole 300 KB source, made unreachable
-by one sibling raising. There is no `return_exceptions=`, no collect mode, no partial result
-([ADR-0020](../decisions.md)). Forking the run is the only way back in.
+by one sibling raising. Under the fail-fast default ([ADR-0020](../decisions.md)) forking the run
+is the only way back in.
 
 For an extract fan-out this is often the wrong default. "Five of six sources loaded, quarantine the
-sixth" is usually what you wanted, and Satay will not give it to you.
+sixth" is usually what you wanted — which is exactly what
+[collect mode](../primitives.md#failure-fail-fast-or-collect) now gives you:
+
+```python
+outcomes = await satay.map(
+    extract, sources, key=lambda s: s.source_id, return_exceptions=True
+)
+extracted = [o for o in outcomes if not isinstance(o, Exception)]
+quarantined = [o.key for o in outcomes if isinstance(o, satay.TaskFailedError)]
+```
+
+Five results, one `TaskFailedError`, a `completed` run, and a `TaskFailed` event in the journal
+naming `ledger-eu`. No fork required.
 
 ## Section 5: The Workaround, And Its Price
 
-There is exactly one way to get partial results today: stop raising.
+Before collect mode existed there was exactly one way to get partial results: stop raising. It is
+kept here because the price it charges is the reason collect mode records `TaskFailed` — do not
+copy this pattern into new code.
 
 ```python
 @satay.task()
@@ -418,10 +442,12 @@ Compare those last two side by side and the tradeoff stops being abstract.
   yourself for multi-row effects.
 - Payloads over 256 KiB spill to content-addressed blobs, transparently on write and read, and
   survive a crash. There is no blob collection.
-- Fan-out is fail-fast. One corrupt source killed a run in which five extracts had already
-  committed, and forking is the only way back to them.
+- Fan-out is fail-fast **by default**. One corrupt source killed a run in which five extracts had
+  already committed, and forking was the only way back to them.
 - The outcome-returning workaround gets you partial results and costs you retries, run-status
-  alerting, and any journal record that a failure happened.
+  alerting, and any journal record that a failure happened. That trade is what
+  [ADR-0027](../decisions.md) removed: `return_exceptions=True` keeps the siblings *and* keeps the
+  failure on the journal.
 
-Next: [An Agentic DAG](agentic-dag.md), which is the same fail-fast problem when each sibling is a
-model call you paid for.
+Next: [An Agentic DAG](agentic-dag.md), which is the same problem when each sibling is a model call
+you paid for.

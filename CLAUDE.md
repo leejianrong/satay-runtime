@@ -49,7 +49,9 @@ Deliberate MVP gaps — do not "fix" these without a card:
 
 - **No blob GC**, no run deletion, no compaction (ADR-0004). Forks share blobs with their
   source run, so any future GC must be reference-aware.
-- **Fan-out is fail-fast only** — no collect / `return_exceptions` mode (ADR-0020).
+- **Fan-out is fail-fast by *default*** — `map`/`gather` take `return_exceptions=True` for
+  collect mode, which records a terminal `TaskFailed` per collected failure (ADR-0027,
+  superseding ADR-0020). `start_child` has no flag; collect it as a `gather` member.
 - **`satay runs show` is frozen at the V1 event subset** (ADR-0016); Studio covers the
   rest. Post-V1 events render as bare type lines by design.
 - **Fork accepts terminal runs only** (ADR-0004).

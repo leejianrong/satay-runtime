@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from satay.replay.driver import CURRENT_DRIVER, Driver
 from satay.replay.engine import ReplayEngine
+from satay.replay.failures import TaskFailedError
 from satay.replay.identity import CallIdentity, IdentityResolver
 
 
@@ -28,4 +29,5 @@ __all__ = [
     "IdentityResolver",
     "NondeterminismError",
     "ReplayEngine",
+    "TaskFailedError",
 ]

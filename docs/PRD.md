@@ -197,10 +197,12 @@ Traceability: each decision references the ADR (or CONTEXT decision) of record.
 - **Platform, release & tooling** (ADR-0019). Linux + macOS first-class (local disk
   only), Windows best-effort; tested on Python 3.12 and 3.13; PyPI via OIDC trusted
   publishing; stdlib `logging`; hand-rolled retry; pytest-cov with optional hypothesis.
-- **Composite failure semantics** (ADR-0020). `satay.map`/`gather`/`start_child` are
-  fail-fast: a failed item, gather member, or child raises through the composite like a
-  native `await`, and a failed child re-raises deterministically from the journal on
-  parent replay. A collect-style (return-exceptions) mode is deferred post-MVP.
+- **Composite failure semantics** (ADR-0020, superseded by ADR-0027).
+  `satay.map`/`gather`/`start_child` are fail-fast **by default**: a failed item, gather
+  member, or child raises through the composite like a native `await`, and a failed child
+  re-raises deterministically from the journal on parent replay. `map` and `gather` also
+  take `return_exceptions=True` for collect mode, which lets every member settle and
+  records each collected task failure as a terminal `TaskFailed` event.
 - **Event ordering & timeout race** (ADR-0021). A matching event wins over a
   simultaneously-due `wait_for_event` timeout (check event, then timeout, per poll tick);
   multiple buffered matches for one `(type, key)` are consumed FIFO by `received_at`.
@@ -289,8 +291,8 @@ Per REQS non-goals and D-scope:
 - A graph-building DSL; a general-purpose agent abstraction.
 - Distributed / multi-worker / multi-region execution; PostgreSQL backend (post-MVP).
 - Universal exactly-once side effects; full compensation / Saga orchestration.
-- Collect-style (return-exceptions) fan-out; `map`/`gather`/`start_child` are fail-fast
-  only in the MVP (ADR-0020).
+- A collect flag on `start_child`; it is a single call, so `try`/`except` covers it and a
+  fan-out collects it as a `gather` member (ADR-0027).
 - `satay runs show` rendering of post-V1 event types; the CLI is frozen at the V1 subset
   and Studio covers the rest (ADR-0016).
 - Automatic migration of long-running workflows across code versions.

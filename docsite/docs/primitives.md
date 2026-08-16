@@ -179,16 +179,52 @@ duplicate key raises `ValueError` at schedule time, before any item runs.
 `concurrency` bounds how many items are in flight on the event loop, defaulting to 8. Results come
 back in **input order** regardless of who finished first.
 
-!!! warning "Fan-out is fail-fast, and that is the only mode"
+### Failure: fail-fast, or collect
 
-    One item raising fails the whole `map`. In-flight siblings settle but their results are
-    discarded. There is no `return_exceptions` and no collect mode (ADR-0020), so if you need
-    per-item outcomes, have the task return a result object instead of raising.
+By default one item raising fails the whole `map`. In-flight siblings settle but their results are
+discarded, and the run ends in `WorkflowFailed` — native `await` semantics (ADR-0020).
+
+Pass `return_exceptions=True` for **collect mode** (ADR-0027) when you would rather keep the
+siblings than lose them — "draft five candidates, keep the ones that came back" is the shape of
+work this exists for:
+
+```python
+@satay.workflow
+async def draft_all(briefs: list[Brief]) -> list[str]:
+    outcomes = await satay.map(
+        draft, briefs, key=lambda b: b.id, return_exceptions=True
+    )
+    return [o for o in outcomes if not isinstance(o, Exception)]
+```
+
+Every item settles, and the returned list holds each item's result *or* its error in the item's
+input position. Three things are worth knowing:
+
+- **A failed slot always holds `satay.TaskFailedError`**, never the exception class your task
+  raised. The journal stores an error as a class *name* plus a message, not an import path, so the
+  original class cannot be rebuilt on replay — and a slot whose type changed between the first pass
+  and the replay would be nondeterminism the runtime invented. The original exception is still
+  chained as `__cause__` on the pass that raised it, and its name is in `.error_type`. Read the
+  identity off `.task_name` / `.key`.
+- **The failure stays visible to the runtime.** Each collected failure is recorded as a terminal
+  `TaskFailed` journal event alongside its `TaskAttemptFailed` attempts, so retries, Studio and the
+  read API all still see it. This is the point: a task that swallows its own errors and returns an
+  outcome object records `TaskCompleted` and hides the failure from everything.
+- **A recorded failure replays as a hit.** Resume a run that collected a failure and the failed item
+  is *not* re-run — it raises straight back out of the journal, like a completed item is reused.
+
+Retries are unchanged: an item fails only after its whole retry budget is spent.
+
+!!! warning "A crash is not a collected outcome"
+
+    Collect mode collects task failures. A worker crash, a `NondeterminismError` or an
+    `EffectSafetyError` still aborts the whole fan-out and cancels in-flight siblings — a dead
+    worker cannot report honestly on work it never finished.
 
 ## `gather`
 
 ```python
-async def gather(*awaitables) -> list
+async def gather(*awaitables, return_exceptions=False) -> list
 ```
 
 Awaits several durable calls concurrently and rejoins their results **positionally**, in argument
@@ -205,8 +241,15 @@ async def dashboard(user_id: str, order_ids: list[str]) -> list:
     )
 ```
 
-Same fail-fast rule: one failed member fails the whole `gather` and the siblings' results go
-nowhere.
+Same fail-fast rule by default: one failed member fails the whole `gather` and the siblings'
+results go nowhere. `return_exceptions=True` collects here too, with the same semantics as `map`
+above — a failed task member's slot holds `satay.TaskFailedError`, and a failed `start_child`
+member's slot holds `satay.WorkflowFailedError` (the child's failure is already terminal in the
+child's own journal). Both subclass `RuntimeError`.
+
+The mode belongs to the composite you set it on, not to the whole workflow: a plain `map` nested
+inside a collecting `gather` still fails fast and still discards its own siblings — the `gather`
+just catches what it raises instead of dying with it.
 
 ## `start_child`
 
@@ -355,7 +398,8 @@ back `None` because there was no outcome yet, and `status()` confirmed why.
 - Parked runs need a poll loop: `TimerEventWorker` in your own script, or `satay dev --app`.
 - `satay.map(task, items, key=...)` keys each item so a crash mid-fan-out resumes only the
   unfinished ones. `satay.gather(...)` rejoins mixed calls positionally.
-- Both are fail-fast: the first failure discards its siblings' results.
+- Both are fail-fast by default; `return_exceptions=True` collects instead, returning each slot's
+  result or its `satay.TaskFailedError` and recording the failure in the journal.
 - `satay.start_child` gives the child its own run id and journal, so it resumes rather than
   restarts.
 

@@ -44,6 +44,13 @@ class EventType(StrEnum):
     # V5 — control API. The worker appends this (via a queued ``cancel`` command, or a
     # direct ``RunHandle.cancel()``) to durably record a cancellation and halt the run.
     WORKFLOW_CANCELLED = "WorkflowCancelled"
+    # Collect-mode fan-out (ADR-0027). The **terminal** failure of one logical task:
+    # appended when a task exhausts its retries inside a ``return_exceptions=True``
+    # composite, where the run survives the failure. It is the failure-side twin of
+    # ``TaskCompleted`` — a recorded ``TaskFailed`` is a replay *hit* that re-raises
+    # instead of re-executing. Fail-fast composites never append it (the terminal event
+    # there is ``WorkflowFailed``), so existing journals are unchanged.
+    TASK_FAILED = "TaskFailed"
     # V7 — fork. The worker appends this to a newly-forked run, right after seeding its
     # journal from the source's prefix, to record lineage: the ``source_run_id`` it was
     # branched from and the ``fork_point_seq`` (the last source event copied). A

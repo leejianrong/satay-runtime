@@ -51,11 +51,14 @@ class Driver(Protocol):
         items: Iterable[Any],
         key_fn: Callable[[Any], str] | None,
         concurrency: int,
+        return_exceptions: bool = False,
     ) -> list[Any]:
         """Durable keyed fan-out over ``items``, bounded by ``concurrency`` (V4, A6.1)."""
         ...
 
-    async def durable_gather(self, awaitables: Sequence[Awaitable[Any]]) -> list[Any]:
+    async def durable_gather(
+        self, awaitables: Sequence[Awaitable[Any]], return_exceptions: bool = False
+    ) -> list[Any]:
         """Await heterogeneous durable calls, rejoining positionally (V4, A6.1)."""
         ...
 
