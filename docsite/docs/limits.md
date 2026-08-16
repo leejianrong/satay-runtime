@@ -21,8 +21,12 @@ writers on the same journal. SQLite on a network filesystem is not supported any
 `./.satay/blobs/` and removal is manual (ADR-0004). A future GC has to be reference-aware, because
 a fork shares blob files with its source run.
 
-**Redaction is on read, not on write.** The raw value is still in `satay.db`. It stops a secret
-being rendered in a browser tab; it is not encryption at rest.
+**Redaction is on read by default.** The raw value is then still in `satay.db`: it stops a secret
+being rendered in a browser tab, and that is all. `SATAY_WRITE_REDACTION=on` moves it to the write
+path so the value never lands in the store — at the cost of being genuinely gone, including for
+replay. Neither mode is encryption at rest, and neither can catch a secret with no field name to
+match (a bare string argument, or one interpolated into a traceback). See
+[redaction](guarantees.md#redaction).
 
 ## Execution
 

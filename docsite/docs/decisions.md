@@ -48,6 +48,7 @@ If you read four, read these.
 | [0017](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0017-persistence-layout-and-migrations.md) | Persistence layout and migrations |
 | [0018](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0018-frontend-and-studio-delivery.md) | Frontend and Studio delivery specifics |
 | [0024](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0024-dev-stack-app-module-loading.md) | `satay dev` imports the user's app modules (`--app`) |
+| [0028](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0028-write-time-redaction.md) | Write-time redaction: slot-scoped, off by default |
 
 ## Packaging, tooling, and process
 

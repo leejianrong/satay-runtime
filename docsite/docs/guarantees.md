@@ -225,5 +225,50 @@ value replaced with `***REDACTED***`, recursively through nested structures.
 The list is deliberately narrow so structural keys survive: a `map` item's `key`, plus
 `code_version`, `event_id`, and `identity`, are never caught.
 
-Redaction is applied on read, not on write, so the raw value is still in `satay.db`. It stops a
-secret being rendered in a browser tab. It is not encryption at rest.
+By default this happens **on read**, so the raw value is still in `satay.db`. It stops a secret
+being rendered in a browser tab. It is not encryption at rest.
+
+### Redacting on write instead
+
+For a local debugger, read-time is the right place: the database never leaves your machine. Once a
+journal is shipped somewhere else — a shared box, a backup, an ingest endpoint — the read path is
+protecting the wrong thing, because whoever holds the file holds the secret.
+
+So there is a second mode that redacts on the way *in*:
+
+```bash
+SATAY_WRITE_REDACTION=on            # or SQLiteStore.open(path, write_redaction="on")
+```
+
+It is **off by default**, and turning it on changes something real: the value is gone. Not hidden
+behind a filter — never written. A task result recorded as `***REDACTED***` is what a replayed call
+hands back, and a redacted workflow input is what a resumed or forked run is re-entered with.
+
+```python title="credentials.py"
+@satay.task()
+async def issue_credentials(label: str) -> dict:
+    return {"api_key": "sk-live-...", "label": label}
+```
+
+| | `SATAY_WRITE_REDACTION` unset | `=on` |
+| --- | --- | --- |
+| in `satay.db` | `{"api_key": "sk-live-...", ...}` | `{"api_key": "***REDACTED***", ...}` |
+| in a spilled blob | the raw value, under a hash | nothing — redaction runs before spill |
+| in the API response | `***REDACTED***` | `***REDACTED***` |
+| on replay, the call returns | the raw value | `***REDACTED***` |
+
+Replay itself is unaffected. Only the value slots — `input_ref`, `output_ref`, `event_ref`, and a
+`send_event` payload — are redacted; a durable call's identity is its `(task_name, ordinal)` or
+`(task_name, key)`, and those are never touched, so a redacted journal resolves exactly the same
+calls in the same order. That holds even if you pass a pattern set aimed straight at them.
+
+The sharp edge is workflow input. It is the one redactable value that is also a *seed*: the poll
+loop and `fork` both re-enter a workflow from its recorded input, so a redacted one comes back as
+the placeholder and your workflow computes from that. Satay logs a warning naming the run when it
+happens. The fix is a shape, not a setting — fetch the secret inside a task, or pass it per-task,
+rather than threading it through the workflow signature.
+
+Two things it still does not do. A secret with no field name to match — a bare string argument, or
+one interpolated into an exception message that reaches a traceback — survives in both modes; this
+is field-name matching, not content scanning. And everything unmatched is stored verbatim, so
+neither mode is encryption at rest.
