@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 import satay
+from satay import PARKED
 from satay.journal.events import EventType
 from satay.journal.store import SQLiteStore
 from satay.testing import ManualClock, NeverSettledError, SeededRng, settle
@@ -122,7 +123,7 @@ async def test_settle_hands_back_a_run_that_parks_rather_than_waiting_for_a_work
     store = SQLiteStore.open(":memory:")
     try:
         handle = satay.start(_st_sleeper, 3, store=store, clock=clock)
-        assert await settle(handle.result, clock) is None
+        assert await settle(handle.result, clock) is PARKED
         assert await handle.status() == "waiting"
     finally:
         store.close()

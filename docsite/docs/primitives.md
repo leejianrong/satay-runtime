@@ -21,54 +21,56 @@ Two of these primitives park the run. When a workflow hits `satay.sleep` or `wai
 Satay records a timer or an event wait, gives up the coroutine entirely, and marks the run
 `waiting`. Something else has to wake it: the timer and event poll loop.
 
-`await handle.result()` on a parked run returns `None` immediately rather than blocking, so a
-script that uses `sleep` or `wait_for_event` needs a poll loop running alongside it:
+`satay.run_app()` is that loop. It opens the journal, starts the poll loop over it, and yields
+the store to pass to `satay.start`:
 
 ```python
 import asyncio
 
 import satay
-from satay.config import db_path, resolve_data_dir
-from satay.journal.store import SQLiteStore
-from satay.timers import TimerEventWorker
-
-
-async def finish(handle: satay.RunHandle) -> object:
-    """Drive a run, then wait for the worker if it parked on a timer or an event."""
-    result = await handle.result()
-    while await handle.status() in ("running", "waiting"):
-        await asyncio.sleep(0.2)
-        result = await handle.result()
-    return result
 
 
 async def main() -> None:
-    data_dir = resolve_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    store = SQLiteStore.open(db_path(data_dir))
-    worker = TimerEventWorker(store=store, interval=0.2)
-    loop = asyncio.create_task(worker.run())
-    try:
-        ...   # satay.start(..., store=store) here
-    finally:
-        worker.stop()
-        loop.cancel()
-        store.close()
+    async with satay.run_app() as store:
+        handle = satay.start(trial, "u-1", store=store)
+        print(await handle.result())
+
+
+asyncio.run(main())
 ```
 
-!!! note "This reaches below the documented public surface"
+Inside the block, `await handle.result()` on a run that parks **waits** for the loop to wake it
+and returns the real result, so a workflow that sleeps for two weeks reads like an ordinary
+`await`. On the way out, the loop is stopped and the store is closed for you, whether the block
+ended normally or by exception.
 
-    `TimerEventWorker`, `SQLiteStore`, and `resolve_data_dir` are not among the names re-exported
-    from `satay`, so they are more likely to move than `@task` or `satay.map`. The runtime ships
-    no higher-level "run my app" entry point yet, and this is the pattern the repository's own
-    examples use. Pass the same `store=` to both the worker and every `satay.start` call so there
-    is one writer.
+Pass the yielded `store` to every `satay.start` and `satay.send_event` in the block. One store is
+one writer, which is what keeps the journal coherent.
 
-`satay dev --app mypkg.workflows` is the shorter route to the same thing. It imports the modules
-you name, which is what puts your workflows in the registry, and then runs the poll loop, the
-store, the API, and Studio in one process. Its worker will wake runs your own scripts parked, so
-the two shapes interoperate over the same journal. A bare `satay dev` with no `--app` imports
-nothing and drives nothing, and it says so at boot. See
+Three keyword arguments are worth knowing. `data_dir=` puts the journal somewhere other than
+`./.satay`. `store=` runs the loop over a store you opened yourself — an in-memory one in a test,
+say — and leaves closing it to you. `interval=` is the poll cadence in seconds, `0.2` by default.
+
+Outside a `run_app` block there is no loop, and `result()` on a parked run cannot invent one. It
+returns `satay.PARKED` — a sentinel, deliberately not `None`, so you can tell "nothing has
+happened yet" from a workflow that returned `None` on purpose:
+
+```python
+if await handle.result() is satay.PARKED:
+    print(await handle.status())   # 'waiting'
+```
+
+!!! tip "A run parked on an event nobody sends waits forever"
+
+    That is what awaiting it means, and it is the same deal every `await` offers. Send the event
+    before you await the handle, or bound the wait with
+    `asyncio.wait_for(handle.result(), timeout=30)`.
+
+`satay dev --app mypkg.workflows` is the same poll loop with the rest of the stack around it. It
+imports the modules you name, which is what puts your workflows in the registry, and then runs the
+loop, the store, the API, and Studio in one process. Its worker will wake runs your own scripts
+parked, so the two shapes interoperate over the same journal. A bare `satay dev` with no `--app`
+imports nothing and drives nothing, and it says so at boot. See
 [Studio and `satay dev`](studio.md#telling-satay-dev-where-your-workflows-live).
 
 ## `sleep`
@@ -286,9 +288,6 @@ import asyncio
 from dataclasses import dataclass
 
 import satay
-from satay.config import db_path, resolve_data_dir
-from satay.journal.store import SQLiteStore
-from satay.timers import TimerEventWorker
 
 
 @dataclass(frozen=True)
@@ -340,35 +339,18 @@ async def parent(n: int) -> int:
     return await handle.result() + 1
 
 
-async def finish(handle: satay.RunHandle) -> object:
-    result = await handle.result()
-    while await handle.status() in ("running", "waiting"):
-        await asyncio.sleep(0.2)
-        result = await handle.result()
-    return result
-
-
 async def main() -> None:
-    data_dir = resolve_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    store = SQLiteStore.open(db_path(data_dir))
-    worker = TimerEventWorker(store=store, interval=0.2)
-    loop = asyncio.create_task(worker.run())
-    try:
+    async with satay.run_app() as store:
         print("map:        ", await satay.start(fanout, [1, 2, 3], store=store).result())
         print("gather:     ", await satay.start(combined, 5, store=store).result())
         print("start_child:", await satay.start(parent, 4, store=store).result())
 
-        print("sleep:      ", await finish(satay.start(paced, 10, store=store)))
+        # Parks on its two-second timer; the poll loop wakes it and result() waits.
+        print("sleep:      ", await satay.start(paced, 10, store=store).result())
 
         pending = satay.start(review, 0, store=store)
-        print("waiting:    ", await pending.result(), "->", await pending.status())
         await satay.send_event(Approval(approved=True), key="order-42", store=store)
-        print("event:      ", await finish(pending))
-    finally:
-        worker.stop()
-        loop.cancel()
-        store.close()
+        print("event:      ", await pending.result())
 
 
 asyncio.run(main())
@@ -382,12 +364,11 @@ map:         [2, 4, 6]
 gather:      [10, [2, 4]]
 start_child: 9
 sleep:       21
-waiting:     None -> waiting
 event:       approved
 ```
 
-The `waiting:     None -> waiting` line is the parked-run behaviour in the open. `result()` gave
-back `None` because there was no outcome yet, and `status()` confirmed why.
+Nothing in that `main()` knows which of those workflows park and which do not, which is the point:
+inside `run_app` a durable sleep is just a slow `await`.
 
 ## Recap
 
@@ -395,7 +376,9 @@ back `None` because there was no outcome yet, and `status()` confirmed why.
 - `wait_for_event(Type, key=..., timeout=...)` parks until a matching event lands, resolving to
   `None` on timeout. `await satay.send_event(...)` delivers one from outside, and early delivery
   is buffered rather than lost.
-- Parked runs need a poll loop: `TimerEventWorker` in your own script, or `satay dev --app`.
+- Parked runs need a poll loop: `async with satay.run_app() as store:` in your own script, or
+  `satay dev --app`. Inside one, `result()` waits for the wake; outside one it returns
+  `satay.PARKED`.
 - `satay.map(task, items, key=...)` keys each item so a crash mid-fan-out resumes only the
   unfinished ones. `satay.gather(...)` rejoins mixed calls positionally.
 - Both are fail-fast by default; `return_exceptions=True` collects instead, returning each slot's

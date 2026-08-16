@@ -113,12 +113,12 @@ def reset_counters() -> None:
     EXECUTIONS.clear()
 ```
 
-!!! note "Two of those imports sit below the public surface"
-
-    `satay.journal.store.SQLiteStore`, `satay.journal.events.EventType`, and
-    `satay.timers.TimerEventWorker` are not re-exported from `satay`, so they are more likely to
-    move than `@task` or `satay.map`. Everything from `satay.testing` is a stable seam by design
-    (ADR-0011). [Limits](../limits.md#maturity) lists the deeper imports these docs use.
+Three of those imports come from below the top-level package, and each one is there for a reason a
+test has and an application does not. `SQLiteStore` opens a throwaway journal. `EventType` names
+the events you assert on. `TimerEventWorker` is the poll loop, driven one `tick()` at a time so a
+fourteen-day timer fires now instead of in a fortnight — an application uses
+[`satay.run_app`](../primitives.md#running-the-worker) or `satay dev` and never names it.
+Everything from `satay.testing` is a stable seam by design (ADR-0011).
 
 ## Test a Task on Its Own
 
@@ -223,7 +223,7 @@ async def test_a_fourteen_day_sleep_takes_no_time() -> None:
     store = SQLiteStore.open(":memory:")
     handle = satay.start(trial, 1999, store=store, clock=clock)
 
-    assert await handle.result() is None
+    assert await handle.result() is satay.PARKED
     assert await handle.status() == "waiting"
     assert EXECUTIONS == {"charge": 1}
 
@@ -242,8 +242,11 @@ async def test_a_fourteen_day_sleep_takes_no_time() -> None:
 Four things are being asserted here, and each one is a behaviour you would otherwise have to take
 on faith.
 
-`await handle.result()` returns `None` and the status is `waiting`. The run gave up its coroutine.
-There is no frame to resume, only a timer row.
+`await handle.result()` returns `satay.PARKED` and the status is `waiting`. The run gave up its
+coroutine: there is no frame to resume, only a timer row, and nothing in this test is running a
+poll loop to fire it. `PARKED` is a sentinel rather than `None` precisely so this assertion says
+what it means — a workflow returning `None` for real is a different outcome, and used to be
+indistinguishable from this one (ADR-0030).
 
 `await worker.tick() == 0` before advancing the clock. `tick()` returns how many timers it fired,
 so zero is the proof that nothing was due yet.
@@ -277,9 +280,9 @@ It awaits the target and advances the clock through every wait the drive suspend
 an awaitable or, as here, a zero-argument callable returning one.
 
 Two behaviours to know. A drive that **parks** on a durable timer or an event wait returns
-normally, because parking is a result and only your test can produce the `tick()` that unparks it —
-that is why the timer test above calls `worker.tick()` itself rather than expecting `settle` to
-wait. And a drive that never finishes raises `NeverSettledError` instead of hanging your suite,
+`satay.PARKED` normally, because parking is a result and only your test can produce the `tick()`
+that unparks it — that is why the timer test above calls `worker.tick()` itself rather than
+expecting `settle` to wait. And a drive that never finishes raises `NeverSettledError` instead of hanging your suite,
 cancelling the drive on its way out, which is the failure you want when a task is accidentally
 waiting on real time.
 
@@ -337,7 +340,8 @@ schedule. No `sleep` anywhere in the suite.
 The seam is deliberately the public API driving real workflows against a real store. Tests that go
 around it break on refactors that changed nothing a user can see. So assert on these:
 
-- **The result.** `await handle.result()`.
+- **The result.** `await handle.result()`, or `satay.PARKED` if the run is waiting on a timer or
+  an event that nothing in the test has fired yet.
 - **The status.** `await handle.status()`, one of `running`, `waiting`, `completed`, `failed`,
   `cancelled`.
 - **The exception.** `pytest.raises(satay.WorkflowFailedError)`, then check `error_type` and
@@ -383,7 +387,8 @@ async def test_with_fixtures(manual_clock, fault_injector, temp_db_path) -> None
 - `injector.crash_after("TaskCompleted")` plus a second `satay.start` with the same `run_id` is
   the crash-recovery test. A module-level counter is what proves the finished task was reused.
 - `ManualClock` plus `TimerEventWorker.tick()` fires a fourteen-day timer immediately, and
-  `tick()` returns how many fired.
+  `tick()` returns how many fired. Before it fires, the run's result is `satay.PARKED`, never
+  `None`.
 - `SeededRng` pins backoff jitter, and `satay.testing.settle` advances virtual time while the drive
   is suspended, raising `NeverSettledError` rather than hanging if it never finishes.
 - Assert on results, statuses, exceptions, journal events, and your own counters. Nothing deeper.

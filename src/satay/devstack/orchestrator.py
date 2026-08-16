@@ -230,12 +230,26 @@ class DevStack:
         await self.stop()
 
 
+def _say(line: str) -> None:
+    """Print a boot line and **flush** it (KAN-491).
+
+    Every line ``satay dev`` prints is printed once and then the process blocks until
+    Ctrl-C. Python only line-buffers stdout when it is a tty, so redirected —
+    ``satay dev > dev.log``, a CI step, an agent capturing the output — the whole banner
+    sat in a 8 KiB buffer that nothing would flush for as long as the stack ran, and the
+    tokenized Studio URL, which is the one thing you cannot reconstruct by hand, never
+    arrived. Flushing per line costs nothing here and makes the output honest under a
+    pipe.
+    """
+    print(line, flush=True)
+
+
 async def _serve_until_signalled(stack: DevStack) -> None:
     """Run the stack until SIGINT/SIGTERM, printing the URLs on start."""
     await stack.start()
-    print(f"Satay Studio:  {stack.studio_url()}")
-    print(f"  control/read API on {stack.base_url()}  (session token required)")
-    print("  press Ctrl-C to stop")
+    _say(f"Satay Studio:  {stack.studio_url()}")
+    _say(f"  control/read API on {stack.base_url()}  (session token required)")
+    _say("  press Ctrl-C to stop")
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -276,8 +290,8 @@ def run_dev(
     resolved = resolve_data_dir(data_dir)
     stack = DevStack(data_dir=resolved, host=host, port=port, log_level=log_level)
     for line in report.describe():
-        print(line)
-    print(
+        _say(line)
+    _say(
         f"policies: effect_safety={stack.effect_safety.value}, "
         f"nondeterminism={stack.nondeterminism.value}, "
         f"version_mismatch={stack.version_mismatch.value}"

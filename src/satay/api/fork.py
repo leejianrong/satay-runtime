@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from satay.api.run_handle import RunHandle
+from satay.api.run_handle import PARKED, RunHandle, await_unpark
 
 if TYPE_CHECKING:
     from satay.config import EffectSafety, NondeterminismPolicy, VersionMismatchPolicy
@@ -185,11 +185,15 @@ class ForkController:
         return self._run_id
 
     async def result(self) -> Any:
-        """Drive the fork to a terminal state and return/raise its outcome."""
+        """Drive the fork to a terminal state and return/raise its outcome.
+
+        A fork that parks behaves exactly like any other run: it waits for a poll loop
+        running in this process, or returns :data:`satay.PARKED` (ADR-0030).
+        """
         from satay.api.registry import REGISTRY
         from satay.api.runner import _outcome_from_events
         from satay.control.commands import drive_forked_run
-        from satay.journal.events import TERMINAL_STATUSES, RunStatus
+        from satay.journal.events import TERMINAL_STATUSES
         from satay.replay.engine import _return_annotation
 
         record = await self._store.get_run(self._run_id)
@@ -206,11 +210,12 @@ class ForkController:
                 version_mismatch=self._version_mismatch,
             )
 
-        # A fork that parked on a timer or an event has no outcome yet; the poll loop
-        # drives it on, exactly as for a run started with ``satay.start``.
-        record = await self._store.get_run(self._run_id)
-        if record is not None and record.status is RunStatus.WAITING:
-            return None
+        # A fork that parked on a timer or an event has no outcome yet: wait for a poll
+        # loop if one is running, else answer PARKED — the identical policy
+        # ``satay.start`` applies, from the one helper, so the two handles never disagree
+        # about what a parked run returns (ADR-0030).
+        if await await_unpark(self._store, self._run_id):
+            return PARKED
         workflow_def = REGISTRY.get_workflow(self._workflow_name)
         annotation = _return_annotation(workflow_def.fn) if workflow_def is not None else None
         return _outcome_from_events(await self._store.read_events(self._run_id), annotation)

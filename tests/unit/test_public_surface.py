@@ -24,6 +24,11 @@ def test_public_surface_is_exported() -> None:
         "start_child",
         "TaskContext",
         "RunHandle",
+        # Fork from code (KAN-481, ADR-0028) and the parked-run affordance it shares
+        # (KAN-491, ADR-0030): both are core entry points, neither needs satay[studio].
+        "fork",
+        "run_app",
+        "PARKED",
         # V2 public error types (N9/A10.2).
         "NondeterminismError",
         "EffectSafetyError",

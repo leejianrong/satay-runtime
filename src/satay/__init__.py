@@ -12,8 +12,10 @@ The public surface (ARCHITECTURE §1):
 - ``sleep`` / ``wait_for_event`` / ``send_event`` — event & time primitives
 - ``map`` / ``gather`` / ``start_child`` — composition primitives
 - ``fork`` — re-cut a finished run from a chosen point, optionally under a new input
+- ``run_app`` — ``async with``: the journal open and the poll loop running
 - ``TaskContext`` — the task-body context
 - ``RunHandle`` — the run handle
+- ``PARKED`` — what ``result()`` returns for a run parked with nothing to wake it
 """
 
 from __future__ import annotations
@@ -38,8 +40,9 @@ from satay.api import (
     wait_for_event,
     workflow,
 )
+from satay.api.app import run_app
 from satay.api.fork import fork
-from satay.api.run_handle import WorkflowFailedError
+from satay.api.run_handle import PARKED, WorkflowFailedError
 from satay.replay.failures import TaskFailedError
 from satay.versioning import VersionMismatchError
 
@@ -85,6 +88,7 @@ def _detect_version() -> str:
 __version__: str = _detect_version()
 
 __all__ = [
+    "PARKED",
     "EffectSafetyError",
     "NondeterminismError",
     "RunHandle",
@@ -96,6 +100,7 @@ __all__ = [
     "fork",
     "gather",
     "map",
+    "run_app",
     "send_event",
     "sleep",
     "start",

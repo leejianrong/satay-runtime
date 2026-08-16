@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from satay.api.registry import WorkflowDefinition
-from satay.api.run_handle import RunHandle, WorkflowFailedError
+from satay.api.run_handle import PARKED, RunHandle, WorkflowFailedError, await_unpark
 from satay.config import EffectSafety, NondeterminismPolicy, VersionMismatchPolicy
 from satay.journal import Store
 from satay.journal.codec import encode, rehydrate
@@ -95,7 +95,12 @@ class RunController:
             self._run_id = existing.run_id
 
     async def result(self) -> Any:
-        """Ensure the run exists, drive it if non-terminal, return/raise the outcome."""
+        """Ensure the run exists, drive it if non-terminal, return/raise the outcome.
+
+        A run that parks has no outcome yet: this waits for a poll loop running in this
+        process to wake it, and returns :data:`satay.PARKED` when there is none
+        (ADR-0030).
+        """
         await self._resolve_keyed_run()
         record = await self._store.get_run(self._run_id)
 
@@ -126,12 +131,12 @@ class RunController:
             )
             await self._drive()
 
-        # A run still parked (WAITING) has no terminal outcome yet: return None. The
-        # worker's poll loop drives it to completion when its timer/event resolves; a
-        # later result() then returns the recorded outcome (terminal no-op above).
-        record = await self._store.get_run(self._run_id)
-        if record is not None and record.status is RunStatus.WAITING:
-            return None
+        # A run still parked (WAITING) has no terminal outcome yet. If a poll loop is
+        # running over this store, wait for it to fire the timer or deliver the event and
+        # return the real outcome; if nothing here will wake it, say so with PARKED
+        # rather than a None the caller cannot tell from a real result (ADR-0030).
+        if await await_unpark(self._store, self._run_id):
+            return PARKED
         return await self._outcome()
 
     async def status(self) -> str:

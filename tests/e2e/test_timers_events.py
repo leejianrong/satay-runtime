@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from satay import demo
+from satay import PARKED, demo
 from satay.api.primitives import send_event, start
 from satay.demo import REVIEW_KEY, ReviewDecision
 from satay.journal.events import EventType, RunStatus
@@ -43,7 +43,7 @@ async def test_durable_sleep_parks_then_resumes_on_timer() -> None:
     handle = start(demo.sleep_demo, 1, store=store, clock=clock)
 
     # First drive parks on the sleep: no live frame, no terminal outcome yet.
-    assert await handle.result() is None
+    assert await handle.result() is PARKED
     assert await handle.status() == RunStatus.WAITING.value
     assert demo.execution_count("step_one") == 1  # ran before the park
     assert demo.execution_count("step_two") == 0  # not reached yet
@@ -114,7 +114,7 @@ async def test_event_wait_blocks_then_resumes_on_delivery() -> None:
     store = SQLiteStore.open(":memory:")
     handle = start(demo.review_demo, 0, store=store, clock=clock)
 
-    assert await handle.result() is None  # parks on wait_for_event
+    assert await handle.result() is PARKED  # parks on wait_for_event
     assert await handle.status() == RunStatus.WAITING.value
     events = await store.read_events(handle.run_id)
     assert EventType.EVENT_WAIT_STARTED in _types(events)
@@ -163,7 +163,7 @@ async def test_wait_timeout_resolves_via_timer_path() -> None:
     store = SQLiteStore.open(":memory:")
     handle = start(demo.review_timeout_demo, 0, store=store, clock=clock)
 
-    assert await handle.result() is None  # parks with an event_timeout timer at +2h
+    assert await handle.result() is PARKED  # parks with an event_timeout timer at +2h
     events = await store.read_events(handle.run_id)
     assert EventType.TIMER_CREATED in _types(events)
 
@@ -183,7 +183,7 @@ async def test_event_wins_a_simultaneously_due_timeout() -> None:
     clock = ManualClock()
     store = SQLiteStore.open(":memory:")
     handle = start(demo.review_timeout_demo, 0, store=store, clock=clock)
-    assert await handle.result() is None
+    assert await handle.result() is PARKED
 
     # Co-schedule: advance to the timeout fire_at AND deliver a matching event.
     clock.advance(2 * _HOUR)
@@ -205,7 +205,7 @@ async def test_buffered_events_are_consumed_fifo() -> None:
     clock = ManualClock()
     store = SQLiteStore.open(":memory:")
     handle = start(demo.review_demo, 0, store=store, clock=clock)
-    assert await handle.result() is None  # parks
+    assert await handle.result() is PARKED  # parks
 
     # Two matching events buffered; FIFO means the FIRST (approved) is consumed.
     await send_event(ReviewDecision(approved=True, reviewer="first"), key=REVIEW_KEY, store=store)
@@ -231,7 +231,7 @@ async def test_unmatched_inbox_event_persists_until_run_end() -> None:
     await send_event(ReviewDecision(approved=True), key="unrelated-key", store=store)
 
     handle = start(demo.review_demo, 0, store=store, clock=clock)
-    assert await handle.result() is None  # parks on REVIEW_KEY
+    assert await handle.result() is PARKED  # parks on REVIEW_KEY
 
     await send_event(ReviewDecision(approved=True), key=REVIEW_KEY, store=store)
     worker = TimerEventWorker(store=store, clock=clock)
@@ -251,7 +251,7 @@ async def test_timer_firing_is_idempotent_no_double_resume() -> None:
     clock = ManualClock()
     store = SQLiteStore.open(":memory:")
     handle = start(demo.sleep_demo, 1, store=store, clock=clock)
-    assert await handle.result() is None
+    assert await handle.result() is PARKED
 
     clock.advance(_HOUR)
     worker = TimerEventWorker(store=store, clock=clock)
