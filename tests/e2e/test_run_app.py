@@ -15,6 +15,8 @@ is well under a second of wall clock.
 from __future__ import annotations
 
 import asyncio
+import copy
+import pickle
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,6 +157,21 @@ async def test_result_hands_back_parked_when_no_poll_loop_is_running() -> None:
         assert await handle.status() == "waiting"
     finally:
         store.close()
+
+
+def test_parked_survives_copy_and_pickle_as_the_same_object() -> None:
+    """A sentinel you test with ``is`` has to stay one object (KAN-491, ADR-0030).
+
+    Without ``Parked.__reduce__`` both of these hand back a second instance that reprs
+    identically and fails every ``is satay.PARKED`` check — the worst kind of bug,
+    because the value still *looks* right in a traceback. Anything that snapshots a
+    result (``copy.deepcopy`` of a dict of outcomes, a cache that pickles) would have
+    quietly broken the contract the whole design rests on.
+    """
+    assert copy.deepcopy(satay.PARKED) is satay.PARKED
+    assert copy.copy(satay.PARKED) is satay.PARKED
+    assert pickle.loads(pickle.dumps(satay.PARKED)) is satay.PARKED
+    assert copy.deepcopy({"outcome": satay.PARKED})["outcome"] is satay.PARKED
 
 
 async def test_a_workflow_that_really_returns_none_is_not_parked() -> None:

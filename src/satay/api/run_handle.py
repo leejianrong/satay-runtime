@@ -28,6 +28,18 @@ class Parked:
     def __repr__(self) -> str:
         return "<parked>"
 
+    def __reduce__(self) -> str:
+        """Keep ``PARKED`` a singleton through ``copy`` and ``pickle``.
+
+        The entire contract of this value is that you test it with ``is``, and without
+        this both :func:`copy.deepcopy` and a pickle round-trip hand back a *second*
+        ``Parked`` instance — one that reprs identically, compares unequal by identity,
+        and silently fails every ``is satay.PARKED`` check downstream. Returning the
+        global's name tells both protocols to resolve it by lookup instead of rebuilding
+        it, which is how ``Ellipsis`` and ``NotImplemented`` stay singletons too.
+        """
+        return "PARKED"
+
 
 #: What ``await handle.result()`` returns for a run that is parked on a durable timer or
 #: an event wait with no poll loop in this process to wake it (ADR-0030).

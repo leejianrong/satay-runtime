@@ -116,6 +116,13 @@ if await handle.result() is satay.PARKED:
     ...  # nothing has happened yet — the run is waiting on a timer or an event
 ```
 
+Because the contract is an identity check, the sentinel has to *stay* one object.
+`Parked.__reduce__` returns the global's name, so `copy.deepcopy` and a pickle round-trip
+resolve it by lookup instead of rebuilding it — the same trick that keeps `Ellipsis` and
+`NotImplemented` singletons. Without it, anything that snapshots a result (a deepcopy of a
+dict of outcomes, a cache that pickles) hands back a second `Parked` that reprs identically
+and fails every `is satay.PARKED` check downstream.
+
 ### 3. With a poll loop in this process, `result()` waits instead
 
 If a poll loop is running over the same store **in this process**, `result()` waits for it
