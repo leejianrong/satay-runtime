@@ -1,4 +1,4 @@
-"""Field-name redaction of sensitive values — read time and write time (N18, ADR-0028).
+"""Field-name redaction of sensitive values — read time and write time (N18, ADR-0029).
 
 Redaction is keyed on **field names**: any mapping key whose lower-cased form contains a
 configured pattern has its value replaced with :data:`REDACTED`, recursing through nested
@@ -7,7 +7,7 @@ mappings and lists. The same :class:`Redactor` serves two very different jobs:
 - **Read time** (ADR-0009/0014, the default and the local case): the redactor is the
   final transform on every read response (:class:`satay.control.api.ReadAPI`), so nothing
   leaves the process unredacted. The raw value stays in ``satay.db``.
-- **Write time** (ADR-0026 decision 4, ADR-0028, opt-in): the redactor runs on the
+- **Write time** (ADR-0026 decision 4, ADR-0029, opt-in): the redactor runs on the
   recording path in :class:`satay.journal.store.SQLiteStore`, so the raw value never
   reaches the store at all — and the redacted form is therefore what the run resumes
   against.
@@ -20,12 +20,12 @@ Python. So the redactor lives here, next to :mod:`satay.config`, and
 :mod:`satay.control.redaction` re-exports it for the read path and for existing callers.
 Stdlib only: nothing here crosses the ADR-0013/0016 dependency boundary.
 
-**Replay identity is out of scope by construction** (ADR-0028). Write-time redaction is
-*slot-scoped*: it rewrites only the value-carrying :data:`VALUE_REF_FIELDS` slots of an
-event payload and never touches the structural fields around them. Durable-call identity
-is ``(task_name, ordinal)`` or ``(task_name, key)`` (ADR-0002), all of which are
-structural, so no pattern set — not even one that deliberately matches ``key`` — can
-change what a replayed call matches.
+**Replay identity is out of scope by construction** (ADR-0029). Write-time redaction is
+*slot-scoped*: it rewrites only the value-carrying ``*_ref`` slots of an event payload
+(see :func:`is_value_slot`) and never touches the structural fields around them.
+Durable-call identity is ``(task_name, ordinal)`` or ``(task_name, key)`` (ADR-0002), all
+of which are structural, so no pattern set — not even one that deliberately matches
+``key`` — can change what a replayed call matches.
 """
 
 from __future__ import annotations
@@ -57,14 +57,45 @@ DEFAULT_REDACTION_PATTERNS: frozenset[str] = frozenset(
     }
 )
 
-#: The event-payload slots that carry **user values** rather than runtime structure.
-#: ADR-0004 puts every value behind ``*_ref`` indirection precisely so the envelope stays
-#: schema-stable, and that indirection is what makes slot-scoped write-time redaction
-#: possible: everything outside these slots is runtime bookkeeping (``task_name``,
+#: The suffix that marks a payload field as a **value slot**. ADR-0004 puts every user
+#: value behind ``*_ref`` indirection precisely so the envelope stays schema-stable, and
+#: that naming convention is what slot-scoped write-time redaction keys on: a field whose
+#: name ends in ``_ref`` holds data, everything else is runtime bookkeeping (``task_name``,
 #: ``ordinal``, ``key``, ``identity``, ``code_version``, ids, timestamps) that replay
-#: depends on and redaction must never rewrite (ADR-0028). The inbox's ``payload_ref``
-#: column is the same kind of slot and is redacted by the store on its own write path.
-VALUE_REF_FIELDS: frozenset[str] = frozenset({"input_ref", "output_ref", "event_ref"})
+#: depends on and redaction must never rewrite (ADR-0029).
+#:
+#: The rule is the *suffix*, not a hand-maintained list, because the list is the part that
+#: rots: a slice that adds an event type carrying a new ``*_ref`` gets redaction for free,
+#: whereas a list has to be remembered, and the failure mode of forgetting is a secret in
+#: the store — silent, and only visible to whoever ends up holding the journal.
+VALUE_REF_SUFFIX = "_ref"
+
+#: The value slots the journal carries today, for documentation and tests. Not the rule —
+#: :func:`is_value_slot` is. ``payload_ref`` is the inbox's own column rather than a
+#: payload field, and the store redacts it on that write path directly.
+VALUE_REF_FIELDS: frozenset[str] = frozenset(
+    {
+        "input_ref",  # TaskScheduled / WorkflowCreated / ChildWorkflowScheduled arguments
+        "output_ref",  # TaskCompleted / WorkflowCompleted results
+        "event_ref",  # ExternalEventReceived delivered payload
+        "source_input_ref",  # RunForked lineage: the input an override replaced (ADR-0028)
+    }
+)
+
+
+def is_value_slot(field_name: str) -> bool:
+    """Whether a payload field carries a user value rather than runtime structure.
+
+    The write-time redaction boundary. Deliberately **excludes** the ``error`` payload of
+    ``TaskAttemptFailed`` / ``TaskFailed``, which is a fixed ``{type, message, traceback}``
+    of runtime-generated strings: no field name in it can match a pattern, so including it
+    would protect nothing, while a custom pattern set that *did* match ``type`` would
+    rewrite the ``error_type`` a collect-mode workflow branches on — manufacturing exactly
+    the first-pass-versus-replay divergence ADR-0027 exists to prevent. A secret
+    interpolated into an exception message is out of reach of field-name matching in both
+    redaction modes, and is documented as such (ADR-0029).
+    """
+    return field_name.endswith(VALUE_REF_SUFFIX)
 
 
 class Redactor:
@@ -103,22 +134,29 @@ class Redactor:
         return value
 
     def redact_value_slots(self, payload: Any) -> Any:
-        """Redact only the :data:`VALUE_REF_FIELDS` slots of an encoded event payload.
+        """Redact only the value slots (see :func:`is_value_slot`) of an encoded payload.
 
-        The write-time entry point (ADR-0028). Unlike :meth:`redact`, which walks a whole
+        The write-time entry point (ADR-0029). Unlike :meth:`redact`, which walks a whole
         read view, this deliberately does **not** descend into the structural fields of a
         journal payload: ``task_name``, ``ordinal``, ``key``, ``identity``,
-        ``code_version``, ``child_run_id`` and their kin are handed back byte-identical
-        whatever the pattern set says, so a redacted journal replays exactly like an
-        unredacted one. Non-mapping payloads pass through unchanged; the input is never
-        mutated.
+        ``code_version``, ``child_run_id``, ``error`` and their kin are handed back
+        byte-identical whatever the pattern set says, so a redacted journal replays exactly
+        like an unredacted one. Non-mapping payloads pass through unchanged; the input is
+        never mutated.
         """
         if not isinstance(payload, Mapping):
             return payload
         return {
-            key: (self.redact(value) if key in VALUE_REF_FIELDS else value)
+            key: (self.redact(value) if is_value_slot(key) else value)
             for key, value in payload.items()
         }
 
 
-__all__ = ["DEFAULT_REDACTION_PATTERNS", "REDACTED", "VALUE_REF_FIELDS", "Redactor"]
+__all__ = [
+    "DEFAULT_REDACTION_PATTERNS",
+    "REDACTED",
+    "VALUE_REF_FIELDS",
+    "VALUE_REF_SUFFIX",
+    "Redactor",
+    "is_value_slot",
+]

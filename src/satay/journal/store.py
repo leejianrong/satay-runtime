@@ -10,7 +10,7 @@ Schema is versioned with ``PRAGMA user_version`` and migrated forward on open. A
 temp-file path or ``":memory:"`` is supported (the latter keeps the one connection
 alive for the store's lifetime, since a fresh connection is a fresh in-memory DB).
 
-**Write-time redaction (ADR-0028) is off by default.** Turned on — with
+**Write-time redaction (ADR-0029) is off by default.** Turned on — with
 ``write_redaction="on"`` or ``SATAY_WRITE_REDACTION=on`` — the recording path scrubs
 sensitive values out of the ``*_ref`` value slots before they are serialized or spilled,
 so the store never holds them and the redacted form is what a resumed run replays
@@ -129,7 +129,7 @@ class SQLiteStore:
         #: which is the case for a purely in-memory store; a file-backed store derives a
         #: sibling ``blobs/`` directory automatically so spill "just works" (ADR-0004).
         self._blobs = blobs
-        #: Set when write-time redaction is on (ADR-0028): sensitive values are scrubbed
+        #: Set when write-time redaction is on (ADR-0029): sensitive values are scrubbed
         #: on the recording path, so they never reach SQLite or a blob. ``None`` — the
         #: default — records verbatim and leaves redaction to the read path (ADR-0009).
         self._write_redactor = write_redactor
@@ -150,7 +150,7 @@ class SQLiteStore:
         transparently on read); ``":memory:"`` stays spill-free. Pass ``blobs`` to
         override.
 
-        ``write_redaction`` selects the ADR-0028 recording-path mode, resolved explicit →
+        ``write_redaction`` selects the ADR-0029 recording-path mode, resolved explicit →
         ``SATAY_WRITE_REDACTION`` → :attr:`~satay.config.WriteRedaction.OFF`. With it on,
         the store scrubs sensitive values *before* they are serialized or spilled, so the
         redacted form is what the journal holds and what the run resumes against. Pass
@@ -175,7 +175,7 @@ class SQLiteStore:
 
     @property
     def write_redaction_enabled(self) -> bool:
-        """Whether this store redacts sensitive values on the write path (ADR-0028)."""
+        """Whether this store redacts sensitive values on the write path (ADR-0029)."""
         return self._write_redactor is not None
 
     def close(self) -> None:
@@ -267,7 +267,7 @@ class SQLiteStore:
         Three steps, in this order:
 
         1. **Encode** to the JSON-compatible tagged form (ADR-0005).
-        2. **Redact**, when write-time redaction is on (ADR-0028) — scoped to the
+        2. **Redact**, when write-time redaction is on (ADR-0029) — scoped to the
            ``*_ref`` value slots, so the structural fields replay reads (``task_name``,
            ``ordinal``, ``key``, ``identity``, ids) are handed through untouched.
         3. **Spill** over-threshold values to blobs (N19), replacing them with a
@@ -301,7 +301,7 @@ class SQLiteStore:
         on resume and on fork (:mod:`satay.timers`, :mod:`satay.control.commands`), so
         redacting it changes what the workflow body computes from past the replay
         frontier. That is the intended semantics of the mode — the redacted form is what
-        the run resumes against (ADR-0026/0028) — but it is worth saying out loud once
+        the run resumes against (ADR-0026/0029) — but it is worth saying out loud once
         per run, because the fix is to fetch the secret inside a task rather than pass it
         as workflow input.
         """
@@ -313,7 +313,7 @@ class SQLiteStore:
             return
         _LOG.warning(
             "write_redaction: redacted the workflow input of run %s; the run will resume "
-            "and fork from the redacted value, not the original (ADR-0028). Pass secrets "
+            "and fork from the redacted value, not the original (ADR-0029). Pass secrets "
             "to a task, or fetch them inside one, rather than as workflow input.",
             run_id,
         )
@@ -434,7 +434,7 @@ class SQLiteStore:
 
         ``payload_ref`` is a value slot in its own column — the same indirection the
         journal's ``event_ref`` uses — so write-time redaction scrubs it here too
-        (ADR-0028). The waiting workflow is then delivered the redacted form, and the
+        (ADR-0029). The waiting workflow is then delivered the redacted form, and the
         ``ExternalEventReceived`` the engine copies it into is already clean. Matching
         keys on ``(event_type, key)``, both structural and both untouched.
         """

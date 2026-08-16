@@ -85,7 +85,7 @@ Two ADRs set what Satay is aiming at, and they change what counts as important:
   user. The paid tier is tier-1 hosting only (journal ingest, retention, hosted
   Studio, team sharing, cost reporting), **after** the `0.1.0` launch, never hosted
   execution. One requirement landed early: **write-time redaction**, built in
-  [ADR-0028](docs/adr/0028-write-time-redaction.md) — `SATAY_WRITE_REDACTION=on` /
+  [ADR-0029](docs/adr/0029-write-time-redaction.md) — `SATAY_WRITE_REDACTION=on` /
   `SQLiteStore.open(..., write_redaction="on")`, **off by default**, slot-scoped to
   the `*_ref` value fields so replay identity is untouched. Read-time redaction is
   still the default and still protects only the API response. The seam only: there

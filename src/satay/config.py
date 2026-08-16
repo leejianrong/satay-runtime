@@ -29,7 +29,7 @@ NONDETERMINISM_ENV_VAR = "SATAY_NONDETERMINISM"
 #: Environment variable providing the project-level version-mismatch policy (ADR-0023).
 VERSION_MISMATCH_ENV_VAR = "SATAY_VERSION_MISMATCH"
 
-#: Environment variable providing the project-level write-time redaction mode (ADR-0028).
+#: Environment variable providing the project-level write-time redaction mode (ADR-0029).
 WRITE_REDACTION_ENV_VAR = "SATAY_WRITE_REDACTION"
 
 
@@ -148,7 +148,7 @@ class VersionMismatchPolicy(StrEnum):
 
 
 class WriteRedaction(StrEnum):
-    """Whether the journal store redacts sensitive values **on write** (ADR-0028).
+    """Whether the journal store redacts sensitive values **on write** (ADR-0029).
 
     In :attr:`OFF` (the default) the runtime records values verbatim and the
     :class:`~satay.redaction.Redactor` runs only on the read path (ADR-0009/0014): the raw
@@ -163,7 +163,7 @@ class WriteRedaction(StrEnum):
     ``input_ref`` re-enters the workflow as the placeholder (the store logs a warning
     when that happens). Replay *identity* is untouched either way — write-time redaction
     is scoped to :data:`~satay.redaction.VALUE_REF_FIELDS` and never rewrites the
-    ``task_name``/``ordinal``/``key`` fields identity is derived from (ADR-0002/0028).
+    ``task_name``/``ordinal``/``key`` fields identity is derived from (ADR-0002/0029).
 
     Two modes, not the ``off``/``warn``/``strict`` triple of the policy enums above: this
     is not a check that can pass or fail, it is a choice about what gets written.
@@ -227,7 +227,7 @@ def resolve_version_mismatch(
 def resolve_write_redaction(override: str | WriteRedaction | None = None) -> WriteRedaction:
     """Resolve the write-time redaction mode: explicit ``override`` then env var then default.
 
-    The default is :attr:`WriteRedaction.OFF` (ADR-0028): read-time redaction stays the
+    The default is :attr:`WriteRedaction.OFF` (ADR-0029): read-time redaction stays the
     default for the local case, and nothing changes about what a local run records unless
     the operator asks for it. :meth:`satay.journal.store.SQLiteStore.open` calls this, so
     ``SATAY_WRITE_REDACTION=on`` reaches every store the runtime opens — ``satay.start``'s

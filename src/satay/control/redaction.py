@@ -1,7 +1,7 @@
 """Read-time redaction of sensitive fields (N18) — re-export of :mod:`satay.redaction`.
 
 The redactor itself moved to the core module :mod:`satay.redaction` when write-time
-redaction landed (ADR-0026 decision 4, ADR-0028): the write path is the journal store,
+redaction landed (ADR-0026 decision 4, ADR-0029): the write path is the journal store,
 which is core (A3) and must not import the control package (A7/A8). This module stays as
 the read-path spelling — :class:`satay.control.api.ReadAPI` applies the redactor as the
 final transform to *every* read response, so there is no path that returns a run's data
@@ -18,7 +18,16 @@ from satay.redaction import (
     DEFAULT_REDACTION_PATTERNS,
     REDACTED,
     VALUE_REF_FIELDS,
+    VALUE_REF_SUFFIX,
     Redactor,
+    is_value_slot,
 )
 
-__all__ = ["DEFAULT_REDACTION_PATTERNS", "REDACTED", "VALUE_REF_FIELDS", "Redactor"]
+__all__ = [
+    "DEFAULT_REDACTION_PATTERNS",
+    "REDACTED",
+    "VALUE_REF_FIELDS",
+    "VALUE_REF_SUFFIX",
+    "Redactor",
+    "is_value_slot",
+]

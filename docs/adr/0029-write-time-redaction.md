@@ -1,4 +1,4 @@
-# ADR-0028 — Write-time redaction: slot-scoped, off by default, redacted-is-authoritative
+# ADR-0029 — Write-time redaction: slot-scoped, off by default, redacted-is-authoritative
 
 - **Status:** Accepted
 - **Date:** 2026-08-16
@@ -35,11 +35,11 @@ Two facts about the existing design decide most of this:
    or `(task_name, key)` for a fan-out item (ADR-0002). The idempotency key is derived
    from `(run_id, task_name, ordinal_or_map_key)` and *deliberately excludes arguments*.
    Detection compares the durable-call **schedule**, not arguments (ADR-0003/0022).
-2. **Values already live in their own slots.** ADR-0004 puts every value behind
-   `input_ref` / `output_ref` / `event_ref` indirection (and the inbox's `payload_ref`
-   column) so the envelope stays schema-stable. Everything else in a payload —
-   `task_name`, `ordinal`, `key`, `identity`, `code_version`, `child_run_id`, `attempt`,
-   timer ids — is runtime bookkeeping.
+2. **Values already live in their own slots.** ADR-0004 puts every value behind `*_ref`
+   indirection — `input_ref`, `output_ref`, `event_ref`, `source_input_ref`, and the
+   inbox's `payload_ref` column — so the envelope stays schema-stable. Everything else in
+   a payload — `task_name`, `ordinal`, `key`, `identity`, `code_version`, `child_run_id`,
+   `attempt`, `error`, timer ids — is runtime bookkeeping.
 
 Those two facts do not overlap. That is the whole opening.
 
@@ -57,14 +57,35 @@ Two modes, not the `off`/`warn`/`strict` triple of `EffectSafety`,
 `NondeterminismPolicy` and `VersionMismatchPolicy`. Those are checks that can pass or
 fail. This is a choice about what gets written, and there is no third thing to do.
 
-**2. Redaction is slot-scoped.** When the mode is on, the store applies the redactor to
-the `input_ref` / `output_ref` / `event_ref` slots of an encoded event payload and to the
-inbox's `payload_ref` column — `VALUE_REF_FIELDS` in `satay.redaction` — and to nothing
-else. Structural fields are handed through byte-identical whatever the pattern set says.
-This is the replay-identity guarantee, and it is structural rather than a promise about
-the default pattern list: even a deliberately hostile pattern set (`Redactor(["key"])`,
-`Redactor(["name"])`) cannot reach the fields identity is derived from, so a redacted
-journal resolves exactly the same calls in exactly the same order as an unredacted one.
+**2. Redaction is slot-scoped, and the scope is a naming rule rather than a list.** When
+the mode is on, the store applies the redactor to every payload field whose name ends in
+`_ref`, plus the inbox's `payload_ref` column, and to nothing else. Structural fields are
+handed through byte-identical whatever the pattern set says. This is the replay-identity
+guarantee, and it is structural rather than a promise about the default pattern list: even
+a deliberately hostile pattern set (`Redactor(["key"])`, `Redactor(["name"])`) cannot reach
+the fields identity is derived from, so a redacted journal resolves exactly the same calls
+in exactly the same order as an unredacted one.
+
+The scope is `is_value_slot()` — a suffix test — and not the `VALUE_REF_FIELDS` set, which
+is kept only as documentation of the slots that exist today (`input_ref`, `output_ref`,
+`event_ref`, `source_input_ref`). A hand-maintained list is the part that rots: a later
+slice that adds an event type carrying a new `*_ref` would need someone to remember, and
+the failure of forgetting is a secret in the store — silent, and visible only to whoever
+ends up holding the journal. The suffix already *is* the convention ADR-0004 established
+for value indirection, so following it costs nothing and closes the gap by default. A
+false positive is harmless in the other direction: a structural `*_ref` holding a plain
+string id has no field name inside it to match, so the redactor returns it unchanged.
+
+**The `error` payload is deliberately not a value slot.** `TaskAttemptFailed` and
+`TaskFailed` (ADR-0027) carry `{type, message, traceback}`, three runtime-generated
+strings. None of those *names* can match a pattern, so including them would protect
+nothing — while a custom pattern set that *did* match `type` would rewrite the
+`error_type` a collect-mode workflow branches on, and that value is read back out of the
+journal on replay. Redacting it would manufacture precisely the first-pass-versus-replay
+divergence ADR-0027 exists to prevent. So `error` sits on the replay-load-bearing side of
+the line with `task_name` and `key`, not on the value side. The residual exposure — a
+secret interpolated into an exception message — is real, and is the same content-scanning
+gap called out below; it is not closed by moving this field.
 
 **3. It runs before spill, not after.** Order on the write path is encode → redact →
 spill. A redacted value must never reach a blob file either, and once redacted the value
@@ -121,6 +142,15 @@ FastAPI-free by accident (ADR-0013/0016).
   run is a no-op (the placeholder redacts to itself) and forking an *unredacted* run with
   the mode on yields a redacted fork. Turning the mode on never rewrites history — the
   journal is append-only, and an existing run keeps whatever it already recorded.
+- **`satay.fork(..., workflow_input=...)` is redacted on the way in** (ADR-0028). The
+  override is written into the fork's `WorkflowCreated` rather than passed at drive time,
+  precisely so it is durable — which means it goes through the recording path and is
+  scrubbed like any other input, and the resume-seed warning fires naming the *fork's* run
+  id. That is the correct outcome: a fork whose new input escaped redaction would be a
+  second way into the store, and "fork the run and hand it the real key" is exactly the
+  thing an operator must not be able to do by accident. `RunForked`'s `source_input_ref`
+  — the input the override replaced — is covered by the suffix rule for the same reason,
+  and would have been missed by a hand-maintained list.
 - Decision 6 in ADR-0026 (a versioned ingest contract) is untouched and still owed. So is
   the "could a non-Satay producer send us a journal?" design test — slot-scoping is
   Satay-specific knowledge, so a producer that is not Satay must redact before it ships,

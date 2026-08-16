@@ -1,4 +1,4 @@
-"""Unit tests: the write-redaction mode knob and slot-scoped redaction (ADR-0028).
+"""Unit tests: the write-redaction mode knob and slot-scoped redaction (ADR-0029).
 
 The knob resolves like every other project setting (override → env var → default), and
 the slot-scoped transform is where the replay-identity guarantee lives: structural fields
@@ -16,7 +16,7 @@ from satay.config import (
     WriteRedaction,
     resolve_write_redaction,
 )
-from satay.redaction import REDACTED, VALUE_REF_FIELDS, Redactor
+from satay.redaction import REDACTED, VALUE_REF_FIELDS, Redactor, is_value_slot
 
 
 def test_default_is_off_so_read_time_stays_the_local_default() -> None:
@@ -55,7 +55,48 @@ def test_other_policy_env_vars_do_not_turn_it_on(monkeypatch: pytest.MonkeyPatch
 
 
 def test_value_slots_are_the_ref_indirection_fields() -> None:
-    assert set(VALUE_REF_FIELDS) == {"input_ref", "output_ref", "event_ref"}
+    assert set(VALUE_REF_FIELDS) == {
+        "input_ref",
+        "output_ref",
+        "event_ref",
+        "source_input_ref",
+    }
+    assert all(is_value_slot(field) for field in VALUE_REF_FIELDS)
+
+
+def test_the_rule_is_the_suffix_so_a_future_ref_slot_is_covered_by_default() -> None:
+    """A new event type carrying a `*_ref` gets redaction without anyone remembering."""
+    assert is_value_slot("some_future_ref")
+    assert not is_value_slot("task_name")
+    assert not is_value_slot("refresh")  # a substring is not a suffix
+
+
+def test_the_error_payload_is_not_a_value_slot() -> None:
+    """`TaskFailed`'s error is replay-load-bearing under ADR-0027 — never rewritten."""
+    assert not is_value_slot("error")
+    hostile = Redactor(patterns=["type", "message", "traceback"])
+    payload = {
+        "task_name": "draft",
+        "key": "b",
+        "error": {"type": "ValueError", "message": "boom", "traceback": "Traceback..."},
+    }
+    out = hostile.redact_value_slots(payload)
+    assert out["error"] == payload["error"]
+
+
+def test_a_forks_source_input_is_redacted_too() -> None:
+    """`RunForked.source_input_ref` is the input an override replaced (ADR-0028)."""
+    out = Redactor().redact_value_slots(
+        {
+            "source_run_id": "r1",
+            "fork_point_seq": 3,
+            "input_overridden": True,
+            "source_input_ref": {"api_key": "sk-live"},
+        }
+    )
+    assert out["source_input_ref"] == {"api_key": REDACTED}
+    assert out["source_run_id"] == "r1"
+    assert out["fork_point_seq"] == 3
 
 
 def test_slot_scoped_redaction_masks_values_and_keeps_structure() -> None:

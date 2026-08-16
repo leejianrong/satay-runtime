@@ -1,4 +1,4 @@
-"""End-to-end acceptance tests for write-time redaction (KAN-653, ADR-0028).
+"""End-to-end acceptance tests for write-time redaction (KAN-653, ADR-0029).
 
 Driven through the primary seam (ADR-0011): the public ``satay.start`` / ``send_event``
 API against a temp-file ``SQLiteStore``, with the ``FaultInjector`` crash hook for the
@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from satay.api.decorators import task, workflow
+from satay.api.fork import fork
 from satay.api.primitives import map as durable_map
 from satay.api.primitives import send_event, sleep, start, wait_for_event
 from satay.config import WRITE_REDACTION_ENV_VAR
@@ -30,6 +31,7 @@ from satay.control.api import ReadAPI
 from satay.journal.events import EventType, RunStatus
 from satay.journal.store import SQLiteStore
 from satay.redaction import REDACTED, Redactor
+from satay.replay.failures import TaskFailedError
 from satay.testing.clock import ManualClock
 from satay.testing.faults import FaultInjector, SimulatedCrash
 from satay.timers import TimerEventWorker
@@ -106,6 +108,33 @@ async def wr_await_approval(_: Any = None) -> str:
 
 
 @task()
+async def wr_maybe_fail(item: dict[str, Any]) -> dict[str, Any]:
+    EXECUTIONS[f"wr_maybe_fail:{item['id']}"] += 1
+    if item["id"] == "bad":
+        raise ValueError("could not reach the provider")
+    return {"id": item["id"], "api_key": SECRET}
+
+
+@workflow
+async def wr_collect(_: Any = None) -> list[str]:
+    """Collect mode (ADR-0027): the failure is *recorded* as `TaskFailed`, not raised."""
+    results = await durable_map(
+        wr_maybe_fail,
+        [{"id": "ok"}, {"id": "bad"}],
+        key=lambda i: str(i["id"]),
+        concurrency=1,
+        return_exceptions=True,
+    )
+    return [r.error_type if isinstance(r, TaskFailedError) else str(r["id"]) for r in results]
+
+
+@workflow
+async def wr_from_input(payload: dict[str, Any]) -> str:
+    used = await wr_use_credentials({"label": payload["label"]})
+    return f"{used}|{payload['api_key']}"
+
+
+@task()
 async def wr_bulk(_: str) -> dict[str, str]:
     EXECUTIONS["wr_bulk"] += 1
     return {"api_key": "S" * 300_000}  # over SPILL_THRESHOLD_BYTES once encoded
@@ -129,6 +158,18 @@ def raw_payloads(db: Path) -> str:
     finally:
         conn.close()
     return "".join(r[0] for r in rows) + "".join(r[0] for r in inbox)
+
+
+def run_payloads(db: Path, run_id: str) -> str:
+    """Every stored payload of one run, straight from the file."""
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT payload_json FROM events WHERE run_id = ? ORDER BY seq", (run_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return "".join(r[0] for r in rows)
 
 
 def blob_bytes(data_dir: Path) -> bytes:
@@ -305,7 +346,7 @@ async def test_fan_out_identity_survives_a_pattern_set_aimed_at_it(temp_db_path:
 async def test_a_redacted_workflow_input_warns_and_the_run_resumes_from_the_placeholder(
     temp_db_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The documented sharp edge (ADR-0028 decisions 4 and 5): the seed is redacted too.
+    """The documented sharp edge (ADR-0029 decisions 4 and 5): the seed is redacted too.
 
     The first drive still sees the caller's live value — redaction is about the record.
     The wake after the park re-enters the workflow from the *journal*, and that is the
@@ -341,6 +382,107 @@ async def test_no_warning_when_the_workflow_input_holds_nothing_sensitive(
     store.close()
 
 
+async def test_a_collected_failure_keeps_its_error_intact_across_replay(
+    temp_db_path: Path,
+) -> None:
+    """`TaskFailed`'s error is not a value slot, and must not become one (ADR-0027).
+
+    A collect-mode failure is recorded and then read back on replay, so the recorded
+    `error_type` is what a workflow branching on the collected error sees on every pass.
+    Redacting it would manufacture a first-pass-versus-replay divergence — the exact bug
+    ADR-0027 exists to prevent — so the error rides through untouched even under a
+    pattern set aimed at its field names.
+    """
+    hostile = Redactor(patterns=["api_key", "type", "message", "traceback"])
+    store = SQLiteStore.open(temp_db_path, write_redaction="on", redactor=hostile)
+    injector = FaultInjector()
+    injector.crash_after("TaskFailed")  # die once the failure is durably recorded
+
+    handle = start(wr_collect, store=store, injector=injector)
+    with pytest.raises(SimulatedCrash):
+        await handle.result()
+
+    resumed = start(wr_collect, run_id=handle.run_id, store=store)
+    assert await resumed.result() == ["ok", "ValueError"]  # the replayed error, verbatim
+    # Both items ran exactly once: the completion and the failure were both replay hits.
+    assert [EXECUTIONS[f"wr_maybe_fail:{i}"] for i in ("ok", "bad")] == [1, 1]
+
+    events = await store.read_events(handle.run_id)
+    failed = next(e for e in events if e.type is EventType.TASK_FAILED)
+    assert failed.payload["key"] == "bad"  # identity untouched
+    assert failed.payload["error"]["type"] == "ValueError"  # ...and so is the error
+    assert failed.payload["error"]["message"] == "could not reach the provider"
+    # The task's *output* slot is still redacted for the item that succeeded.
+    completed = next(e for e in events if e.type is EventType.TASK_COMPLETED)
+    assert completed.payload["output_ref"] == {"id": "ok", "api_key": REDACTED}
+    store.close()
+
+    assert SECRET not in raw_payloads(temp_db_path)
+
+
+# -- fork (ADR-0028) --------------------------------------------------------------
+
+
+async def test_forking_a_write_redacted_run_stays_redacted(temp_db_path: Path) -> None:
+    store = SQLiteStore.open(temp_db_path, write_redaction="on")
+    source = start(wr_two_step, "acct-1", store=store)
+    assert await source.result() == "used:acct-1"
+
+    forked = await fork(source.run_id, before_task="wr_use_credentials", store=store)
+    assert await forked.result() == "used:acct-1"
+    store.close()
+
+    assert SECRET not in raw_payloads(temp_db_path)
+
+
+async def test_a_fork_input_override_is_redacted_on_the_way_in(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`workflow_input=` is written into the fork's journal, so it goes through redaction.
+
+    Also pins `RunForked.source_input_ref` — the input the override replaced. It is a
+    value slot by the suffix rule and would have been missed by a hand-maintained list,
+    which is the whole reason the rule is a suffix.
+    """
+    other_secret = "sk-live-a-different-secret"
+
+    # The source run predates the mode, so its journal holds the raw value.
+    plain = SQLiteStore.open(temp_db_path)
+    source = start(wr_from_input, {"api_key": SECRET, "label": "a"}, store=plain)
+    assert await source.result() == f"used:a|{SECRET}"
+    plain.close()
+    assert SECRET in raw_payloads(temp_db_path)
+
+    # Reopen with the mode on and fork it under a new input.
+    store = SQLiteStore.open(temp_db_path, write_redaction="on")
+    with caplog.at_level(logging.WARNING, logger="satay"):
+        forked = await fork(
+            source.run_id,
+            before_task="wr_use_credentials",
+            workflow_input={"api_key": other_secret, "label": "b"},
+            store=store,
+        )
+        # The fork re-enters from its own recorded input, which is now the placeholder.
+        assert await forked.result() == f"used:b|{REDACTED}"
+
+    warnings = [r.getMessage() for r in caplog.records if "write_redaction" in r.getMessage()]
+    assert len(warnings) == 1
+    assert forked.run_id in warnings[0]
+
+    events = list(await store.read_events(forked.run_id))
+    created = next(e for e in events if e.type is EventType.WORKFLOW_CREATED)
+    assert created.payload["input_ref"] == {"api_key": REDACTED, "label": "b"}
+    lineage = next(e for e in events if e.type is EventType.RUN_FORKED)
+    assert lineage.payload["input_overridden"] is True
+    assert lineage.payload["source_input_ref"] == {"api_key": REDACTED, "label": "a"}
+    store.close()
+
+    # Neither secret is anywhere in the fork's own events.
+    forked_payloads = run_payloads(temp_db_path, forked.run_id)
+    assert SECRET not in forked_payloads
+    assert other_secret not in forked_payloads
+
+
 # -- the other two write paths ----------------------------------------------------
 
 
@@ -361,7 +503,7 @@ async def test_a_delivered_event_is_redacted_in_the_inbox_and_the_journal(
 
 
 async def test_redaction_runs_before_spill_so_no_blob_holds_the_secret(tmp_path: Path) -> None:
-    """Order matters: encode → redact → spill (ADR-0028 decision 3).
+    """Order matters: encode → redact → spill (ADR-0029 decision 3).
 
     A payload over ``SPILL_THRESHOLD_BYTES`` normally lands in a content-addressed blob
     file. Redacting after the spill would leave the real bytes on disk under a hash, out

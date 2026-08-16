@@ -192,7 +192,7 @@ queue and applied by the worker (ADR-0012). The redactor is a read-time transfor
 applied to every response, and the surface is guarded by a per-session token plus an
 `Origin`/`Host` allow-list (ADR-0014). The same redactor (now the core module
 `satay.redaction`) also has an opt-in **write-time** mode on the journal store, off by
-default, for the case where the journal itself leaves the machine (ADR-0026/0028). The whole stack ships in the `satay[studio]`
+default, for the case where the journal itself leaves the machine (ADR-0026/0029). The whole stack ships in the `satay[studio]`
 extra, not the core (ADR-0013). FastAPI emits OpenAPI, but the JSON contract is unversioned
 in the MVP since the server and Studio ship together (ADR-0018).
 
