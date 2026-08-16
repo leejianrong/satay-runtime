@@ -314,14 +314,28 @@ call shows the sum.
    retries, since a task that returns is a task that succeeded.
 ```
 
-Same [ADR-0020](../decisions.md) fail-fast rule as the [ELT pipeline](elt-pipeline.md), with a
-worse bill attached. Two research answers committed. They are on the journal, they cost real money,
-and the run is terminal so nothing can reach them.
+Same [ADR-0020](../decisions.md) fail-fast **default** as the [ELT pipeline](elt-pipeline.md), with
+a worse bill attached. Two research answers committed. They are on the journal, they cost real
+money, and the run is terminal so nothing can reach them.
 
 For a research fan-out, "two of three answered, write it up anyway" is almost always the result you
-wanted. Satay will not give it to you. The workaround is the same one, and so is its price: swallow
-the failure inside the task and return a sentinel, and you give up the retries that would have
-rescued a transient error, because a task that returns is a task that succeeded.
+wanted — and this transcript is a large part of why
+[collect mode](../primitives.md#failure-fail-fast-or-collect) exists
+([ADR-0027](../decisions.md)):
+
+```python
+answers = await satay.map(
+    research, questions, key=lambda q: q.qid, return_exceptions=True
+)
+usable = [a for a in answers if not isinstance(a, Exception)]
+```
+
+The two paid-for answers come back, the run completes, and the dead source is recorded as a
+terminal `TaskFailed` next to the three billed `TaskAttemptFailed` events — so it still prices
+itself and Studio still shows the money it burned. What you must **not** do is the old workaround:
+swallow the failure inside the task and return a sentinel. That gives up the retries that would
+have rescued a transient error (a task that returns is a task that succeeded) and hides the failure
+from the journal entirely.
 
 ## Part 4: Fork Under A Sharper Prompt
 
@@ -443,8 +457,9 @@ curl -s -H "X-Satay-Token: $SATAY_TOKEN" \
   $0.2492 on a run that failed. Record usage at the moment of the charge, before the parse that can
   reject the answer, and `model_usage()` gives you the total rather than a floor. Only an
   *abandoned* attempt — worker death mid-call — goes unpriced.
-- Fail-fast fan-out costs more when the siblings are paid calls. Committed answers survive on the
-  journal but a terminal run cannot reach them.
+- Fail-fast fan-out costs more when the siblings are paid calls: committed answers survive on the
+  journal but a terminal run cannot reach them. `return_exceptions=True` hands them back instead,
+  and still records the dead source as a terminal `TaskFailed`.
 - Forking replays everything before the fork point off the journal, so prompt iteration costs one
   call. Change data freely; changing the durable-call schedule raises `NondeterminismError`.
 

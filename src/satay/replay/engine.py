@@ -47,7 +47,8 @@ import inspect
 import logging
 import traceback
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, get_type_hints
 
@@ -67,6 +68,7 @@ from satay.journal.events import (
     TimerStatus,
 )
 from satay.replay.driver import CURRENT_DRIVER
+from satay.replay.failures import TaskFailedError
 from satay.replay.identity import (
     CallIdentity,
     IdentityResolver,
@@ -85,6 +87,15 @@ if TYPE_CHECKING:
 DEFAULT_MAP_CONCURRENCY = 8
 
 _LOG = logging.getLogger("satay")
+
+#: Whether the durable call about to run sits inside a ``return_exceptions=True``
+#: composite (ADR-0027). Set at each composite boundary — ``durable_map`` and
+#: ``durable_gather`` both assign their own mode before creating member tasks — monotonically,
+#: so a fail-fast composite nested inside a collect one still records its failures, because
+#: the enclosing collect composite is what makes them survivable. A ``ContextVar`` rather
+#: than an engine attribute because fan-out members run as concurrent asyncio tasks,
+#: which copy the context at creation, and two composites can be in flight at once.
+_COLLECTING: ContextVar[bool] = ContextVar("satay_collecting", default=False)
 
 
 class WorkflowParked(BaseException):
@@ -169,6 +180,10 @@ class ReplayEngine:
         self._max_attempt: dict[CallIdentity, int] = {}
         #: Recorded ``TaskAttemptFailed`` count per identity (consumes the retry budget).
         self._failures: dict[CallIdentity, int] = {}
+        #: Identities with a recorded terminal ``TaskFailed`` → its payload (ADR-0027).
+        #: The failure-side twin of ``self._completed``: a hit re-raises rather than
+        #: re-executing, so a collected failure is once-recorded like a completion.
+        self._failed: dict[CallIdentity, Mapping[str, Any]] = {}
 
         # -- durable-primitive (V3) replay state ---------------------------------
         #: Per-drive ordinals for durable primitives, keyed by a synthetic name
@@ -217,6 +232,9 @@ class ReplayEngine:
             elif event.type is EventType.TASK_COMPLETED:
                 identity = CallIdentity.from_payload(payload)
                 self._completed[identity] = payload["output_ref"]
+            elif event.type is EventType.TASK_FAILED:
+                identity = CallIdentity.from_payload(payload)
+                self._failed[identity] = dict(payload)
             elif event.type is EventType.CHILD_WORKFLOW_SCHEDULED:
                 identity = CallIdentity.from_payload(payload)
                 self._children_scheduled[identity] = payload["child_run_id"]
@@ -256,6 +274,10 @@ class ReplayEngine:
         if identity in self._completed:
             # Hit: rehydrate the recorded result; do NOT execute the task.
             return rehydrate(self._completed[identity], _return_annotation(definition.fn))
+        if identity in self._failed:
+            # Hit on the failure side (ADR-0027): a recorded ``TaskFailed`` is terminal
+            # for this logical call, so re-raise it instead of paying for the task again.
+            raise _task_failure_error(self._failed[identity])
 
         # Miss (clean or ambiguous-in-flight): enforce effect safety, then schedule +
         # execute. A recorded TaskScheduled is not re-appended (mid-task crash).
@@ -276,16 +298,64 @@ class ReplayEngine:
             self._scheduled.add(identity)
 
         key = idempotency_key(self._run_id, identity.task_name, identity.key_component)
-        return await self._executor.execute(
-            run_id=self._run_id,
-            definition=definition,
-            identity=identity,
-            args=args,
-            kwargs=kwargs,
-            key=key,
-            prior_attempts=self._max_attempt.get(identity, 0),
-            prior_failures=self._failures.get(identity, 0),
-        )
+        return await self._execute(definition, identity, args, kwargs, key)
+
+    async def _execute(
+        self,
+        definition: TaskDefinition,
+        identity: CallIdentity,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        key: str,
+    ) -> Any:
+        """Hand a missed durable call to the executor, recording a *collected* failure.
+
+        Under fail-fast (the default) this is a bare delegation and the executor's
+        re-raise flows on to ``drive``, which records ``WorkflowFailed`` — unchanged.
+
+        Inside a ``return_exceptions=True`` composite the run is going to *survive* this
+        failure, so retry exhaustion has to become a durable fact of its own: append
+        ``TaskFailed`` before letting the composite collect it (ADR-0027). Without that
+        event the journal would hold a task with attempts and no terminal record, and any
+        later resume would treat it as a miss and re-run a task that already spent its
+        whole retry budget.
+        """
+        try:
+            return await self._executor.execute(
+                run_id=self._run_id,
+                definition=definition,
+                identity=identity,
+                args=args,
+                kwargs=kwargs,
+                key=key,
+                prior_attempts=self._max_attempt.get(identity, 0),
+                prior_failures=self._failures.get(identity, 0),
+            )
+        except Exception as exc:
+            if isinstance(exc, _PROPAGATE) or not _COLLECTING.get():
+                raise
+            payload: dict[str, Any] = {
+                **identity.payload_fields(),
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "traceback": "".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ),
+                },
+            }
+            await self._commit(
+                Event(
+                    run_id=self._run_id,
+                    type=EventType.TASK_FAILED,
+                    payload=payload,
+                    ts=self._clock.now(),
+                )
+            )
+            self._failed[identity] = payload
+            # Always the same type as the replay hit above, so a workflow that branches
+            # on the collected error behaves identically on every pass (ADR-0027).
+            raise _task_failure_error(payload) from exc
 
     # -- durable primitives (V3, N5) ---------------------------------------------
 
@@ -484,6 +554,7 @@ class ReplayEngine:
         items: Iterable[Any],
         key_fn: Callable[[Any], str] | None,
         concurrency: int,
+        return_exceptions: bool = False,
     ) -> list[Any]:
         """Durable fan-out of ``definition`` over ``items``, keyed by ``key_fn`` (A6.1).
 
@@ -491,9 +562,13 @@ class ReplayEngine:
         consults the journal — a recorded completion is reused, a miss executes — so on
         resume mid-fan-out only unresolved items re-run (design rule 2). Up to
         ``concurrency`` items run at once on the asyncio loop (a bounded semaphore), and
-        results rejoin in **input order** regardless of completion order. Fail-fast per
-        ADR-0020: a failed item raises through the ``map`` and in-flight siblings settle
-        with their results discarded.
+        results rejoin in **input order** regardless of completion order.
+
+        Fail-fast by default (ADR-0020): a failed item raises through the ``map`` and
+        in-flight siblings settle with their results discarded. With
+        ``return_exceptions=True`` (collect mode, ADR-0027) every item is allowed to
+        settle, each failure is recorded as its own terminal ``TaskFailed``, and the
+        failing slots hold a :class:`~satay.replay.failures.TaskFailedError`.
         """
         if concurrency < 1:
             raise ValueError("satay.map concurrency= must be >= 1")
@@ -502,7 +577,8 @@ class ReplayEngine:
         semaphore = asyncio.Semaphore(concurrency)
         #: Set when an item dies from a worker crash: a dead worker starts no new items,
         #: so queued items still behind the semaphore must not begin (their results would
-        #: never be reachable anyway — the composite is about to raise the crash).
+        #: never be reachable anyway — the composite is about to raise the crash). Note
+        #: an *ordinary* item failure never sets this, in either mode.
         aborted = asyncio.Event()
 
         async def run_item(item: Any, key: str) -> Any:
@@ -515,19 +591,53 @@ class ReplayEngine:
                     aborted.set()
                     raise
 
-        tasks = [asyncio.create_task(run_item(item, key)) for item, key in pairs]
-        return await self._settle_composite(tasks)
+        tasks = self._spawn_members(
+            [run_item(item, key) for item, key in pairs], collecting=return_exceptions
+        )
+        return await self._settle_composite(tasks, return_exceptions=return_exceptions)
 
-    async def durable_gather(self, awaitables: Sequence[Awaitable[Any]]) -> list[Any]:
+    async def durable_gather(
+        self, awaitables: Sequence[Awaitable[Any]], return_exceptions: bool = False
+    ) -> list[Any]:
         """Await heterogeneous durable calls together, rejoining **positionally** (A6.1).
 
         Members are ordinary durable awaitables — a task call, a nested ``map``, or a
         ``start_child`` (whose returned handle is transparently resolved to the child's
-        result). Each keeps its own identity; results rejoin in argument order. Fail-fast
-        per ADR-0020: one failing member fails the whole ``gather``.
+        result). Each keeps its own identity; results rejoin in argument order.
+
+        Fail-fast by default (ADR-0020): one failing member fails the whole ``gather``.
+        With ``return_exceptions=True`` (ADR-0027) every member settles and a failing
+        slot holds the deterministic error its member raised — a ``TaskFailedError`` for
+        a task, a ``WorkflowFailedError`` for a child run.
         """
-        tasks = [asyncio.create_task(self._resolve_member(a)) for a in awaitables]
-        return await self._settle_composite(tasks)
+        tasks = self._spawn_members(
+            [self._resolve_member(a) for a in awaitables], collecting=return_exceptions
+        )
+        return await self._settle_composite(tasks, return_exceptions=return_exceptions)
+
+    @staticmethod
+    def _spawn_members(
+        coros: list[Coroutine[Any, Any, Any]], *, collecting: bool
+    ) -> list[asyncio.Task[Any]]:
+        """Schedule fan-out members with this composite's collect mode bound to each.
+
+        ``asyncio.Task`` copies the current context at creation, so setting ``_COLLECTING``
+        around the spawn — and resetting it straight after — hands every member the mode
+        of *this* composite without leaking it to whatever the workflow does next.
+
+        The flag is **monotone**: a fail-fast composite nested inside a collect one stays
+        collecting, because the question the flag actually answers is not "which mode did
+        this call site ask for" but "is the run going to survive this failure". If some
+        enclosing composite is going to catch it, the failure is survivable and must
+        become a durable ``TaskFailed`` — otherwise a resume would re-run and re-pay for a
+        task that already spent its retry budget (ADR-0027). The inner composite still
+        *behaves* fail-fast: it raises, and its siblings' results are still discarded.
+        """
+        token = _COLLECTING.set(collecting or _COLLECTING.get())
+        try:
+            return [asyncio.create_task(coro) for coro in coros]
+        finally:
+            _COLLECTING.reset(token)
 
     async def _resolve_member(self, awaitable: Awaitable[Any]) -> Any:
         """Await a ``gather`` member; coerce a child :class:`RunHandle` to its result."""
@@ -538,17 +648,28 @@ class ReplayEngine:
             return await value.result()
         return value
 
-    async def _settle_composite(self, tasks: list[asyncio.Task[Any]]) -> list[Any]:
-        """Await fan-out tasks fail-fast (ADR-0020); a crash cancels in-flight siblings.
+    async def _settle_composite(
+        self, tasks: list[asyncio.Task[Any]], *, return_exceptions: bool = False
+    ) -> list[Any]:
+        """Settle fan-out tasks; a crash always cancels in-flight siblings.
 
-        Waits for the first exception, then: a :class:`SimulatedCrash` (or dev-time
-        divergence) models worker death — cancel the in-flight siblings so they record
-        nothing more and propagate the crash; an ordinary task failure lets siblings
-        settle (results discarded) then raises the **first failure in input order**.
+        Fail-fast (the default, ADR-0020) waits for the first exception, then: a
+        :class:`SimulatedCrash` (or dev-time divergence) models worker death — cancel the
+        in-flight siblings so they record nothing more and propagate the crash; an
+        ordinary task failure lets siblings settle (results discarded) then raises the
+        **first failure in input order**.
+
+        Collect mode (ADR-0027) waits for *every* member instead and returns results and
+        errors positionally. A crash is still not a member outcome: it aborts the
+        composite exactly as above, because a dead worker cannot honestly report on the
+        siblings it never finished.
         """
         if not tasks:
             return []
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        if return_exceptions:
+            await self._settle_all(tasks)
+        else:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
         crash = self._first_exception(tasks, propagate_only=True)
         if crash is not None:
@@ -557,6 +678,9 @@ class ReplayEngine:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise crash
+
+        if return_exceptions:
+            return [_settled_outcome(task) for task in tasks]
 
         if self._first_exception(tasks) is not None:
             # An ordinary member failed: let in-flight siblings settle, discard their
@@ -567,6 +691,20 @@ class ReplayEngine:
             raise failure
 
         return [task.result() for task in tasks]
+
+    async def _settle_all(self, tasks: list[asyncio.Task[Any]]) -> None:
+        """Wait for every member, returning early only when a member hits a crash.
+
+        ``FIRST_EXCEPTION`` fires on an ordinary collected failure too, so this loops
+        until nothing is pending — but it re-checks for an out-of-band crash after each
+        wake, so a :class:`SimulatedCrash` still aborts the composite promptly instead of
+        waiting on siblings a dead worker will never finish.
+        """
+        pending = set(tasks)
+        while pending:
+            _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+            if self._first_exception(tasks, propagate_only=True) is not None:
+                return
 
     @staticmethod
     def _first_exception(
@@ -586,6 +724,8 @@ class ReplayEngine:
 
         if identity in self._completed:
             return rehydrate(self._completed[identity], _return_annotation(definition.fn))
+        if identity in self._failed:
+            raise _task_failure_error(self._failed[identity])  # recorded terminal failure
 
         self._enforce_effect_safety(definition)
         if identity not in self._scheduled:
@@ -604,16 +744,7 @@ class ReplayEngine:
             self._scheduled.add(identity)
 
         idem = idempotency_key(self._run_id, identity.task_name, identity.key_component)
-        return await self._executor.execute(
-            run_id=self._run_id,
-            definition=definition,
-            identity=identity,
-            args=(item,),
-            kwargs={},
-            key=idem,
-            prior_attempts=self._max_attempt.get(identity, 0),
-            prior_failures=self._failures.get(identity, 0),
-        )
+        return await self._execute(definition, identity, (item,), {}, idem)
 
     async def durable_child(
         self,
@@ -836,6 +967,33 @@ class ReplayEngine:
             await self._store.set_status(self._run_id, RunStatus.COMPLETED)
         finally:
             CURRENT_DRIVER.reset(token)
+
+
+def _settled_outcome(task: asyncio.Task[Any]) -> Any:
+    """One collect-mode slot: the member's result, or the error it raised (ADR-0027)."""
+    if task.cancelled():  # pragma: no cover - only reachable on the crash path, which raises
+        return asyncio.CancelledError()
+    exception = task.exception()
+    return task.result() if exception is None else exception
+
+
+def _task_failure_error(payload: Mapping[str, Any]) -> TaskFailedError:
+    """Build the :class:`TaskFailedError` a recorded ``TaskFailed`` payload describes.
+
+    The single constructor for a collected task failure — used both when the failure is
+    first recorded and when replay reads it back — so the exception a workflow sees is
+    identical on every pass (ADR-0027).
+    """
+    error = payload.get("error", {})
+    ordinal = payload.get("ordinal")
+    return TaskFailedError(
+        payload["task_name"],
+        error.get("type", "Exception"),
+        error.get("message", ""),
+        error.get("traceback", ""),
+        key=payload.get("key"),
+        ordinal=None if ordinal is None else int(ordinal),
+    )
 
 
 def _child_failure_error(events: Sequence[Event]) -> Exception:

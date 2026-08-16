@@ -188,6 +188,7 @@ async def map(
     *,
     key: Callable[[Any], str] | None = None,
     concurrency: int = DEFAULT_MAP_CONCURRENCY,
+    return_exceptions: bool = False,
 ) -> list[Any]:
     """Durable fan-out of ``task`` over ``items``, keyed by ``key=`` (N5, A6.1).
 
@@ -197,28 +198,43 @@ async def map(
     on the asyncio loop; results rejoin in **input order** regardless of completion order.
     ``key=`` is required and must return a unique, stable, non-empty string per item
     (ADR-0002); a missing or duplicate key is a usage error raised at schedule time.
-    Fail-fast (ADR-0020): a failed item raises through the ``map``, in-flight siblings
-    settle but their results are discarded. Must be called inside a running workflow.
+
+    **Failure.** Fail-fast by default (ADR-0020): a failed item raises through the
+    ``map``, in-flight siblings settle but their results are discarded. Pass
+    ``return_exceptions=True`` for **collect mode** (ADR-0027): every item settles, the
+    returned list holds each item's result *or* a ``satay.TaskFailedError`` in its input
+    position, and each failure is recorded in the journal as its own terminal
+    ``TaskFailed`` event — so the runtime still sees the failure while the fan-out
+    survives. Collected errors are always ``TaskFailedError``, never the task's own
+    exception class, so the value is identical on replay.
+
+    Must be called inside a running workflow.
     """
     driver = CURRENT_DRIVER.get()
     if driver is None:
         raise RuntimeError("satay.map() must be called inside a @satay.workflow body")
-    return await driver.durable_map(_resolve_task(task), items, key, concurrency)
+    return await driver.durable_map(_resolve_task(task), items, key, concurrency, return_exceptions)
 
 
-async def gather(*awaitables: Awaitable[Any]) -> list[Any]:
-    """Durably await several durable calls concurrently; fail-fast (N5, A6.1).
+async def gather(*awaitables: Awaitable[Any], return_exceptions: bool = False) -> list[Any]:
+    """Durably await several durable calls concurrently (N5, A6.1).
 
     Awaits heterogeneous durable calls together — task calls, nested ``map`` calls, and
     ``start_child`` calls (whose returned handle is resolved to the child's result) — each
-    keeping its own identity, and rejoins results **positionally** in argument order. Per
-    ADR-0020 a single failed member fails the whole ``gather``. Must be called inside a
-    running workflow.
+    keeping its own identity, and rejoins results **positionally** in argument order.
+
+    **Failure.** Fail-fast by default (ADR-0020): a single failed member fails the whole
+    ``gather``. With ``return_exceptions=True`` (collect mode, ADR-0027) every member
+    settles and a failing slot holds the error it raised — ``satay.TaskFailedError`` for a
+    task (recorded as a terminal ``TaskFailed`` event), ``satay.WorkflowFailedError`` for
+    a child run (already terminal in the child's own journal).
+
+    Must be called inside a running workflow.
     """
     driver = CURRENT_DRIVER.get()
     if driver is None:
         raise RuntimeError("satay.gather() must be called inside a @satay.workflow body")
-    return await driver.durable_gather(awaitables)
+    return await driver.durable_gather(awaitables, return_exceptions)
 
 
 async def start_child(

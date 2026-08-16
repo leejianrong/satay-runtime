@@ -31,6 +31,8 @@ def test_public_surface_is_exported() -> None:
         "VersionMismatchError",
         # The error `await handle.result()` raises for a failed run (KAN-444).
         "WorkflowFailedError",
+        # The error a collect-mode fan-out puts in a failed slot (KAN-473, ADR-0027).
+        "TaskFailedError",
     }
     assert expected <= set(satay.__all__)
     for name in expected:

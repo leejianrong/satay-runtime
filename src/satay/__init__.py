@@ -38,6 +38,7 @@ from satay.api import (
     workflow,
 )
 from satay.api.run_handle import WorkflowFailedError
+from satay.replay.failures import TaskFailedError
 from satay.versioning import VersionMismatchError
 
 
@@ -86,6 +87,7 @@ __all__ = [
     "NondeterminismError",
     "RunHandle",
     "TaskContext",
+    "TaskFailedError",
     "VersionMismatchError",
     "WorkflowFailedError",
     "__version__",

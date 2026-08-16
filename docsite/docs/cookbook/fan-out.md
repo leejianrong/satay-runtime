@@ -199,21 +199,34 @@ async def crash_once_indexing(
 durable state written and the process gone. Passing `run_id=None` starts a fresh run; passing the
 existing id resumes it. Phase 3 does the same call with no injector at all.
 
-## Fan-Out Is Fail-Fast
+## What Happens When An Item Raises
 
 One thing this recipe does not show, because it is a happy-path demo: what happens when an item
 **raises**.
 
-A failed item raises through the `map`. In-flight siblings are allowed to settle, but their
-results are discarded and the run fails. There is no collect mode and no `return_exceptions=`
-([ADR-0020](../decisions.md)). If four of five documents indexed fine and the fifth raised, you
-get an exception, not four results and an error.
+By default the failed item raises through the `map`. In-flight siblings are allowed to settle, but
+their results are discarded and the run fails ([ADR-0020](../decisions.md)). If four of five
+documents indexed fine and the fifth raised, you get an exception, not four results and an error.
+Those four results *are* on the journal — the run is simply terminal, so a resume cannot reach
+them. The [ELT pipeline recipe](elt-pipeline.md) puts a number on what that costs: 300 KB of
+finished extraction stranded because one sibling raised.
 
-The results of the successful siblings *are* on the journal. The run is simply terminal, so a
-resume cannot reach them. That costs more than it sounds like, and the
-[ELT pipeline recipe](elt-pipeline.md) puts a number on it: 300 KB of finished extraction thrown
-away because one sibling raised, plus the only workaround there is today and what that workaround
-costs you.
+When you would rather have the four, add `return_exceptions=True`
+([ADR-0027](../decisions.md)):
+
+```python
+outcomes = await satay.map(
+    index_document, docs, key=lambda d: d["doc_id"], return_exceptions=True
+)
+indexed = [o for o in outcomes if not isinstance(o, Exception)]
+failed = [o.key for o in outcomes if isinstance(o, satay.TaskFailedError)]
+```
+
+Every item settles, each slot holds its result or a `satay.TaskFailedError` in input position, the
+run completes, and each failure is recorded in the journal as a terminal `TaskFailed` event next
+to its failed attempts — so the fifth document's failure is still a fact the runtime knows, not
+something buried in your return value. See
+[the primitives page](../primitives.md#failure-fail-fast-or-collect) for the full rules.
 
 ## Open It In Studio
 
@@ -242,8 +255,8 @@ got in each worker lifetime.
 - Results rejoin in input order regardless of completion order.
 - The default in-flight bound is 8. Setting `concurrency=1` is a demo trick for a deterministic
   crash point, not a recommendation.
-- Fan-out is fail-fast. One raising item fails the run, sibling results become unreachable, and
-  there is no collect mode.
+- Fan-out is fail-fast by default: one raising item fails the run and sibling results become
+  unreachable. `return_exceptions=True` collects instead, and still records each failure.
 
 Next: [An ELT Pipeline](elt-pipeline.md), which puts all of this into a nightly load and is
 honest about the parts that hurt.

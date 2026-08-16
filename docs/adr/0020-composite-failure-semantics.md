@@ -1,8 +1,15 @@
 # ADR-0020 — Failure semantics of map, gather, and child workflows
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0027](0027-collect-mode-fan-out.md)
 - **Date:** 2026-07-22
 - **Deciders:** Jian (leejianrong2@gmail.com)
+
+> **Superseded 2026-08-16 by [ADR-0027](0027-collect-mode-fan-out.md).** Fail-fast
+> survives as the **default** and the description below is still accurate for it. What
+> ADR-0027 overturns is the last paragraph of the Decision: collect mode is no longer
+> deferred. `map` and `gather` take `return_exceptions=True`, and a task failure a run
+> survives is recorded as a terminal `TaskFailed` event so it stays visible to the
+> runtime. Read ADR-0027 for the evidence (KAN-462/473) and the reasoning.
 
 ## Context
 
@@ -36,6 +43,7 @@ raised.
 A **collect-style** mode (gather everything, return results alongside exceptions, in the
 manner of `asyncio.gather(return_exceptions=True)`) is **deferred post-MVP**. It would
 be added as an explicit opt-in, never the default.
+*(Superseded: it landed as exactly that opt-in — see [ADR-0027](0027-collect-mode-fan-out.md).)*
 
 ## Consequences
 

@@ -26,10 +26,18 @@ being rendered in a browser tab; it is not encryption at rest.
 
 ## Execution
 
-**Fan-out is fail-fast only.** One failed item fails the whole `map`, `gather`, or child call, and
-sibling results are discarded even for items that had already finished. There is no collect mode and
-no `return_exceptions` (ADR-0020). If you need per-item outcomes, have the task return a result
-object rather than raising.
+**Fan-out is fail-fast by default.** One failed item fails the whole `map`, `gather`, or child call,
+and sibling results are discarded even for items that had already finished. When you want the
+siblings, pass `return_exceptions=True` to `map` or `gather` for
+[collect mode](primitives.md#failure-fail-fast-or-collect) (ADR-0027): every item settles, failed
+slots hold a `satay.TaskFailedError`, and each failure is still recorded in the journal.
+
+What is *not* a supported workaround any more: having the task catch its own error and return a
+result-or-error object. That records `TaskCompleted`, shows a green run in Studio, and hides the
+failure from retries, alerting and the read API. Use collect mode instead.
+
+**`start_child` has no collect flag.** It is a single call, so `try`/`except` around it says
+everything a flag would; collect it as a `gather` member if you need it in a fan-out.
 
 **Fork accepts terminal runs only** (ADR-0004): completed, failed, or cancelled. You cannot fork a
 run that is still going.
