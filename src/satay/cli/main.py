@@ -14,6 +14,8 @@ import argparse
 import sys
 from collections.abc import Callable, Sequence
 
+import satay
+
 _STUDIO_HINT = (
     "`satay dev` is provided by the studio extra. Install it with:\n    pip install 'satay[studio]'"
 )
@@ -31,6 +33,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="satay",
         description="Satay Runtime — local-first durable execution (core CLI).",
+    )
+    # Read the *derived* version (satay.__init__._detect_version), never a literal: this
+    # flag exists to give that value a consumer, because having none is how the hard-coded
+    # `0.0.0` in 0.1.0a1 went unnoticed (KAN-447/KAN-459). argparse handles `--version`
+    # while scanning optionals, so it prints and exits 0 before the required-subcommand
+    # check fires — `satay --version` works with no subcommand, which is how it is typed.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {satay.__version__}",
+        help="Print the installed Satay version and exit.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
