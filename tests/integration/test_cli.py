@@ -1,4 +1,4 @@
-"""Integration tests for the ``satay runs show`` CLI read (U1).
+"""Integration tests for the core ``satay`` CLI (U1): ``runs show``, ``dev``, ``--version``.
 
 These are synchronous tests: the CLI owns its own ``asyncio.run`` loop, so the test
 seeds the store in a separate loop then invokes ``main`` directly.
@@ -7,11 +7,13 @@ seeds the store in a separate loop then invokes ``main`` directly.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import satay
 from satay.cli.main import main
 from satay.journal.events import Event, EventType, RunRecord, RunStatus
 from satay.journal.store import SQLiteStore
@@ -126,3 +128,40 @@ def test_dev_without_studio_extra_prints_hint(
     code = main(["dev"])
     assert code == 2
     assert "satay[studio]" in capsys.readouterr().err
+
+
+def _cli_version_output(capsys: pytest.CaptureFixture[str]) -> str:
+    """Run ``satay --version`` through ``main`` and return the line it printed."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--version"])
+    # argparse's version action exits 0 — the flag is a successful query, not an error.
+    assert exc_info.value.code == 0
+    return capsys.readouterr().out.strip()
+
+
+def test_version_flag_works_without_a_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
+    """``satay --version`` is how a user types it: bare, with no subcommand (KAN-459).
+
+    The parser's subcommand is ``required=True``, so this asserts the version action
+    fires *before* the "arguments are required: command" error, not after it.
+    """
+    assert _cli_version_output(capsys) == f"satay {satay.__version__}"
+
+
+def test_version_flag_agrees_with_the_installed_distribution(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The drift guard — compare against distribution metadata, never against a literal.
+
+    This is the consumer ``__version__`` never had. KAN-447 shipped ``0.0.0`` in the
+    ``0.1.0a1`` wheel because the value was a hard-coded constant and no code path or
+    test ever compared it to the metadata built from ``pyproject.toml``; that bug would
+    fail here. A literal expected version would recreate the original problem in test
+    form, so there isn't one: the release bump moves both sides together.
+    """
+    try:
+        installed = importlib.metadata.version("satay")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - bare source tree
+        pytest.skip("satay is not installed; no distribution metadata to compare against")
+    assert satay.__version__ == installed
+    assert _cli_version_output(capsys) == f"satay {installed}"

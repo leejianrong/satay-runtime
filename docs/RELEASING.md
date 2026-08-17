@@ -175,8 +175,11 @@ against a lean install with no dev dependencies:
 uv venv /tmp/satay-verify
 uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0a3'
 /tmp/satay-verify/bin/satay --help
+/tmp/satay-verify/bin/satay --version
 
-# The version the package reports must equal the tag you just shipped (KAN-447).
+# `--version` prints the value; this asserts it, and asserts it equals the tag you just
+# shipped (KAN-447/KAN-459). The CLI flag, `satay.__version__` and the distribution
+# metadata are one derived value, so all three have to agree.
 /tmp/satay-verify/bin/python -c "
 import importlib.metadata as m, satay
 assert satay.__version__ == m.version('satay') == '0.1.0a3', satay.__version__
@@ -188,7 +191,8 @@ curl -fsSL \
 /tmp/satay-verify/bin/python /tmp/crash_recovery_demo.py
 ```
 
-Expect `version ok: 0.1.0a3`, then `phase 2: final result = 4 (expected 4)`, `step_one
+Expect `satay --version` to print `satay` followed by that same version, then
+`version ok: 0.1.0a3`, then `phase 2: final result = 4 (expected 4)`, `step_one
 executions = 1 (REUSED, still 1)`, and a timeline ending in `WorkflowCompleted` with a `⚡`
 on `WorkflowResumed`. Also confirm the install stayed lean — `pip list` in that venv should
 show `satay` and nothing else of substance (ADR-0013/0016).
