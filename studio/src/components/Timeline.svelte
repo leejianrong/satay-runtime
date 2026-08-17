@@ -117,14 +117,19 @@
   .ev-head { display: grid; grid-template-columns: 46px 1fr auto; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; border-radius: var(--radius); cursor: pointer; border: 1px solid transparent; background: none; text-align: left; font: inherit; color: inherit; transition: background 0.1s, border-color 0.1s; }
   .ev-head:hover { background: var(--surface); border-color: var(--border); }
   .ev-node { position: absolute; left: 0; top: 15px; width: 13px; height: 13px; border-radius: 50%; background: var(--surface); border: 2.5px solid var(--cancelled); z-index: 2; }
-  .k-lifecycle { border-color: var(--text-faint); background: var(--text-faint); }
-  .k-sched { border-color: var(--running); }
-  .k-run { border-color: var(--running); background: var(--running); }
-  .k-done { border-color: var(--completed); background: var(--completed); }
-  .k-fail { border-color: var(--failed); background: var(--failed); }
-  .k-wait { border-color: var(--waiting); background: var(--surface); }
-  .k-timer { border-color: var(--waiting); background: var(--waiting); }
-  .k-event { border-color: var(--waiting); background: var(--waiting); transform: rotate(45deg); border-radius: 2px; }
+  /* Scoped to .ev-node deliberately. The same `k-*` kind class is put on the skewer dot
+     AND on the .ev-type label (see the markup above), so an unqualified `.k-done` here
+     painted its dot background behind the label text — which .ev-type.k-done colours with
+     the *same* token, rendering `TaskCompleted` and `TaskAttemptFailed` as invisible text
+     on a solid block, in both themes (KAN-919). These are dot styles; say so. */
+  .ev-node.k-lifecycle { border-color: var(--text-faint); background: var(--text-faint); }
+  .ev-node.k-sched { border-color: var(--running); }
+  .ev-node.k-run { border-color: var(--running); background: var(--running); }
+  .ev-node.k-done { border-color: var(--completed); background: var(--completed); }
+  .ev-node.k-fail { border-color: var(--failed); background: var(--failed); }
+  .ev-node.k-wait { border-color: var(--waiting); background: var(--surface); }
+  .ev-node.k-timer { border-color: var(--waiting); background: var(--waiting); }
+  .ev-node.k-event { border-color: var(--waiting); background: var(--waiting); transform: rotate(45deg); border-radius: 2px; }
 
   .ev-seq { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); text-align: right; }
   .ev-main { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
