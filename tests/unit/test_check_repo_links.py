@@ -163,3 +163,48 @@ def test_main_links_resolve_against_the_working_tree(repo: Path) -> None:
 def test_the_exact_url_from_kan_488_is_flagged_in_this_repo() -> None:
     assert checker.check_link(REPO_ROOT, "v0.1.0a1", LATE_EXAMPLE) is not None
     assert checker.check_link(REPO_ROOT, "v0.1.0a3", LATE_EXAMPLE) is None
+
+
+# --------------------------------------------------------------------------------------
+# The other host: the URL a reader's fingers actually touch.
+# --------------------------------------------------------------------------------------
+
+
+def test_scan_captures_raw_githubusercontent_urls_too() -> None:
+    """The `curl` line of every cookbook recipe, which went unchecked until KAN-878.
+
+    ``check_repo_links`` matched only ``github.com/.../blob|tree|raw/``, so a page's prose
+    ``Source:`` link was verified while the ``raw.githubusercontent.com`` URL two lines
+    below it — the one the reader copy-pastes into a shell — was invisible to the checker.
+    Nine of them shipped in 0.1.0 unverified, all pinned to a tag.
+    """
+    text = (
+        "curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/"
+        "v0.1.0a3/examples/elt_pipeline_demo.py\n"
+    )
+    assert list(checker.scan_text(text)) == [(1, "v0.1.0a3", LATE_EXAMPLE)]
+
+
+def test_a_raw_url_pinned_where_the_file_is_absent_is_flagged(repo: Path) -> None:
+    """Same rule, same host-independent verdict: the ref decides, not the working tree."""
+    text = (
+        "curl -O https://raw.githubusercontent.com/leejianrong/satay-runtime/"
+        f"v0.1.0a1/{LATE_EXAMPLE}\n"
+    )
+    (_, ref, path), *rest = checker.scan_text(text)
+
+    assert not rest
+    assert checker.check_link(repo, ref, path) is not None
+
+
+def test_a_raw_url_at_main_still_resolves_against_the_working_tree(repo: Path) -> None:
+    """Widening the host must not change what ``main`` means (KAN-489's other half)."""
+    (repo / "examples" / "brand_new_demo.py").write_text("# new\n")
+    text = (
+        "curl -O https://raw.githubusercontent.com/leejianrong/satay-runtime/"
+        "main/examples/brand_new_demo.py\n"
+    )
+    (_, ref, path), *_ = checker.scan_text(text)
+
+    assert ref == "main"
+    assert checker.check_link(repo, ref, path) is None

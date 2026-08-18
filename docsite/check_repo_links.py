@@ -53,10 +53,19 @@ DOCS_SOURCE = Path(__file__).resolve().parent / "docs"
 #: once. Anything else — a tag, a SHA — is a pin and is resolved at that ref.
 WORKING_TREE_REFS = frozenset({"main"})
 
-#: Matches a link into this repository, capturing the ref and the in-repo path.
-#: e.g. https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0001-x.md
+#: Matches a link into this repository, capturing the ref and the in-repo path. Two hosts,
+#: because the cookbook uses both and only one of them used to be checked:
+#:
+#:   https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0001-x.md
+#:   https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/x.py
+#:
+#: The ``raw.githubusercontent.com`` form is the one a reader's fingers actually touch — it
+#: is what every "Get It And Run It" ``curl`` fetches — and it went unverified until now
+#: while the prose link beside it, which a reader is far more likely to eyeball before
+#: trusting, was checked. That is KAN-489's bug with the arguments the other way round.
 REPO_LINK = re.compile(
-    r"https://github\.com/leejianrong/satay-runtime/(?:blob|tree|raw)/([^/]+)/([^)\s#]+)"
+    r"https://(?:github\.com/leejianrong/satay-runtime/(?:blob|tree|raw)"
+    r"|raw\.githubusercontent\.com/leejianrong/satay-runtime)/([^/]+)/([^)\s#]+)"
 )
 
 

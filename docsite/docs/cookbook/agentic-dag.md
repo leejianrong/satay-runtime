@@ -8,14 +8,14 @@ That is the shape most agent code wants and most frameworks make you hand-roll. 
 recipe carrying the single most important lesson in these docs, and the lesson fits in one
 sentence: the model call lives in a **task**, never in the workflow body.
 
-Source: [`examples/agentic_dag_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/agentic_dag_demo.py)
+Source: [`examples/agentic_dag_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/agentic_dag_demo.py)
 (900-odd lines, so this page excerpts it)
 
 ## Get It And Run It
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/agentic_dag_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/agentic_dag_demo.py
 SATAY_DATA_DIR=.satay-demo python agentic_dag_demo.py
 ```
 

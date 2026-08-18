@@ -7,7 +7,7 @@ That absence is the product. This recipe makes it observable: a counter on disk 
 physical execution of each task body, so "it was reused" is a number you can read rather than
 a claim the docs make.
 
-Source: [`examples/crash_recovery_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/crash_recovery_demo.py)
+Source: [`examples/crash_recovery_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/crash_recovery_demo.py)
 
 ## Get It And Run It
 
@@ -20,7 +20,7 @@ Source: [`examples/crash_recovery_demo.py`](https://github.com/leejianrong/satay
 2. Fetch the file:
 
     ```bash
-    curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/crash_recovery_demo.py
+    curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/crash_recovery_demo.py
     ```
 
 3. Run it, naming a data directory so the journal outlives the process:

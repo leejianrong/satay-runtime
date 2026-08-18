@@ -48,6 +48,15 @@ jobs:
         with:
           enable-cache: true
 
+      # The site quotes a release version in seven different shapes across five pages.
+      # 0.1.0 shipped with seven cookbook pages still pinned to v0.1.0a3, so this asserts
+      # they agree on one version and that version is tagged. It deliberately does not
+      # demand the NEWEST tag: RELEASING.md §3 flips the docsite in a PR after the tag is
+      # pushed, and failing during that window would report a red main for the documented
+      # process working correctly.
+      - name: Check the version the docs quote
+        run: python3 docsite/sync_docs_version.py --check
+
       # Links from the site into the repository (the ADR index on the Decisions page)
       # leave the site, so Zensical cannot validate them. This does.
       - name: Check links into the repository

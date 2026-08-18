@@ -8,14 +8,14 @@ This is the longest recipe, and roughly half of it is about what Satay does **ba
 fail-fast section and the idempotency caveat are the parts worth your time, because they are the
 ones that will bite you in a real nightly load.
 
-Source: [`examples/elt_pipeline_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/elt_pipeline_demo.py)
+Source: [`examples/elt_pipeline_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/elt_pipeline_demo.py)
 (687 lines, so this page excerpts it)
 
 ## Get It And Run It
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/elt_pipeline_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/elt_pipeline_demo.py
 SATAY_DATA_DIR=.satay-demo python elt_pipeline_demo.py
 ```
 

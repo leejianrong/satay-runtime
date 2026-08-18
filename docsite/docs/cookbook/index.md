@@ -13,20 +13,17 @@ the whole setup, and it is the same three steps on every page.
 pip install 'satay[studio]'
 ```
 
-That is the published package from PyPI, and seven of the eight recipes run against it.
-[Fork, Replay, Compare](fork-and-compare.md) is the exception: it needs `satay.fork`, which
-landed after the tag, so install from the repository for that one.
+That is the published package from PyPI, and all eight recipes run against it.
 
 !!! tip "These pages are pinned to one version"
 
-    Every `curl` below fetches from the **`v0.1.0a3`** tag, not from `main`, so the file you
+    Every `curl` below fetches from the **`v0.1.0`** tag, not from `main`, so the file you
     download is the file that matches the wheel you just installed. `main` moves; the tag does
-    not. [Fork, Replay, Compare](fork-and-compare.md) is newer than the tag and says so on the
-    page.
+    not.
 
     Satay is alpha. There is no compatibility promise between alpha versions and nothing is
     deprecated gracefully yet, so pin the exact version in anything you build:
-    `pip install 'satay[studio]==0.1.0a3'`. The [limits page](../limits.md) lists what is
+    `pip install 'satay[studio]==0.1.0'`. The [limits page](../limits.md) lists what is
     deliberately absent.
 
 The core runtime declares **no dependencies**, and every recipe runs on it alone. The
@@ -45,7 +42,7 @@ fetch it, run it:
 ```bash
 mkdir satay-cookbook && cd satay-cookbook
 
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/crash_recovery_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/crash_recovery_demo.py
 
 python crash_recovery_demo.py
 ```

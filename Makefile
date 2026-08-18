@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help dev dev-studio check lint type test test-all docs secrets ci install-hooks demo demo-clean
+.PHONY: help dev dev-studio check lint type test test-all docs docs-version secrets ci install-hooks demo demo-clean
 
 # Data directory for `make demo`. Kept separate from ./.satay so the demo never
 # disturbs a real project journal you might be working against.
@@ -57,8 +57,16 @@ test-all: dev-studio ## The FULL suite (unit + integration + e2e), as CI runs it
 # site links out into docs/ — so renaming or deleting a file there breaks the
 # published site without touching docsite/ at all.
 docs: ## Build the docs site the way the Docs workflow does
+	python3 docsite/sync_docs_version.py --check
 	python3 docsite/check_repo_links.py
 	cd docsite && uv tool run --from "zensical==$(ZENSICAL_VERSION)" zensical build --strict --clean
+
+# The docsite quotes a version in seven shapes across five pages. This moves them
+# all at once, and `make docs` asserts they agree. Run it in a PR of its own AFTER
+# the release tag is pushed, never in the same PR as the version bump — see
+# docs/RELEASING.md §3 for why the order matters in both directions.
+docs-version: ## Flip every version the docs quote to the newest release tag
+	python3 docsite/sync_docs_version.py
 
 # The local mirror of the Security workflow's gitleaks job (KAN-578: it had no
 # local entry point, and three authors have tripped it in CI). Not vendored: the

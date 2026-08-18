@@ -12,7 +12,7 @@ instruction, and lays the two runs side by side call by call. **One of the six d
 executes. The other five answer from the journal, byte-identical.** `$0.0023` instead of
 `$0.1692`.
 
-Source: [`examples/fork_and_compare_demo.py`](https://github.com/leejianrong/satay-runtime/blob/main/examples/fork_and_compare_demo.py)
+Source: [`examples/fork_and_compare_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/fork_and_compare_demo.py)
 
 !!! info "No API key, no network"
 
@@ -33,15 +33,8 @@ Source: [`examples/fork_and_compare_demo.py`](https://github.com/leejianrong/sat
 2. Fetch the file:
 
     ```bash
-    curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/main/examples/fork_and_compare_demo.py
+    curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/fork_and_compare_demo.py
     ```
-
-    !!! warning "This one is fetched from `main`, not from the pinned tag"
-
-        Every other recipe pins to `v0.1.0a3`. This example landed after that tag, so there
-        is nothing to pin to yet. It needs `satay.fork`, which is also newer than the tag —
-        install from the repository (`uv sync --extra studio`) if `pip install satay` gives
-        you the alpha.
 
 3. Run it, naming a data directory so the four journals outlive the process:
 

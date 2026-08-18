@@ -7,13 +7,13 @@ Total executions of the expensive step: **five**. One per document, across three
 lifetimes. This is the demo that tends to convince people, and it is one primitive plus one
 argument.
 
-Source: [`examples/fan_out_recovery_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/fan_out_recovery_demo.py)
+Source: [`examples/fan_out_recovery_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/fan_out_recovery_demo.py)
 
 ## Get It And Run It
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/fan_out_recovery_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/fan_out_recovery_demo.py
 SATAY_DATA_DIR=.satay-demo python fan_out_recovery_demo.py
 ```
 
