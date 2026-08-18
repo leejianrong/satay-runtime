@@ -284,24 +284,27 @@ This is the section to read twice.
 
 !!! success "This is the section that got the feature built"
 
-    The transcript below is what the runtime did when this recipe was written, and it is still
-    what the **default** does. It is also the evidence that produced
+    What follows is the **default**, and it is also the evidence that produced
     [ADR-0027](../decisions.md): `map` and `gather` now take `return_exceptions=True`, which
     keeps the five completed extracts *and* records the sixth source's failure in the journal as
     a terminal `TaskFailed`. Read sections 4 and 5 as the argument, then use collect mode —
-    section 5's outcome-returning workaround is the anti-pattern collect mode replaces, and it is
-    no longer the advice.
+    section 5's outcome-returning pattern is not the advice, and section 5 says so itself.
 
 ```console
-4) one source fails — fan-out is fail-fast (ADR-0020)
+4) one source fails — fan-out is fail-fast by default (ADR-0027)
      the map raised ValueError: ledger-eu: malformed record on line 2: 'ledger-eu-002'
      status: failed   run dcb9a00ea9a44acd8d18bf26a6d53e7a
      sibling extracts that COMPLETED anyway: ['billing', 'clickstream', 'crm-contacts', 'inventory', 'orders']
      …and are now unreachable: 300,262 characters of finished work,
        including the 300 KB source, thrown away because one sibling raised.
      The results are on the journal, but the run is terminal: `satay.start(
-       run_id=…)` on a failed run re-raises rather than resuming. Forking the
-       run is the only way back in, and there is no `return_exceptions` mode.
+       run_id=…)` on a failed run re-raises rather than resuming, so forking is
+       the only way back into THIS run. The way to not need one:
+       `await satay.map(extract_strictly, sources, key=source_key,
+                        return_exceptions=True)` — collect mode (ADR-0027).
+       Every item settles, the five finished extracts come back beside the
+       exception, and the corrupt source is recorded as a terminal TaskFailed
+       rather than vanishing into a run nobody can reach.
      journal: {'WorkflowCreated': 1, 'TaskScheduled': 6, 'TaskAttemptStarted': 6, 'TaskCompleted': 5, 'TaskAttemptFailed': 1, 'WorkflowFailed': 1}
      Read that tally again: the successes are recorded. Only the workflow lost.
 ```
@@ -313,8 +316,8 @@ and are sitting on the journal right now. The run cannot reach them, because a f
 terminal and `satay.start(run_id=...)` on it re-raises rather than resuming.
 
 That is 300,262 characters of completed work, including the whole 300 KB source, made unreachable
-by one sibling raising. Under the fail-fast default ([ADR-0020](../decisions.md)) forking the run
-is the only way back in.
+by one sibling raising. Under the fail-fast default forking the run is the only way back into it
+([ADR-0027](../decisions.md), superseding ADR-0020).
 
 For an extract fan-out this is often the wrong default. "Five of six sources loaded, quarantine the
 sixth" is usually what you wanted — which is exactly what
@@ -357,13 +360,18 @@ async def resilient_extract(sources: list[Source]) -> list[Outcome]:
 ```
 
 ```console
-5) the workaround: return an outcome instead of raising
+5) the older pattern: return an outcome instead of raising
      status: completed   run 92c07a164d8c4ee2a643fd360f63ca59
      extracted: ['crm-contacts', 'orders', 'clickstream', 'billing', 'inventory']
      quarantined: ledger-eu — ledger-eu: malformed record on line 2: 'ledger-eu-002'
      5/6 sources survived, and the pipeline can go on.
      The cost: you hand-roll the union type, the try/except and the partition,
-     and you give up ever seeing the failure as a failure on the journal.
+     you give up ever seeing the failure as a failure on the journal, and —
+     because a task that returns is a task that succeeded — you give up the
+     retries that would have rescued a transient error. Collect mode in (4)
+     costs one argument and gives up none of that, so prefer it. This shape
+     earns its place only when the per-item verdict is data your own code
+     carries downstream: a quarantine, not merely a way to survive.
 ```
 
 It works. Five of six sources survive and the pipeline continues. Now the bill.
@@ -373,11 +381,14 @@ It works. Five of six sources survive and the pipeline continues. Now the bill.
 ```python
 @dataclass(frozen=True)
 class Outcome:
-    """A result-or-error union, hand-rolled — the fail-fast workaround.
+    """A result-or-error union, hand-rolled — the quarantine pattern (see section 5).
 
-    Deliberately flat rather than ``Extracted | None`` plus ``Exception | None``: a union
-    annotation decodes back to a plain dict on resume, so the typed shape you wrote is not
-    the shape you get. Flat fields survive.
+    Flat rather than ``Extracted | None`` plus ``Exception | None``, but no longer because
+    it has to be. A union annotation used to decode back to a plain dict on resume; the
+    codec now walks composite annotations, so ``X | None``, ``X | Y``, ``list[X]``,
+    ``dict[str, X]``, ``tuple[X, Y]``, ``Annotated[X, ...]`` and any nesting of those all
+    rehydrate to the type the first execution produced. Flat is kept here because it reads
+    well beside section 5's partition, not to dodge the codec.
     """
 
     source_id: str
@@ -401,13 +412,6 @@ the class and you get a loud `DecodeError` naming the annotation, not a wrong ty
 path. Where the name is genuinely unavailable (a task annotated `-> A | B` that returns a bare
 dict; a value whose type name a custom redaction pattern masked), the codec falls back to the
 recorded shape, and raises rather than guessing when that leaves more than one arm standing.
-
-!!! note "The docstring above is out of date"
-
-    `Outcome`'s docstring is quoted verbatim from the example, and it still explains the flat shape
-    as a workaround for union annotations decoding to a plain dict. That stopped being true when the
-    codec learned to walk composite annotations. The flat shape is now a style choice, and it keeps
-    working; it is just no longer forced.
 
 **You hand-roll the try/except and the partition.** Every caller of every outcome-returning task
 has to remember to split `ok` from not-`ok`. Miss one and a quarantined source flows downstream as
@@ -466,8 +470,9 @@ Compare those last two side by side and the tradeoff stops being abstract.
 - Payloads over 256 KiB spill to content-addressed blobs, transparently on write and read, and
   survive a crash. There is no blob collection.
 - Fan-out is fail-fast **by default**. One corrupt source killed a run in which five extracts had
-  already committed, and forking was the only way back to them.
-- The outcome-returning workaround gets you partial results and costs you retries, run-status
+  already committed, and forking is the only way back into *that* run. `return_exceptions=True`
+  is how you avoid needing one.
+- The outcome-returning pattern gets you partial results and costs you retries, run-status
   alerting, and any journal record that a failure happened. That trade is what
   [ADR-0027](../decisions.md) removed: `return_exceptions=True` keeps the siblings *and* keeps the
   failure on the journal.

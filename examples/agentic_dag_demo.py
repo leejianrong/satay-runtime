@@ -29,8 +29,9 @@ What each part shows:
    synthesise. Every model call is priced, and the ledger shows what durability saved.
 2. **unattended_dossier** — nobody approves. The gate times out, the run takes its
    escalation branch, and the expensive synthesis is never paid for.
-3. **brittle_dossier** — one source never parses. Fan-out is fail-fast (ADR-0020), so the
-   run dies and the money already spent on its siblings buys nothing.
+3. **brittle_dossier** — one source never parses. Fan-out is fail-fast **by default**, so
+   the run dies and the money already spent on its siblings buys nothing. Collect mode
+   (``return_exceptions=True``, ADR-0027) is the one-argument fix, and the part prints it.
 4. **reprompted_dossier** — the finished dossier, re-cut under a changed prompt with one
    ``satay.fork(..., before_task="synthesize", workflow_input=...)``. The research is
    reused from the journal; only the synthesis re-runs. ``examples/fork_and_compare_demo``
@@ -562,7 +563,7 @@ async def unattended_dossier(brief: Brief) -> dict[str, object]:
 
 @satay.workflow
 async def brittle_dossier(brief: Brief) -> dict[str, object]:
-    """One source never parses, and fail-fast takes the whole run down with it."""
+    """One source never parses, and fail-fast — the default — takes the whole run with it."""
     return await dossier_body(brief)
 
 
@@ -750,18 +751,18 @@ async def part_two(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> st
     return handle.run_id
 
 
-# -- part 3: fail-fast fan-out -----------------------------------------------------
+# -- part 3: fail-fast fan-out, and the one argument that changes it ---------------
 
 
 async def part_three(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> str:
-    """One dead source, and what fail-fast costs when the siblings are model calls."""
+    """One dead source, and what fail-fast — the default — costs when siblings are model calls."""
     brief = Brief(
         vendor="Eastcape Bonded",
         topics=["pricing", "litigation", "references"],
         review_key="review-3",
     )
     start_of_run = len(call_log(MODEL))
-    print("\n3) one source never parses — fan-out is fail-fast (ADR-0020)")
+    print("\n3) one source never parses — fan-out is fail-fast by default (ADR-0027)")
     handle = satay.start(brittle_dossier, brief, store=store, clock=clock, rng=rng)
     print(f"   run {handle.run_id}")
     try:
@@ -788,11 +789,17 @@ async def part_three(store: SQLiteStore, clock: ManualClock, rng: SeededRng) -> 
         "   usage is flushed onto TaskAttemptFailed as well, so a task that never completes\n"
         "   still prices itself and Studio shows what each dead attempt cost.\n"
         "   The siblings' answers do survive and a resume or fork would reuse them — but this\n"
-        "   workflow cannot say 'two of three answered, write it up anyway'. There is no\n"
-        "   collect mode, so the caller gets an exception rather than the partial result that,\n"
-        "   for a research fan-out, is usually the one you wanted. Getting it today means the\n"
-        "   task swallowing its own failure and returning a sentinel — which also gives up its\n"
-        "   retries, since a task that returns is a task that succeeded."
+        "   workflow, as written, cannot say 'two of three answered, write it up anyway'. It\n"
+        "   took the fail-fast default, so the caller gets an exception rather than the partial\n"
+        "   result that, for a research fan-out, is usually the one you wanted.\n"
+        "   One argument changes that (ADR-0027):\n"
+        "       await satay.map(research, questions, key=question_key, return_exceptions=True)\n"
+        "   Collect mode settles every item and hands back the two paid-for answers beside the\n"
+        "   exception, recording the dead source as a terminal TaskFailed — so the money it\n"
+        "   burned is still priced and Studio still shows it. What you must NOT do is the\n"
+        "   old workaround: swallow the failure inside the task and return a sentinel. That\n"
+        "   gives up the retries that would have rescued a transient error, since a task that\n"
+        "   returns is a task that succeeded."
     )
     return handle.run_id
 
