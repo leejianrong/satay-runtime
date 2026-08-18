@@ -103,14 +103,14 @@ installs of both `satay` and `satay[studio]`. The wheel listing is pasted into t
 summary.
 
 After a `testpypi` run, install from TestPyPI to confirm the artifact is real. Pin the
-version you just rehearsed — `0.1.0a3` here:
+version you just rehearsed — `0.1.0` here:
 
 ```bash
 uv venv /tmp/satay-testpypi
 uv pip install --python /tmp/satay-testpypi/bin/python \
   --index-url https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  'satay==0.1.0a3'
+  'satay==0.1.0'
 /tmp/satay-testpypi/bin/satay --help
 ```
 
@@ -122,7 +122,7 @@ on real PyPI, not TestPyPI.
 ## 3. Release
 
 The version lives in `pyproject.toml` and the tag must match it — the workflow fails
-otherwise. `pyproject.toml` currently says `0.1.0a3`, so the tag is `v0.1.0a3`.
+otherwise. `pyproject.toml` currently says `0.1.0`, so the tag is `v0.1.0`.
 
 **Order matters, in both directions.** Push the tag only once every change you mean to ship
 is merged into `main` — `v0.1.0a2` was tagged just before two feature PRs landed, so the
@@ -136,8 +136,8 @@ git switch main
 git pull --ff-only
 git log --oneline -1          # confirm this is the SHA you mean to ship
 
-git tag -a v0.1.0a3 -m "satay 0.1.0a3"
-git push origin v0.1.0a3
+git tag -a v0.1.0 -m "satay 0.1.0"
+git push origin v0.1.0
 ```
 
 Pushing the tag starts **Release**. It will:
@@ -173,7 +173,7 @@ against a lean install with no dev dependencies:
 
 ```bash
 uv venv /tmp/satay-verify
-uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0a3'
+uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0'
 /tmp/satay-verify/bin/satay --help
 /tmp/satay-verify/bin/satay --version
 
@@ -182,17 +182,17 @@ uv pip install --python /tmp/satay-verify/bin/python 'satay==0.1.0a3'
 # metadata are one derived value, so all three have to agree.
 /tmp/satay-verify/bin/python -c "
 import importlib.metadata as m, satay
-assert satay.__version__ == m.version('satay') == '0.1.0a3', satay.__version__
+assert satay.__version__ == m.version('satay') == '0.1.0', satay.__version__
 print('version ok:', satay.__version__)"
 
 curl -fsSL \
-  https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/crash_recovery_demo.py \
+  https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/crash_recovery_demo.py \
   -o /tmp/crash_recovery_demo.py
 /tmp/satay-verify/bin/python /tmp/crash_recovery_demo.py
 ```
 
 Expect `satay --version` to print `satay` followed by that same version, then
-`version ok: 0.1.0a3`, then `phase 2: final result = 4 (expected 4)`, `step_one
+`version ok: 0.1.0`, then `phase 2: final result = 4 (expected 4)`, `step_one
 executions = 1 (REUSED, still 1)`, and a timeline ending in `WorkflowCompleted` with a `⚡`
 on `WorkflowResumed`. Also confirm the install stayed lean — `pip list` in that venv should
 show `satay` and nothing else of substance (ADR-0013/0016).
@@ -202,7 +202,7 @@ prebuilt SPA did not ride along in the wheel:
 
 ```bash
 uv venv /tmp/satay-studio
-uv pip install --python /tmp/satay-studio/bin/python 'satay[studio]==0.1.0a3'
+uv pip install --python /tmp/satay-studio/bin/python 'satay[studio]==0.1.0'
 /tmp/satay-studio/bin/satay dev
 ```
 
