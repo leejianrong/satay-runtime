@@ -60,11 +60,11 @@ options:
   -h, --help  show this help message and exit
 ```
 
-!!! warning "Pin the version"
+!!! info "Pin the version"
 
     Every page in this tutorial was written and executed against **`0.1.0`**, the current
-    release. Satay is alpha: there is no compatibility promise between alpha versions and
-    nothing is deprecated gracefully yet, so pin the exact version in anything you build.
+    release. Satay is at `0.x`: there is no deprecation policy yet and the public API can
+    still move, so pin the exact version in anything you build.
 
     ```bash
     pip install 'satay[studio]==0.1.0'

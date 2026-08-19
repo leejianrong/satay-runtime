@@ -21,8 +21,8 @@ That is the published package from PyPI, and all eight recipes run against it.
     download is the file that matches the wheel you just installed. `main` moves; the tag does
     not.
 
-    Satay is alpha. There is no compatibility promise between alpha versions and nothing is
-    deprecated gracefully yet, so pin the exact version in anything you build:
+    Satay is at `0.x`. There is no deprecation policy yet and the public API can still
+    move, so pin the exact version in anything you build:
     `pip install 'satay[studio]==0.1.0'`. The [limits page](../limits.md) lists what is
     deliberately absent.
 
