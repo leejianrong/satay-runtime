@@ -1,6 +1,6 @@
 # Cookbook
 
-Eight runnable programs, one per page. Each is a real file in the repository, each runs in CI
+Nine runnable programs, one per page. Each is a real file in the repository, each runs in CI
 on every commit, and each page shows you the code, the command, and the output that command
 actually printed.
 
@@ -13,13 +13,14 @@ the whole setup, and it is the same three steps on every page.
 pip install 'satay[studio]'
 ```
 
-That is the published package from PyPI, and all eight recipes run against it.
+That is the published package from PyPI, and all nine recipes run against it.
 
 !!! tip "These pages are pinned to one version"
 
     Every `curl` below fetches from the **`v0.1.0`** tag, not from `main`, so the file you
     download is the file that matches the wheel you just installed. `main` moves; the tag does
-    not.
+    not. [Best Of N](best-of-n.md) is the exception: its example landed after the tag, so its
+    `curl` fetches from `main` and the page says so. It still runs against the wheel above.
 
     Satay is at `0.x`. There is no deprecation policy yet and the public API can still
     move, so pin the exact version in anything you build:
@@ -47,10 +48,10 @@ curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0
 python crash_recovery_demo.py
 ```
 
-That works from an empty directory. Swap the filename for any of the eight in the table
+That works from an empty directory. Swap the filename for any of the nine in the table
 below.
 
-If you would rather have all eight at once, clone the repository and use `uv run`:
+If you would rather have all nine at once, clone the repository and use `uv run`:
 
 ```bash
 git clone https://github.com/leejianrong/satay-runtime
@@ -96,6 +97,7 @@ satay dev --data-dir .satay-demo
 | [Fan-Out With Crash Recovery](fan-out.md) | `satay.map` over five items, two crashes, five executions in total. The keyed durable call doing its job. |
 | [An ELT Pipeline](elt-pipeline.md) | Extract, transform, load with an idempotent writer, payload spill to a blob, and an honest look at fail-fast fan-out. |
 | [An Agentic DAG](agentic-dag.md) | Plan, fan out research calls, gate on a human, synthesise. Why the model call has to live in a task. |
+| [Best Of N](best-of-n.md) | Draft five candidates, two die, keep the three you paid for. `return_exceptions=True`, and why a collected failure is still recorded. |
 | [Fork, Replay, Compare](fork-and-compare.md) | A run that completes and is *wrong*. Fork it before the bad call under a better prompt, re-run 1 of 6 calls, and diff the two runs call by call. |
 | [A Studio Tour](studio-tour.md) | One run that touches nearly every primitive, then a click-by-click tour of the debugger. |
 
@@ -110,6 +112,10 @@ guarantee applied to a batch, and it is the demo that tends to convince people.
 [An ELT Pipeline](elt-pipeline.md) and [An Agentic DAG](agentic-dag.md) are the two long ones.
 They sit closest to real workloads, and both spend as much space on what Satay does badly
 today as on what it does well.
+
+[Best Of N](best-of-n.md) is the short one of that group, and the one to read if you are
+building anything that asks a model for several answers at once. It is the same fan-out under
+both failure modes, a page apart.
 
 [Fork, Replay, Compare](fork-and-compare.md) is the one to read if you are here for the
 debugger rather than for durability. It is the only recipe where nothing crashes and the run
