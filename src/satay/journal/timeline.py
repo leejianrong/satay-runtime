@@ -65,6 +65,7 @@ def _summarise_payload(event: Event) -> str:
         EventType.TASK_ATTEMPT_STARTED,
         EventType.TASK_ATTEMPT_FAILED,
         EventType.TASK_COMPLETED,
+        EventType.TASK_FAILED,
     ):
         # A keyed fan-out item identifies by its map key; an ordinary call by ordinal.
         identity = f"key={p['key']}" if "key" in p else f"ordinal={p.get('ordinal')}"
@@ -78,6 +79,12 @@ def _summarise_payload(event: Event) -> str:
             next_delay = p.get("next_delay")
             if next_delay is not None:
                 parts.append(f"next_delay={next_delay:.3f}s")
+        if event.type is EventType.TASK_FAILED:
+            # No `attempt`: this is the verdict on the whole call, not on one try. The
+            # preceding TaskAttemptFailed line already says which attempt spent the last
+            # of the budget (ADR-0027).
+            error = p.get("error", {})
+            parts.append(f"error={error.get('type')}: {error.get('message')}")
         return " ".join(parts)
     if event.type is EventType.WORKFLOW_FAILED:
         error = p.get("error", {})
