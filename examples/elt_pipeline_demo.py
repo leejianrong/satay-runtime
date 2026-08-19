@@ -13,10 +13,13 @@ right before you trust it with a nightly load:
 3. **A source too wide for a journal row spills to a blob.** The journal keeps a
    ``blobref``; the workflow, the resume, and ``handle.result()`` all see the full value.
 
-Then the honest part: **fan-out is fail-fast** (ADR-0020). One corrupt source raises, the
-whole ``map`` raises with it, and the sibling extracts — including the 300 KB one that had
-already finished — are unreachable because the run is now terminal. The last section shows
-the only workaround available today: a task that returns an outcome instead of raising.
+Then the honest part: **fan-out is fail-fast by default** (ADR-0027, superseding
+ADR-0020). One corrupt source raises, the whole ``map`` raises with it, and the sibling
+extracts — including the 300 KB one that had already finished — are unreachable because the
+run is now terminal. ``return_exceptions=True`` is the one-argument fix, and section 4
+prints it. The last section keeps the older outcome-returning pattern beside it, because it
+is still a legitimate shape when a *quarantine* is what you want — but it is no longer the
+only way out, and it gives up the retries that collect mode keeps.
 
     uv run python examples/elt_pipeline_demo.py        # throwaway temp data dir
     SATAY_DATA_DIR=.satay-elt uv run python examples/elt_pipeline_demo.py
@@ -118,11 +121,14 @@ class PipelineReport:
 
 @dataclass(frozen=True)
 class Outcome:
-    """A result-or-error union, hand-rolled — the fail-fast workaround (see section 5).
+    """A result-or-error union, hand-rolled — the quarantine pattern (see section 5).
 
-    Deliberately flat rather than ``Extracted | None`` plus ``Exception | None``: a union
-    annotation decodes back to a plain dict on resume, so the typed shape you wrote is not
-    the shape you get. Flat fields survive.
+    Flat rather than ``Extracted | None`` plus ``Exception | None``, but no longer because
+    it has to be. A union annotation used to decode back to a plain dict on resume; the
+    codec now walks composite annotations, so ``X | None``, ``X | Y``, ``list[X]``,
+    ``dict[str, X]``, ``tuple[X, Y]``, ``Annotated[X, ...]`` and any nesting of those all
+    rehydrate to the type the first execution produced. Flat is kept here because it reads
+    well beside section 5's partition, not to dodge the codec.
     """
 
     source_id: str
@@ -383,7 +389,7 @@ async def careless_load(batch: Batch) -> int:
     return await load_carelessly(batch)
 
 
-# -- one bad source: fail-fast, and the workaround ---------------------------------------
+# -- one bad source: the fail-fast default, and the two ways past it ---------------------
 
 
 @satay.task()
@@ -397,7 +403,7 @@ async def extract_strictly(source: Source) -> Extracted:
 
 @satay.workflow
 async def strict_extract(sources: list[Source]) -> int:
-    """Fan out over sources where one is corrupt. Fail-fast: the ``map`` raises (ADR-0020)."""
+    """Fan out over sources where one is corrupt. Fail-fast is the default: the ``map`` raises."""
     extracted = await satay.map(extract_strictly, sources, key=source_key)
     return sum(len(item.text) for item in extracted)
 
@@ -406,9 +412,13 @@ async def strict_extract(sources: list[Source]) -> int:
 async def extract_outcome(source: Source) -> Outcome:
     """The same extract, but it never raises — it reports.
 
-    This is the whole workaround for fail-fast fan-out today: catch inside the task and
-    return a union you define yourself, so the ``map`` always succeeds and the workflow
-    partitions the results by hand.
+    Catch inside the task and return a union you define yourself, so the ``map`` always
+    succeeds and the workflow partitions the results by hand. This was the *only* way past
+    fail-fast before collect mode (ADR-0027); it is now a choice, and usually the wrong
+    one. A task that returns is a task that succeeded, so this gives up the retries that
+    would have rescued a transient error, and the journal records a failure as
+    ``TaskCompleted``. Reach for it when you genuinely want a *quarantine* — a per-item
+    verdict your own code carries downstream — not merely to survive a failure.
     """
     record("extract_outcome", source.source_id)
     try:
@@ -603,9 +613,9 @@ async def section_3(workdir: Path, store: SQLiteStore, run_id: str, report: Pipe
 
 
 async def section_4_and_5(store: SQLiteStore, clock: ManualClock) -> None:
-    """One corrupt source: fail-fast, what it costs, and the only workaround there is."""
+    """One corrupt source: the fail-fast default, what it costs, and the two ways past it."""
     sources = [*SOURCES, CORRUPT]
-    print("4) one source fails — fan-out is fail-fast (ADR-0020)")
+    print("4) one source fails — fan-out is fail-fast by default (ADR-0027)")
     PHASE["n"] = 4
     doomed = satay.start(strict_extract, sources, store=store, clock=clock)
     try:
@@ -626,15 +636,20 @@ async def section_4_and_5(store: SQLiteStore, clock: ManualClock) -> None:
     print(f"     …and are now unreachable: {discarded:,} characters of finished work,")
     print("       including the 300 KB source, thrown away because one sibling raised.")
     print("     The results are on the journal, but the run is terminal: `satay.start(")
-    print("       run_id=…)` on a failed run re-raises rather than resuming. Forking the")
-    print("       run is the only way back in, and there is no `return_exceptions` mode.")
+    print("       run_id=…)` on a failed run re-raises rather than resuming, so forking is")
+    print("       the only way back into THIS run. The way to not need one:")
+    print("       `await satay.map(extract_strictly, sources, key=source_key,")
+    print("                        return_exceptions=True)` — collect mode (ADR-0027).")
+    print("       Every item settles, the five finished extracts come back beside the")
+    print("       exception, and the corrupt source is recorded as a terminal TaskFailed")
+    print("       rather than vanishing into a run nobody can reach.")
     tally: dict[str, int] = {}
     for event in events:
         tally[event.type.value] = tally.get(event.type.value, 0) + 1
     print(f"     journal: {tally}")
     print("     Read that tally again: the successes are recorded. Only the workflow lost.")
 
-    print("\n5) the workaround: return an outcome instead of raising")
+    print("\n5) the older pattern: return an outcome instead of raising")
     PHASE["n"] = 5
     resilient = satay.start(resilient_extract, sources, store=store, clock=clock)
     outcomes: list[Outcome] = await settle(resilient.result, clock)
@@ -646,7 +661,12 @@ async def section_4_and_5(store: SQLiteStore, clock: ManualClock) -> None:
         print(f"     quarantined: {outcome.source_id} — {outcome.error}")
     print(f"     {len(good)}/{len(outcomes)} sources survived, and the pipeline can go on.")
     print("     The cost: you hand-roll the union type, the try/except and the partition,")
-    print("     and you give up ever seeing the failure as a failure on the journal.\n")
+    print("     you give up ever seeing the failure as a failure on the journal, and —")
+    print("     because a task that returns is a task that succeeded — you give up the")
+    print("     retries that would have rescued a transient error. Collect mode in (4)")
+    print("     costs one argument and gives up none of that, so prefer it. This shape")
+    print("     earns its place only when the per-item verdict is data your own code")
+    print("     carries downstream: a quarantine, not merely a way to survive.\n")
 
 
 async def main() -> None:

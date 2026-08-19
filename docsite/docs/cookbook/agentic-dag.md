@@ -224,7 +224,7 @@ see [Timers And Events](timers-events.md) for the mechanics.
 ## Part 3: Fail-Fast, And Paying For Nothing
 
 ```console
-3) one source never parses — fan-out is fail-fast (ADR-0020)
+3) one source never parses — fan-out is fail-fast by default (ADR-0027)
    run 3a4f9b9cbc0f4c58962b2f91433c177f
    run failed with MalformedResponseError: litigation: no FINDING/CONFIDENCE in a 17-token reply
    research answers that did commit: ['q-pricing', 'q-references']
@@ -307,15 +307,21 @@ call shows the sum.
 
 ```console
    The siblings' answers do survive and a resume or fork would reuse them — but this
-   workflow cannot say 'two of three answered, write it up anyway'. There is no
-   collect mode, so the caller gets an exception rather than the partial result that,
-   for a research fan-out, is usually the one you wanted. Getting it today means the
-   task swallowing its own failure and returning a sentinel — which also gives up its
-   retries, since a task that returns is a task that succeeded.
+   workflow, as written, cannot say 'two of three answered, write it up anyway'. It
+   took the fail-fast default, so the caller gets an exception rather than the partial
+   result that, for a research fan-out, is usually the one you wanted.
+   One argument changes that (ADR-0027):
+       await satay.map(research, questions, key=question_key, return_exceptions=True)
+   Collect mode settles every item and hands back the two paid-for answers beside the
+   exception, recording the dead source as a terminal TaskFailed — so the money it
+   burned is still priced and Studio still shows it. What you must NOT do is the
+   old workaround: swallow the failure inside the task and return a sentinel. That
+   gives up the retries that would have rescued a transient error, since a task that
+   returns is a task that succeeded.
 ```
 
-Same [ADR-0020](../decisions.md) fail-fast **default** as the [ELT pipeline](elt-pipeline.md), with
-a worse bill attached. Two research answers committed. They are on the journal, they cost real
+Same fail-fast **default** as the [ELT pipeline](elt-pipeline.md)
+([ADR-0027](../decisions.md), superseding ADR-0020), with a worse bill attached. Two research answers committed. They are on the journal, they cost real
 money, and the run is terminal so nothing can reach them.
 
 For a research fan-out, "two of three answered, write it up anyway" is almost always the result you

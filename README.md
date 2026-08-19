@@ -64,9 +64,10 @@ Deliberate MVP gaps, so the honesty survives contact:
 - **No blob GC.** No run deletion and no compaction; blobs accumulate under `./.satay/`
   and removal is manual (ADR-0004). A future GC has to be reference-aware, since forks
   share blobs with their source run.
-- **Fan-out is fail-fast only.** No collect / `return_exceptions` mode for
-  `map`/`gather`/`start_child`; the first failure raises and sibling results are discarded
-  (ADR-0020).
+- **Fan-out is fail-fast by default.** The first failure raises and sibling results are
+  discarded. `map` and `gather` take `return_exceptions=True` for collect mode, which
+  settles every item and records a terminal `TaskFailed` per collected failure (ADR-0027,
+  superseding ADR-0020). `start_child` has no such flag — collect it as a `gather` member.
 - **`satay runs show` is frozen at the V1 event subset** (ADR-0016). Timer, event,
   cancellation, and fork events render as bare type lines; Studio covers the rest.
 - **Fork only accepts terminal runs** (ADR-0004) — completed, failed, or cancelled.
