@@ -83,8 +83,9 @@ allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a sha
 
 ## Maturity
 
-`0.1.0` is the current release, and these pages describe it. There is no deprecation policy, no
-compatibility promise between alpha versions, and the public API can move. Pin the exact version.
+`0.1.0` is the current release, and these pages describe it. The runtime is past the experiment
+stage, but it is still a `0.x` release: there is no deprecation policy yet, and the public API can
+move. Pin the exact version.
 
 A few names this documentation uses sit below the top-level `satay` package: `SQLiteStore`,
 `EventType`, and `TimerEventWorker` live at deeper import paths and are more likely to change.

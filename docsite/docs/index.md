@@ -24,12 +24,12 @@ No broker, no scheduler, no control plane to operate. One process and one SQLite
 - **A real test seam.** `ManualClock`, `SeededRng`, and `FaultInjector` let a test crash a
   workflow on purpose and skip a fourteen-day timer with no wall-clock waiting.
 
-!!! warning "Alpha software"
+!!! info "Pin the version"
 
     `satay 0.1.0` is the current release, and everything on these pages was executed
-    against it. The runtime works and its suite is green, but the API can still move between
-    alpha versions and nothing is deprecated gracefully yet. Pin the exact version if you
-    build on it. [Limits](limits.md) lists what is deliberately missing.
+    against it. The runtime works and its suite is green, but this is a `0.x` release: there
+    is no deprecation policy yet, and the public API can still move. Pin the exact version if
+    you build on it. [Limits](limits.md) lists what is deliberately missing.
 
 ## Requirements
 
