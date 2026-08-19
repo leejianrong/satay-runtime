@@ -332,7 +332,9 @@ quarantined = [o.key for o in outcomes if isinstance(o, satay.TaskFailedError)]
 ```
 
 Five results, one `TaskFailedError`, a `completed` run, and a `TaskFailed` event in the journal
-naming `ledger-eu`. No fork required.
+naming `ledger-eu`. No fork required. [Best Of N](best-of-n.md) is the recipe that runs
+that argument rather than describing it, on a fan-out of model calls where every discarded
+sibling was paid for.
 
 ## Section 5: The Workaround, And Its Price
 

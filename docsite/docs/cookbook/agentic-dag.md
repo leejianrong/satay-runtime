@@ -343,6 +343,10 @@ swallow the failure inside the task and return a sentinel. That gives up the ret
 have rescued a transient error (a task that returns is a task that succeeded) and hides the failure
 from the journal entirely.
 
+[Best Of N](best-of-n.md) is that fan-out run both ways, side by side: the fail-fast run that
+ships nothing, the collect run that ships a reply from the drafts it kept, and the terminal
+`TaskFailed` on the journal in between.
+
 ## Part 4: Fork Under A Sharper Prompt
 
 ```console
