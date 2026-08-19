@@ -31,7 +31,7 @@ $ pip list
 Package Version
 ------- -------
 pip     26.2
-satay   0.1.0a3
+satay   0.1.0
 ```
 
 The core install is dependency-free. That is the packaging promise, and it is why you can embed
@@ -62,12 +62,12 @@ options:
 
 !!! warning "Pin the version"
 
-    Every page in this tutorial was written and executed against **`0.1.0a3`**, the current
+    Every page in this tutorial was written and executed against **`0.1.0`**, the current
     release. Satay is alpha: there is no compatibility promise between alpha versions and
     nothing is deprecated gracefully yet, so pin the exact version in anything you build.
 
     ```bash
-    pip install 'satay[studio]==0.1.0a3'
+    pip install 'satay[studio]==0.1.0'
     ```
 
     [Limits](../limits.md) lists what is deliberately missing.

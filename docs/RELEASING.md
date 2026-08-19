@@ -149,6 +149,39 @@ Pushing the tag starts **Release**. It will:
 3. Pause on the `pypi` environment for your approval.
 4. Publish to PyPI over OIDC.
 
+### Flip the docsite
+
+Once the tag is pushed, the site's pins can move to it — and that is a command, not an
+afternoon of `sed`:
+
+```bash
+git switch -c docs/version-flip-<version>
+make docs-version          # rewrite every version the docs quote to the newest tag
+make docs                  # asserts the result, then builds it
+```
+
+Open that as a **PR of its own**. `0.1.0` shipped with seven cookbook pages still pinned to
+`v0.1.0a3` because this step was manual and got skipped: the agentic-DAG page documented
+collect mode while its own `Source:` link fetched a file from before collect mode existed.
+
+`make docs-version` handles the mechanical half — the `blob/` links, the `curl` URLs, the
+`==` pins, the install transcripts, the `pip list` columns and the backticked versions in
+prose. It cannot handle a *sentence* that has gone stale, so read the diff. After `v0.1.0`
+that meant two of them: the cookbook index claimed "seven of the eight recipes" ran against
+the published wheel, and `fork-and-compare.md` carried a warning that it had to be fetched
+from `main` because it "landed after that tag". Both were true of `v0.1.0a3` and false the
+moment `v0.1.0` existed.
+
+`make docs` then gates it two ways, and both run in the Docs workflow:
+
+- `sync_docs_version.py --check` — every version the site quotes agrees with every other,
+  and that version has a tag in this checkout. It does **not** require the newest tag, so
+  the window between pushing the tag and merging this PR is not a red `main`.
+- `check_repo_links.py` — every pinned path resolves *at the ref that pins it*, including
+  the `raw.githubusercontent.com` URLs the recipes tell a reader to `curl`.
+
+---
+
 To release the *next* version, bump `version` in `pyproject.toml` (run `uv lock` so
 `uv.lock` follows — CI installs with `--frozen`), merge that through a PR, then tag. Both
 halves matter: an unbumped `pyproject.toml` fails the `guard` job on the tag/version match,

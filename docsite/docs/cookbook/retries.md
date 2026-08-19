@@ -7,13 +7,13 @@ The interesting part is not that retries happen. It is that every attempt is a j
 so the retry schedule is durable state you can read back, weeks later, from a run that failed
 at 3am. It is not a log line you have to hope somebody kept.
 
-Source: [`examples/retries_backoff_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/retries_backoff_demo.py)
+Source: [`examples/retries_backoff_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/retries_backoff_demo.py)
 
 ## Get It And Run It
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/retries_backoff_demo.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/retries_backoff_demo.py
 SATAY_DATA_DIR=.satay-demo python retries_backoff_demo.py
 ```
 

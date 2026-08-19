@@ -7,7 +7,7 @@ fails outright, so the run list has both outcomes to compare.
 
 Then it boots the debugger and tells you what to click.
 
-Source: [`examples/studio_walkthrough.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0a3/examples/studio_walkthrough.py)
+Source: [`examples/studio_walkthrough.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/studio_walkthrough.py)
 
 ## Get It And Run It
 
@@ -15,7 +15,7 @@ This is the one recipe that needs the `studio` extra, because the payoff is the 
 
 ```bash
 pip install 'satay[studio]'
-curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0a3/examples/studio_walkthrough.py
+curl -fsSL -O https://raw.githubusercontent.com/leejianrong/satay-runtime/v0.1.0/examples/studio_walkthrough.py
 SATAY_DATA_DIR=.satay-demo python studio_walkthrough.py
 ```
 

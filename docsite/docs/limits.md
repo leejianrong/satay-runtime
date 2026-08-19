@@ -83,7 +83,7 @@ allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a sha
 
 ## Maturity
 
-`0.1.0a3` is the current release, and these pages describe it. There is no deprecation policy, no
+`0.1.0` is the current release, and these pages describe it. There is no deprecation policy, no
 compatibility promise between alpha versions, and the public API can move. Pin the exact version.
 
 A few names this documentation uses sit below the top-level `satay` package: `SQLiteStore`,
