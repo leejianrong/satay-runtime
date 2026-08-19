@@ -83,7 +83,7 @@ allow-list, loopback-only bind. Proportionate for a laptop, unsuitable for a sha
 
 ## Maturity
 
-`0.1.0` is the first release, and these pages describe it. The runtime is past the experiment
+`0.1.0` is the current release, and these pages describe it. The runtime is past the experiment
 stage, but it is still a `0.x` release: there is no deprecation policy yet, and the public API can
 move. Pin the exact version.
 
