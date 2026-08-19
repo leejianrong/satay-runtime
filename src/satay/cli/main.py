@@ -2,9 +2,12 @@
 
 ``satay runs show <id>`` prints a run's timeline as text. It is deliberately **frozen at
 the V1 event subset** (ADR-0016 Q50): every event gets a ``seq/type`` line, but only the
-V1 workflow/task events get their payloads summarised. Timer, event-wait, cancellation,
-and fork events render as bare type lines — Studio covers the rest, and widening this
-renderer is out of MVP scope. ``satay dev`` is not part of the core CLI: it lives in the
+workflow/task events get their payloads summarised. Timer, event-wait, cancellation, and
+fork events render as bare type lines — Studio covers the rest, and widening this renderer
+is out of MVP scope. The one post-V1 event inside the summarised set is ``TaskFailed``,
+which is the terminal twin of ``TaskCompleted`` rather than a new kind of durable call, so
+leaving it bare stranded a verdict in the middle of a family the renderer already covers
+(ADR-0016 refinement, KAN-957). ``satay dev`` is not part of the core CLI: it lives in the
 ``satay[studio]`` extra, so the core surfaces a clear message pointing at the install.
 """
 

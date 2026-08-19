@@ -164,3 +164,16 @@ before re-driving.
 - **Ship collect mode on `map` only.** Rejected: `gather` has the same failure, the
   implementation is shared, and asymmetry between two primitives that sit next to each
   other in the docs is its own usability bug.
+
+## Refinement (renderer revisit, 2026-08-19)
+
+The consequence above — "`satay runs show` renders it as a bare type line, per the ADR-0016
+freeze on the V1 event subset. Expected, not a gap" — is withdrawn. `render_timeline` now
+summarises `TaskFailed` with its call identity and `error=<type>: <message>`. The reasoning is
+recorded as a refinement on [ADR-0016](0016-core-dependency-boundary.md) (KAN-957), and the
+short version is that this event was never on the far side of that freeze: it is the terminal
+twin of `TaskCompleted`, inside a task-event family the renderer already summarised in full, and
+the freeze traded CLI restraint against Studio coverage that does not exist for this type yet.
+
+The neighbouring consequence stands unchanged: **Studio still does not render `TaskFailed`**
+(KAN-867). Nothing else in this ADR is affected.

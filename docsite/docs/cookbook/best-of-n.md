@@ -175,25 +175,29 @@ the run is 26 events):
    16  2026-01-01T00:03:03+00:00  TaskAttemptFailed  task=draft key=c-legal attempt=1 error=RefusedError: legal: I can't help with drafting that reply. next_delay=0.316s
    17  2026-01-01T00:03:03+00:00  TaskAttemptStarted  task=draft key=c-refund attempt=2
    18  2026-01-01T00:03:03+00:00  TaskAttemptFailed  task=draft key=c-refund attempt=2 error=MalformedResponseError: refund: no REPLY/CONFIDENCE in a 13-token reply
-   19  2026-01-01T00:03:03+00:00  TaskFailed
+   19  2026-01-01T00:03:03+00:00  TaskFailed  task=draft key=c-refund error=MalformedResponseError: refund: no REPLY/CONFIDENCE in a 13-token reply
    20  2026-01-01T00:04:04+00:00  TaskAttemptStarted  task=draft key=c-legal attempt=2
    21  2026-01-01T00:04:04+00:00  TaskAttemptFailed  task=draft key=c-legal attempt=2 error=RefusedError: legal: I can't help with drafting that reply.
-   22  2026-01-01T00:04:04+00:00  TaskFailed
+   22  2026-01-01T00:04:04+00:00  TaskFailed  task=draft key=c-legal error=RefusedError: legal: I can't help with drafting that reply.
    23  2026-01-01T00:04:04+00:00  TaskScheduled  task=judge ordinal=0
    24  2026-01-01T00:04:04+00:00  TaskAttemptStarted  task=judge ordinal=0 attempt=1
    25  2026-01-01T00:04:04+00:00  TaskCompleted  task=judge ordinal=0
    26  2026-01-01T00:04:04+00:00  WorkflowCompleted
 ```
 
-!!! note "`TaskFailed` renders as a bare type line, on purpose"
+!!! note "Studio does not draw the verdict yet"
 
-    Seq 19 and 22 have no payload summary next to them. `satay runs show` is frozen at the V1
-    event subset ([ADR-0016](../decisions.md)) and renders anything newer as its type alone,
-    which is why the example prints the payloads itself. Studio does not draw a terminal
-    marker on a collected item yet either: the run tree derives item state from
-    `TaskScheduled` / `TaskAttemptFailed` / `TaskCompleted`, so you see the failed attempts and
-    no verdict. Both are known gaps in the *renderers*, recorded in
-    [ADR-0027](../decisions.md). The event itself is there and the read API returns it.
+    Seq 19 and 22 name their candidate and their error, so the timeline reads end to end.
+    That is a carve-out rather than the general rule: `satay runs show` is frozen at an early
+    event subset ([ADR-0016](../decisions.md)) and still renders timer, event, cancellation
+    and fork events as their type alone. `TaskFailed` is summarised because it is the terminal
+    twin of `TaskCompleted`, and leaving one verdict blank in a family the renderer already
+    covered told you two candidates had died without saying which.
+
+    Studio has not caught up. Its run tree derives item state from `TaskScheduled` /
+    `TaskAttemptFailed` / `TaskCompleted`, so a collected item shows its failed attempts and
+    no terminal marker, which reads as still-trying rather than given-up. The event is on the
+    journal either way and the read API returns it.
 
 ### What The Argument Bought
 

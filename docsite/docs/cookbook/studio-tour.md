@@ -347,8 +347,8 @@ Run 1e909aadfbd34ba2b43a0c6a3bd657d2 — 28 event(s)
 ⚡   5  2026-01-01T00:00:00+00:00  WorkflowResumed
 ```
 
-Excerpted at five events. `satay runs show` is deliberately frozen at the V1 event subset: timer,
-event, child-workflow, and fork events render as bare type lines. Studio is the surface that
+Excerpted at five events. `satay runs show` is deliberately frozen at an early event subset:
+timer, event, cancellation and fork events render as bare type lines. Studio is the surface that
 renders everything, and that split is on purpose rather than unfinished.
 
 For everything else the API offers, and the reasoning behind the loopback guard, see
