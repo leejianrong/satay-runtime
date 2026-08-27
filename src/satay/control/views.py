@@ -24,6 +24,7 @@ from typing import Any
 from satay.journal import Store
 from satay.journal.codec import decode
 from satay.journal.events import Event, EventType, RunRecord, RunStatus
+from satay.valuediff import diff_values
 
 #: Task-lifecycle event types that carry a durable-call identity in their payload.
 _TASK_EVENTS = frozenset(
@@ -401,6 +402,10 @@ async def compare(store: Store, run_id: str, other_run_id: str) -> dict[str, Any
     Every durable-call identity present in either run becomes one row; each side shows
     that call's status and recorded output (or ``null`` when the identity is absent on
     that side), so a diverging run is read off directly.
+
+    Each row also carries a ``diff`` describing **where** the two sides differ, not merely
+    that they do — see :func:`_row_diff`. Additive, so a consumer that only reads the
+    fields it knows is unaffected (ADR-0018).
     """
     from satay import versioning
 
@@ -423,6 +428,7 @@ async def compare(store: Store, run_id: str, other_run_id: str) -> dict[str, Any
                 "a": a,
                 "b": b,
                 "aligned": a is not None and b is not None,
+                "diff": _row_diff(a, b),
             }
         )
     return {
@@ -523,6 +529,26 @@ async def run_calls(store: Store, run_id: str) -> dict[str, Any]:
 
     record = await _require_run(store, run_id)
     events = await store.read_events(run_id)
+    output, error = _run_outcome(events)
+    return {
+        "summary": _run_summary(
+            record, versioning.current_code_version(), forked_from=_fork_lineage(events)
+        ),
+        "calls": await _calls_with_children(store, events, record),
+        "output": output,
+        "error": error,
+    }
+
+
+async def _calls_with_children(
+    store: Store, events: Sequence[Event], record: RunRecord
+) -> list[dict[str, Any]]:
+    """Every durable call of one run — tasks **and** child workflows — in schedule order.
+
+    Shared by :func:`run_calls` and :func:`compare`, so the two cannot disagree about what
+    counts as a durable call. Needs the store, unlike the pure :func:`_calls_view`, because
+    a child's recorded result lives in the child's own journal.
+    """
     scanned = _scan_tasks(events)
     calls = []
     for identity, call in _calls_view(events, record).items():
@@ -572,14 +598,43 @@ async def run_calls(store: Store, run_id: str) -> dict[str, Any]:
         calls.append(child)
 
     calls.sort(key=lambda call: call["first_seq"])
-    output, error = _run_outcome(events)
+    return calls
+
+
+def _row_diff(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any]:
+    """Where one compare row's two sides differ.
+
+    ``input`` and ``output`` carry the structural path diff (:func:`satay.valuediff
+    .diff_values`); ``attempts`` and ``duration_seconds`` stay plain booleans, since a
+    scalar has nowhere for a path to point.
+
+    ``changed`` keeps the meaning Studio has always given it: absent on one side, or
+    differing input, output, or attempts. **Timing is deliberately excluded** — duration
+    varies run to run for reasons that are not a divergence, so counting it would mark
+    every row changed and make the signal worthless.
+
+    Computed here, before :class:`satay.control.api.ReadAPI` redacts, so the paths are
+    correct even for values the response masks. Only paths cross that boundary, never the
+    values they point at.
+    """
+    if a is None or b is None:
+        # Nothing to compare against; the absence *is* the difference.
+        return {
+            "changed": True,
+            "input": None,
+            "output": None,
+            "attempts": False,
+            "duration_seconds": False,
+        }
+    input_diff = diff_values(a.get("input"), b.get("input"))
+    output_diff = diff_values(a.get("output"), b.get("output"))
+    attempts = a.get("attempts") != b.get("attempts")
     return {
-        "summary": _run_summary(
-            record, versioning.current_code_version(), forked_from=_fork_lineage(events)
-        ),
-        "calls": calls,
-        "output": output,
-        "error": error,
+        "changed": bool(input_diff["changed"] or output_diff["changed"] or attempts),
+        "input": input_diff,
+        "output": output_diff,
+        "attempts": attempts,
+        "duration_seconds": a.get("duration_seconds") != b.get("duration_seconds"),
     }
 
 
@@ -587,9 +642,10 @@ async def _compare_side(
     store: Store, run_id: str, record: RunRecord, current_version: str
 ) -> dict[str, Any]:
     events = await store.read_events(run_id)
+    calls = await _calls_with_children(store, events, record)
     return {
         "summary": _run_summary(record, current_version, forked_from=_fork_lineage(events)),
-        "calls": _calls_view(events, record),
+        "calls": {call["identity"]: call for call in calls},
     }
 
 
@@ -610,6 +666,7 @@ __all__ = [
     "RunNotFoundError",
     "call_identity",
     "compare",
+    "run_calls",
     "run_list",
     "task_detail",
     "timeline",

@@ -118,8 +118,8 @@ def test_run_app_drives_a_parked_run_with_no_studio_dependency() -> None:
     )
 
 
-def test_inspect_reads_a_run_with_no_studio_dependency() -> None:
-    """``satay.inspect`` is core, and this proves it by *using* it (KAN-477).
+def test_inspect_and_diff_read_runs_with_no_studio_dependency() -> None:
+    """``satay.inspect`` and ``satay.diff`` are core, proven by *using* them (KAN-477, ADR-0034).
 
     ``inspect`` reaches the read-view assembly in ``satay.control.views`` through a lazy
     import, the same arrangement ``fork`` and ``RunHandle.cancel`` already use. That is
@@ -128,8 +128,8 @@ def test_inspect_reads_a_run_with_no_studio_dependency() -> None:
     module-level ``import fastapi`` added there would put a studio-only dependency behind
     a core public function without failing any import-time check.
 
-    So this child interpreter drives a real workflow, reads it back through the public
-    name, asserts it got the recorded call, and only then scans ``sys.modules``.
+    So this child interpreter drives real workflows, reads them back through both public
+    names, asserts it got the recorded calls, and only then scans ``sys.modules``.
     """
     program = textwrap.dedent(
         f"""
@@ -152,6 +152,12 @@ def test_inspect_reads_a_run_with_no_studio_dependency() -> None:
             inspection = await satay.inspect(handle.run_id, store=store)
             assert [c.identity for c in inspection.calls] == ["_hygiene_double:0"], inspection
             assert inspection.calls[0].output == 42, inspection
+
+            other = satay.start(_hygiene_reads, 1, store=store)
+            assert await other.result() == 2
+            comparison = await satay.diff(handle.run_id, other.run_id, store=store)
+            changed = [c.identity for c in comparison.changed]
+            assert changed == ["_hygiene_double:0"], comparison
             store.close()
 
         asyncio.run(main())
@@ -169,5 +175,5 @@ def test_inspect_reads_a_run_with_no_studio_dependency() -> None:
         text=True,
     )
     assert result.returncode == 0, (
-        f"satay.inspect needed a studio-only dependency: {result.stdout} {result.stderr}"
+        f"a core read API needed a studio-only dependency: {result.stdout} {result.stderr}"
     )

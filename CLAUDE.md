@@ -152,9 +152,11 @@ is the authority, so keep the two in step:
 - **Entry points:** `run_app` (ADR-0030; `async with` gives you an open journal and a
   running poll loop, and it is core, not `satay[studio]`), `fork` (ADR-0028),
   `inspect` (KAN-477, ADR-0033; reads a run's recorded calls without forking, redacted
-  by default)
+  by default), `diff` (ADR-0034; call-by-call compare of two runs, as jq-style paths
+  computed *before* redaction so masked values still compare correctly)
 - **Values:** `RunHandle`, `RunStatus` (KAN-524; a `StrEnum`, so `== "completed"` still
-  works), `RunInspection` / `RecordedCall` (ADR-0033), `PARKED` (ADR-0030; what `result()` returns for a run parked
+  works), `RunInspection` / `RecordedCall` (ADR-0033), `RunDiff` / `CallDiff` /
+  `ValueDiff` (ADR-0034), `PARKED` (ADR-0030; what `result()` returns for a run parked
   with nothing in this process to wake it, and it is not `None`)
 - **Errors:** `WorkflowFailedError`, `TaskFailedError`, `NondeterminismError`,
   `EffectSafetyError`, `VersionMismatchError`
