@@ -1,0 +1,13 @@
+# Vendored: asciinema-player
+
+- Source: https://www.npmjs.com/package/asciinema-player
+- Version: 3.17.0
+- License: Apache-2.0 (see `LICENSE` in this directory)
+- Files: `asciinema-player.min.js` (standalone IIFE bundle, WASM inlined) and
+  `asciinema-player.css`, copied verbatim from the npm tarball's `dist/bundle/`.
+
+Vendored rather than loaded from a CDN so the docs site makes no third-party script
+requests at page-view time (matching `docsite/zensical.toml`'s `font = false` stance on
+external assets). To update, download a newer tarball from
+`https://registry.npmjs.org/asciinema-player` and replace these two files plus the
+version above.

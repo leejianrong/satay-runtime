@@ -14,6 +14,31 @@ executes. The other five answer from the journal, byte-identical.** `$0.0023` in
 
 Source: [`examples/fork_and_compare_demo.py`](https://github.com/leejianrong/satay-runtime/blob/v0.1.0/examples/fork_and_compare_demo.py)
 
+## Watch It
+
+<a id="fork-and-compare-cast-css" href="../assets/vendor/asciinema-player/asciinema-player.css" hidden></a>
+<a id="fork-and-compare-cast-file" href="../assets/casts/fork-and-compare.cast" hidden></a>
+<div id="fork-and-compare-cast" style="max-width: 900px; margin: 1.5rem 0;"></div>
+<script src="../assets/vendor/asciinema-player/asciinema-player.min.js"></script>
+<script>
+(() => {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = document.getElementById("fork-and-compare-cast-css").href;
+  document.head.appendChild(link);
+  AsciinemaPlayer.create(
+    document.getElementById("fork-and-compare-cast-file").href,
+    document.getElementById("fork-and-compare-cast"),
+    { fit: "width", theme: "monokai" }
+  );
+})();
+</script>
+
+The recording is the five beats below, run unedited — same file, same deterministic fake model,
+real output, five markers on the seek bar (⇤/⇥ jump between them). The prompt is typed and the
+reading pauses between beats are added for legibility; the process itself runs in well under a
+second, which is the number Beat 3 is about.
+
 !!! info "No API key, no network"
 
     The model sits behind a one-method protocol whose default implementation is a
@@ -145,7 +170,7 @@ rest of the page is about not paying it twice.
      policy ids the reply cites  ['POL-14', 'POL-22', 'POL-31', 'POL-40']
      ids that do not exist       []
      promises money back         False
-   RunForked: source=16f3571014864692920797a93805f243 fork_point_seq=16 input_overridden=True
+   RunForked: source=16f3571014864692920797a93805f243 fork_point_seq=16
 ```
 
 The call that produced it:
@@ -163,8 +188,8 @@ result = await handle.result()
 sequence numbers to find it. `workflow_input=` supplies the new brief, and it is written into
 the fork's *own* `WorkflowCreated` event rather than held in memory — so a fork that parks on a
 timer and wakes an hour later still reads back the input it actually ran under. The `RunForked`
-line is that lineage, readable off the journal: which run it came from, where it was cut, and
-that the input was overridden.
+line is that lineage, read straight off `satay.inspect(fork_id).forked_from`: which run it came
+from and where it was cut.
 
 The source run is untouched. [ADR-0004](../decisions.md) makes a journal immutable; a fork is a
 new run seeded with a copy of a prefix, never an edit.
@@ -185,26 +210,26 @@ new run seeded with a copy of a prefix, never an edit.
    >>> The source run is untouched and still says what it said.
 ```
 
-"Executed" here is not the demo's own bookkeeping. A fork's journal opens with a **verbatim
-copy** of its source's prefix, attempt events included, so the test for "did this run actually
-enter the function body" is whether a `TaskAttemptStarted` sits *above* the `RunForked` marker:
+"Executed" here is not the demo's own bookkeeping — it is read straight off `satay.inspect`
+([ADR-0033](../decisions.md)). A fork's journal opens with a **verbatim copy** of its source's
+prefix, so the test for "did this run actually make this call" is whether a
+`RecordedCall.first_seq` sits *above* the fork point:
 
 ```python
-def executed_here(events):
-    boundary = next((e.seq for e in events if e.type is EventType.RUN_FORKED), 0)
-    return [call_identity(e.payload)
-            for e in events
-            if e.seq > boundary and e.type is EventType.TASK_ATTEMPT_STARTED]
+inspection = await satay.inspect(fork_id, store=store)
+boundary = inspection.forked_from["fork_point_seq"]
+executed = [call.identity for call in inspection.calls if call.first_seq > boundary]
 ```
 
-One name comes back. The costs are read the same way — `record_model_usage` entries above the
-marker, because the entries below it are the source's charges, copied rather than repeated.
+One identity comes back. The costs are read the same way, above the same boundary — but from the
+raw journal, not `inspect`: `ctx.record_model_usage` entries are not durable calls, and there is
+no aggregate read view for them yet (that is on the roadmap, not shipped).
 
 ## Beat 4 — Compare, Call By Call
 
 ```console
 4) compare, call by call
-     ReadAPI.compare(16f35710…, 90738725…)
+     satay.diff(16f35710…, 90738725…)
      GET /runs/16f3571014864692920797a93805f243/compare?to=907387252c3d4e6f90b7a2db99f51df3
 
    durable call                       source     fork       recorded output
@@ -220,20 +245,29 @@ marker, because the entries below it are the source's charges, copied rather tha
    table; the JSON behind it is what you just read off two real journals.
 ```
 
-Compare aligns two runs by **durable-call identity** — `plan_lookups:0` is the first call to
-`plan_lookups`, `look_up:key:refund-window` is the fan-out item with that key — and gives each
-side that call's status and recorded output. An identity present on one side and absent on the
-other shows as a hole, which is how a structural divergence reads.
+`satay.diff` ([ADR-0034](../decisions.md)) aligns two runs by **durable-call identity** —
+`plan_lookups:0` is the first call to `plan_lookups`, `look_up:key:refund-window` is the fan-out
+item with that key — and gives each side that call's status and recorded output, plus a
+`changed` flag the demo reads straight off instead of comparing outputs itself:
 
-Here there are no holes. Six rows, six aligned pairs, five with equal recorded output. The
-table is not a diff of two log files; it is the journals themselves, aligned by the identity
+```python
+run_diff = await satay.diff(source_id, fork_id, store=store)
+for call in run_diff.calls:
+    note = "identical — replayed" if not call.changed else "DIFFERS  <- the fixed call"
+```
+
+An identity present on one side and absent on the other shows as unaligned, which is how a
+structural divergence reads.
+
+Here there is no divergence in *shape*. Six rows, six aligned pairs, five with `changed=False`.
+The table is not a diff of two log files; it is the journals themselves, aligned by the identity
 the replay engine uses.
 
 !!! warning "The query parameter is `to`, not `other_run_id`"
 
     Over HTTP the route is `GET /runs/{run_id}/compare?to={other}` and the parameter is
-    **required**, so `?other_run_id=` comes back `422`. The Python method is
-    `ReadAPI.compare(run_id, other_run_id)`. The two spellings diverge on purpose — `to` reads
+    **required**, so `?other_run_id=` comes back `422`. The Python function is
+    `satay.diff(run_id, other_run_id)`. The two spellings diverge on purpose — `to` reads
     as prose in a URL the path has already scoped to runs — and every URL this example prints
     is replayed against the real server by `tests/e2e/test_example_urls.py`, so if the page
     ever lies about it, the build goes red.
@@ -330,9 +364,13 @@ primitives and a `dataclass`; it does not ship one. The model client, the retrie
 prompt templates and the guardrail are all yours, and in this example they are all visible in
 the one file so you can see where your own would go.
 
-## If You Are Recording This
+## If You Are Recording This Yourself
 
-The page is laid out as five beats because that is a screencast. What to run and what to say:
+The page is laid out as five beats because that is a screencast, and the recording at the top
+of the page is exactly that: beats 1 through 5, terminal only. What it does not show is beat 6
+below — opening the same four runs in Studio, forking from the UI, and drawing the beat 4 table
+there — because that is an interactive session, not something `stdout` can carry. If you are
+recording the fuller version with Studio and narration, here is what to run and what to say:
 
 | Beat | On screen | The one sentence |
 | --- | --- | --- |
