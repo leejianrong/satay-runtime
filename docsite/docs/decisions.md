@@ -55,6 +55,7 @@ If you read four, read these.
 | [0034](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0034-structural-diff-of-two-runs.md) | `satay.diff`: where two runs differ, as paths computed before redaction |
 | [0035](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0035-usage-rollup-and-a-redaction-word-boundary-fix.md) | `RunInspection.usage`: a run's self-reported totals, and the redaction bug it found |
 | [0036](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0036-decoded-event-memoisation.md) | Decoded-event memoisation in `SQLiteStore`, per process (ARCHITECTURE §9) |
+| [0037](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0037-reference-aware-retention-and-blob-gc-design.md) | Reference-aware retention and blob GC — a design card, not yet implemented |
 
 ## Packaging, tooling, and process
 
