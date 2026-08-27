@@ -414,3 +414,85 @@ async def test_blob_spilled_output_is_resolved_transparently() -> None:
     assert isinstance(call.output, str)
     assert len(call.output) == 300_000
     store.close()
+
+
+# -- usage rollup (ADR-0035) -------------------------------------------------------
+
+
+@satay.task()
+async def insp_bill(tokens: int) -> int:
+    """Self-report usage whose numbers are easy to hand-check: tokens, and tokens/1000."""
+    ctx = satay.task_context()
+    ctx.record_model_usage(
+        model="fake-1", input_tokens=tokens, output_tokens=tokens // 10, usd=tokens / 1000
+    )
+    return tokens
+
+
+@satay.workflow
+async def insp_priced(values: list[int]) -> int:
+    total = 0
+    for value in values:
+        total += await insp_bill(value)
+    return total
+
+
+@satay.task(retries=2)
+async def insp_flaky_bill(succeed_on_attempt: int) -> str:
+    """Bills every attempt, garbled until ``succeed_on_attempt`` — mirrors KAN-479."""
+    ctx = satay.task_context()
+    ctx.record_model_usage(model="fake-1", input_tokens=100 * ctx.attempt, output_tokens=1)
+    if ctx.attempt < succeed_on_attempt:
+        raise ValueError("garbled")
+    return "ok"
+
+
+@satay.workflow
+async def insp_flaky_priced(succeed_on_attempt: int) -> str:
+    return await insp_flaky_bill(succeed_on_attempt)
+
+
+async def test_usage_sums_every_numeric_field_across_every_call() -> None:
+    """The headline: no aggregate existed anywhere before this (roadmap item 6)."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_priced, [1000, 2000], store=store)
+    await handle.result()
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    assert inspection.usage == {"input_tokens": 3000, "output_tokens": 300, "usd": 3.0}
+    store.close()
+
+
+async def test_usage_is_empty_when_nothing_self_reported() -> None:
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_two_steps, 5, store=store)
+    await handle.result()
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    assert inspection.usage == {}
+    store.close()
+
+
+async def test_usage_counts_failed_attempts_the_same_as_model_usage() -> None:
+    """KAN-479: a retried call paid for every answer it threw away, not just the last."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_flaky_priced, 3, store=store)
+    await handle.result()
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    assert inspection.usage["input_tokens"] == 100 + 200 + 300  # attempts 1, 2, 3
+    store.close()
+
+
+async def test_a_usage_total_masked_by_a_custom_redactor_is_left_out_not_zeroed() -> None:
+    """A field the redactor masks is dropped from the totals, not reported as zero."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_priced, [1000], store=store)
+    await handle.result()
+
+    inspection = await satay.inspect(
+        handle.run_id, store=store, redactor=Redactor(patterns=["output_tokens"])
+    )
+    assert "output_tokens" not in inspection.usage
+    assert inspection.usage["input_tokens"] == 1000
+    store.close()

@@ -24,6 +24,7 @@ inspection.run_id          # the run
 inspection.workflow_name
 inspection.status          # a satay.RunStatus
 inspection.output          # the run's recorded output, or None
+inspection.usage           # self-reported totals, e.g. {"input_tokens": 3211, "usd": 0.0192}
 inspection.error           # {"type", "message", "traceback"} for a failed run, else None
 inspection.calls           # every durable call, in the order it was scheduled
 inspection.call("research:0")   # one call by identity, or None
@@ -75,6 +76,34 @@ if inspection.error:
     print(inspection.error["type"], inspection.error["message"])
     failed = [c for c in inspection.calls if c.status == "failed"]
 ```
+
+## What a run cost
+
+A task that calls `ctx.record_model_usage(model=..., input_tokens=..., output_tokens=...,
+**extra)` (ADR-0008) writes a schemaless usage entry onto its outcome event. `inspection.usage`
+is that data summed: every numeric field, across every attempt in the run, under its own key.
+
+```python
+inspection = await satay.inspect(run_id)
+inspection.usage   # {"input_tokens": 3211, "output_tokens": 640, "usd": 0.0192}
+```
+
+Nothing here is a pricing table — Satay ships no model adapters, so it has no idea what a
+token costs. `usd` above is only there because a task chose to report it; sum whatever field
+names your own tasks self-report. A run whose tasks never called `record_model_usage` gets
+`{}`, not zeroes for keys nobody reported.
+
+Failed attempts count. A task retried twice before succeeding was billed for the two answers
+it threw away, same as `ReadAPI`'s own task-detail total (KAN-479) — there is no flag to narrow
+this to successful work only, because nothing has needed that yet; drop to
+`journal.timeline.model_usage(events, include_failed_attempts=False)` if you do.
+
+`usage` goes through the same redactor as everything else. A field a caller's own pattern set
+happens to match — `usage=Redactor(patterns=["cost"])` against a self-reported `cost` field,
+say — is left out of the total rather than reported as `0`: a number the redactor could not see
+is unknown, not zero. This is per-run, not per-call: usage rides on the physical attempt, not
+the logical call, so it does not appear on `RecordedCall`. One call's own usage is
+`ReadAPI.task_detail`'s job, not this one's.
 
 ## Reading is not forking
 

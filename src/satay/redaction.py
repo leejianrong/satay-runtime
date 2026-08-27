@@ -1,7 +1,8 @@
 """Field-name redaction of sensitive values — read time and write time (N18, ADR-0029).
 
-Redaction is keyed on **field names**: any mapping key whose lower-cased form contains a
-configured pattern has its value replaced with :data:`REDACTED`, recursing through nested
+Redaction is keyed on **field names**: any mapping key that whole-word-matches a configured
+pattern (splitting both on ``_``, so ``token`` matches ``access_token`` but not the plural
+``input_tokens``) has its value replaced with :data:`REDACTED`, recursing through nested
 mappings and lists. The same :class:`Redactor` serves two very different jobs:
 
 - **Read time** (ADR-0009/0014, the default and the local case): the redactor is the
@@ -30,16 +31,20 @@ of which are structural, so no pattern set — not even one that deliberately ma
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
+
+#: Splits a field name into its snake_case words for whole-word pattern matching.
+_WORD_SPLIT = re.compile(r"[^a-z0-9]+")
 
 #: The placeholder substituted for a redacted value.
 REDACTED = "***REDACTED***"
 
-#: Default field-name patterns (matched case-insensitively as substrings of a key).
-#: Deliberately specific so structural contract keys — ``key`` (a map item key),
-#: ``code_version``, ``event_id``, ``identity`` — are never caught. Callers may pass
-#: their own set to :class:`Redactor`.
+#: Default field-name patterns (matched case-insensitively, whole-word — see
+#: :meth:`Redactor.matches`). Deliberately specific so structural contract keys —
+#: ``key`` (a map item key), ``code_version``, ``event_id``, ``identity`` — are never
+#: caught. Callers may pass their own set to :class:`Redactor`.
 DEFAULT_REDACTION_PATTERNS: frozenset[str] = frozenset(
     {
         "password",
@@ -103,13 +108,31 @@ class Redactor:
 
     def __init__(self, patterns: Iterable[str] | None = None) -> None:
         source = DEFAULT_REDACTION_PATTERNS if patterns is None else patterns
-        #: Lower-cased for case-insensitive substring matching.
-        self._patterns: tuple[str, ...] = tuple(p.lower() for p in source)
+        #: Each pattern's own snake_case words, so matching is whole-word rather than a
+        #: raw substring test (see :meth:`matches`).
+        self._patterns: tuple[tuple[str, ...], ...] = tuple(
+            tuple(w for w in _WORD_SPLIT.split(p.lower()) if w) for p in source
+        )
 
     def matches(self, field_name: str) -> bool:
-        """Whether ``field_name`` is a sensitive field (case-insensitive substring)."""
-        lowered = field_name.lower()
-        return any(pattern in lowered for pattern in self._patterns)
+        """Whether ``field_name`` is a sensitive field (case-insensitive, whole-word).
+
+        A pattern matches when its words appear as a **contiguous run of whole words**
+        in ``field_name`` (splitting both on non-alphanumeric characters, i.e. ``_``) --
+        not as a raw substring. ``token`` matches ``access_token`` (words
+        ``["access", "token"]``) but not ``input_tokens`` (``["input", "tokens"]`` --
+        plural, a different word). A raw substring test made that same false match on
+        every self-reported ``input_tokens`` / ``output_tokens`` field (ADR-0008),
+        silently redacting a token *count* under the pattern meant for a token
+        *value* -- found while building the usage rollup this fix now unblocks.
+        """
+        words = tuple(w for w in _WORD_SPLIT.split(field_name.lower()) if w)
+        n = len(words)
+        for pattern in self._patterns:
+            m = len(pattern)
+            if 0 < m <= n and any(words[i : i + m] == pattern for i in range(n - m + 1)):
+                return True
+        return False
 
     def redact(self, value: Any) -> Any:
         """Return a redacted deep copy of a JSON-compatible ``value``.

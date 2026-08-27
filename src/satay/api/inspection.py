@@ -121,6 +121,22 @@ class RunInspection:
     output: Any = None
     """The run's recorded output, or ``None`` if it has not completed."""
 
+    usage: Mapping[str, int | float] = field(default_factory=dict)
+    """Every numeric field self-reported via ``ctx.record_model_usage`` (ADR-0008),
+    summed across every attempt in this run -- ``input_tokens``, ``output_tokens``, and
+    any other numeric field a caller chose to report (e.g. a ``usd`` cost), each under
+    its own key. Empty if nothing self-reported. Counts failed attempts, since a retried
+    call paid for every answer it threw away (KAN-479) -- the same convention
+    :meth:`~satay.journal.timeline.model_usage` and the HTTP read API's task detail use.
+    A field the redactor masks is left out of the total rather than counted as zero: a
+    number that cannot be summed is unknown, not zero.
+
+    This is a run-level total, not per-call: usage rides on the physical *attempt*, so it
+    does not line up with :attr:`RecordedCall.attempts`, which counts attempts but does
+    not carry their usage. Read a single call's own usage from ``ReadAPI.task_detail``
+    (or the pre-redaction ``journal.timeline.model_usage``) until that granularity earns
+    a Python-level read of its own."""
+
     error: Mapping[str, Any] | None = None
     """For a failed run, the recorded ``{"type", "message", "traceback"}``; otherwise
     ``None``. Reported rather than raised — the caller asked what happened, and a read
@@ -204,7 +220,23 @@ async def inspect(
         status=RunStatus(summary["status"]),
         calls=calls,
         output=view["output"],
+        usage=_redacted_usage(view["usage"]),
         error=view["error"],
         code_version=summary.get("code_version"),
         forked_from=summary.get("forked_from"),
     )
+
+
+def _redacted_usage(totals: Any) -> dict[str, int | float]:
+    """Drop any total the redactor masked to the ``REDACTED`` string.
+
+    ``run_calls`` sums only numeric fields, but the redactor runs afterwards and matches
+    on field *names* -- a total whose key matches a caller's own pattern comes back as a
+    string. Left out rather than reported: a masked total is unknown, not zero, and this
+    keeps :attr:`RunInspection.usage` numeric-valued as documented.
+    """
+    return {
+        key: value
+        for key, value in totals.items()
+        if isinstance(value, int | float) and not isinstance(value, bool)
+    }
