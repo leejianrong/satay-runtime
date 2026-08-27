@@ -14,8 +14,9 @@ shaping: true
 
 Scope is the MVP (decision D-scope): the durable runtime, its five primitives,
 SQLite persistence, the control and read API, Satay Studio, and the two-task
-crash-recovery slice. The vendor-dossier reference app is the next milestone and is
-out of scope here.
+crash-recovery slice. The vendor-dossier reference app was cut by ADR-0025;
+sibei-flow's repair worker is the reference consumer instead, and it lives in its own
+repository.
 
 ---
 
@@ -410,7 +411,13 @@ seams and stay constant across every phase below.
 - **Optional model-adapter libraries** as separate packages, never a core dependency
   (ADR-0008).
 - **A TUI debugger** behind the same JSON API seam (ADR-0009).
-- **The vendor-dossier reference app**, the next milestone after this runtime.
+- **A hosted journal plane**, tier 1 only (ingest, retention, hosted Studio, team
+  sharing, cost reporting), after the launch and over a versioned ingest contract
+  (ADR-0026).
+- **Products on top, in their own repositories**, coupled to the journal read format
+  rather than the execution core: sibei-flow's repair worker (ADR-0025) and a
+  pipeline-graph builder that compiles down to Satay code (ADR-0032). Neither adds a
+  graph model to this runtime.
 
 ---
 

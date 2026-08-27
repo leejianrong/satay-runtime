@@ -62,6 +62,16 @@ never hosted execution. One requirement landed early, write-time redaction
 `*_ref` value fields so replay identity is untouched. Read-time redaction is still the
 default and still protects only the API response. No hosting implementation exists.
 
+[ADR-0032](docs/adr/0032-products-on-top-pipeline-graph-builder.md), what may be built *on*
+Satay. A visual pipeline-graph builder (Kubeflow/Airflow-shaped) is sanctioned as a
+**separate product in a separate repo** that **compiles down to readable
+`@workflow`/`@task` Python**. The coupling is one-way: no graph DSL, no node registry and
+no graph interpreter in `satay`, and the runtime must stay releasable with the builder
+deleted. So "no graph DSL" now means the core specifically, not the idea. Watch for the
+pull it creates toward graph-shaped core features (a node registry, a step-metadata event
+slot, a graph id on runs, a second durable-call identity scheme) — default answer is no,
+those belong builder-side.
+
 sibei-flow is the sibling project and the designated first tenant. The two are independent
 products sharing one engine, and the coupling surface is the journal read format (stdlib
 frozen dataclasses), not the execution core. Its needs are legitimate input, but ADR-0025
