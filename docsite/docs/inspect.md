@@ -1,4 +1,4 @@
-# Reading a Run
+# Reading and Comparing Runs
 
 `satay.inspect` hands you back what a run recorded — every durable call, its arguments,
 its result — without forking it and without running anything again.
@@ -129,3 +129,66 @@ over plain JSON structures. Reads stay predictable instead.
 
 If you want typed values, `await handle.result()` on the run gives you the workflow's own
 return value, rehydrated.
+
+## Comparing two runs
+
+`satay.diff` aligns two runs by durable-call identity and tells you **where** their values
+differ — not merely that they do.
+
+```python
+forked = await satay.fork(run_id, before_task="synthesize", workflow_input=sharper_brief)
+await forked.result()
+
+result = await satay.diff(run_id, forked.run_id)
+
+for call in result.changed:
+    print(call.identity)
+    if call.args and call.args.changed:
+        print("  args differ at  ", call.args.paths)
+    if call.output and call.output.changed:
+        print("  output differs at", call.output.paths)
+```
+
+```console
+synthesize:0
+  args differ at   ('[1]',)
+  output differs at ('.summary',)
+```
+
+That is the loop the debugger exists for: fork a run at the call that went wrong, drive the
+fork, and read off exactly which field of which call the change moved. `research:0` above
+does not appear — it was replayed off the journal and is identical.
+
+Paths are jq-shaped: `.style`, `[1].topic`, and `.` when the difference is not localisable
+to any field inside the value (a scalar, or two sides of different shapes). **For a call's
+arguments the top-level index is the positional argument index** — `[1]` is the second
+argument — because keyword arguments are never journaled.
+
+`result.calls` is every aligned identity; `result.changed` is the subset that differs. A
+call only one run made has `aligned = False` and no value diff, since there is nothing to
+compare it against. Timing is reported as `duration_changed` but never counts as `changed`:
+duration varies between runs for reasons that are not a divergence.
+
+### Secrets are compared correctly, not just hidden
+
+The comparison runs *before* redaction, and emits only paths. So two **different** secrets
+are correctly reported as differing, even though both come back masked:
+
+```python
+call.output.paths            # ('.session_token',)   — they differ
+call.a.output["session_token"]  # '***REDACTED***'   — but you cannot read either
+```
+
+A diff computed after redaction would have compared two identical `***REDACTED***`
+sentinels and told you the runs agreed, which would be worse than telling you nothing.
+
+The one case that cannot be rescued is [write-time redaction](guarantees.md#redaction): the
+journal itself holds the sentinel, the cleartext is gone at every layer, and no comparison
+is possible. That is reported honestly rather than guessed:
+
+```python
+call.output.redacted         # True — equality is unknown, not established
+```
+
+`ValueDiff.truncated` says the same thing about size: paths are capped, so a diff of two
+enormous and wholly different values gives you a prefix of the truth rather than megabytes.

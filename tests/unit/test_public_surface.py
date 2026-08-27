@@ -35,6 +35,12 @@ def test_public_surface_is_exported() -> None:
         "inspect",
         "RunInspection",
         "RecordedCall",
+        # Call-by-call compare from Python (ADR-0034): the third leg of the ADR-0025
+        # debugger wedge, after fork and replay.
+        "diff",
+        "RunDiff",
+        "CallDiff",
+        "ValueDiff",
         "PARKED",
         # V2 public error types (N9/A10.2).
         "NondeterminismError",

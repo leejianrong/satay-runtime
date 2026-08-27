@@ -13,11 +13,13 @@ The public surface (ARCHITECTURE §1):
 - ``map`` / ``gather`` / ``start_child`` — composition primitives
 - ``fork`` — re-cut a finished run from a chosen point, optionally under a new input
 - ``inspect`` — read back a run's recorded durable calls, without forking it
+- ``diff`` — compare two runs call by call, and see where their values differ
 - ``run_app`` — ``async with``: the journal open and the poll loop running
 - ``TaskContext`` — the task-body context
 - ``RunHandle`` — the run handle
 - ``RunStatus`` — what ``RunHandle.status()`` returns; a ``StrEnum``
 - ``RunInspection`` / ``RecordedCall`` — what ``inspect`` returns
+- ``RunDiff`` / ``CallDiff`` / ``ValueDiff`` — what ``diff`` returns
 - ``PARKED`` — what ``result()`` returns for a run parked with nothing to wake it
 """
 
@@ -44,6 +46,7 @@ from satay.api import (
     workflow,
 )
 from satay.api.app import run_app
+from satay.api.diffing import CallDiff, RunDiff, ValueDiff, diff
 from satay.api.fork import fork
 from satay.api.inspection import RecordedCall, RunInspection, inspect
 from satay.api.run_handle import PARKED, WorkflowFailedError
@@ -98,17 +101,21 @@ __version__: str = _detect_version()
 
 __all__ = [
     "PARKED",
+    "CallDiff",
     "EffectSafetyError",
     "NondeterminismError",
     "RecordedCall",
+    "RunDiff",
     "RunHandle",
     "RunInspection",
     "RunStatus",
     "TaskContext",
     "TaskFailedError",
+    "ValueDiff",
     "VersionMismatchError",
     "WorkflowFailedError",
     "__version__",
+    "diff",
     "fork",
     "gather",
     "inspect",
