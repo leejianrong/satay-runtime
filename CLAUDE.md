@@ -150,9 +150,11 @@ is the authority, so keep the two in step:
 - **Primitives:** `start`, `sleep`, `wait_for_event`, `send_event`, `map`, `gather`,
   `start_child`
 - **Entry points:** `run_app` (ADR-0030; `async with` gives you an open journal and a
-  running poll loop, and it is core, not `satay[studio]`), `fork` (ADR-0028)
+  running poll loop, and it is core, not `satay[studio]`), `fork` (ADR-0028),
+  `inspect` (KAN-477, ADR-0033; reads a run's recorded calls without forking, redacted
+  by default)
 - **Values:** `RunHandle`, `RunStatus` (KAN-524; a `StrEnum`, so `== "completed"` still
-  works), `PARKED` (ADR-0030; what `result()` returns for a run parked
+  works), `RunInspection` / `RecordedCall` (ADR-0033), `PARKED` (ADR-0030; what `result()` returns for a run parked
   with nothing in this process to wake it, and it is not `None`)
 - **Errors:** `WorkflowFailedError`, `TaskFailedError`, `NondeterminismError`,
   `EffectSafetyError`, `VersionMismatchError`

@@ -30,6 +30,11 @@ def test_public_surface_is_exported() -> None:
         # (KAN-491, ADR-0030): both are core entry points, neither needs satay[studio].
         "fork",
         "run_app",
+        # Reading a run's recorded calls without forking it (KAN-477), and the two value
+        # types it returns — a public method's return type must be nameable (KAN-524).
+        "inspect",
+        "RunInspection",
+        "RecordedCall",
         "PARKED",
         # V2 public error types (N9/A10.2).
         "NondeterminismError",

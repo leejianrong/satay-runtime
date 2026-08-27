@@ -12,10 +12,12 @@ The public surface (ARCHITECTURE §1):
 - ``sleep`` / ``wait_for_event`` / ``send_event`` — event & time primitives
 - ``map`` / ``gather`` / ``start_child`` — composition primitives
 - ``fork`` — re-cut a finished run from a chosen point, optionally under a new input
+- ``inspect`` — read back a run's recorded durable calls, without forking it
 - ``run_app`` — ``async with``: the journal open and the poll loop running
 - ``TaskContext`` — the task-body context
 - ``RunHandle`` — the run handle
 - ``RunStatus`` — what ``RunHandle.status()`` returns; a ``StrEnum``
+- ``RunInspection`` / ``RecordedCall`` — what ``inspect`` returns
 - ``PARKED`` — what ``result()`` returns for a run parked with nothing to wake it
 """
 
@@ -43,6 +45,7 @@ from satay.api import (
 )
 from satay.api.app import run_app
 from satay.api.fork import fork
+from satay.api.inspection import RecordedCall, RunInspection, inspect
 from satay.api.run_handle import PARKED, WorkflowFailedError
 
 # `RunHandle.status()` returns a `RunStatus`, so the type has to be reachable from the
@@ -97,7 +100,9 @@ __all__ = [
     "PARKED",
     "EffectSafetyError",
     "NondeterminismError",
+    "RecordedCall",
     "RunHandle",
+    "RunInspection",
     "RunStatus",
     "TaskContext",
     "TaskFailedError",
@@ -106,6 +111,7 @@ __all__ = [
     "__version__",
     "fork",
     "gather",
+    "inspect",
     "map",
     "run_app",
     "send_event",

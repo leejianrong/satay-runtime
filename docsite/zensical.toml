@@ -62,6 +62,7 @@ nav = [
   ] },
   { "Reference" = [
     "guarantees.md",
+    "inspect.md",
     "fork.md",
     "studio.md",
   ] },

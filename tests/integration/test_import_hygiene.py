@@ -116,3 +116,58 @@ def test_run_app_drives_a_parked_run_with_no_studio_dependency() -> None:
     assert result.returncode == 0, (
         f"satay.run_app needed a studio-only dependency: {result.stdout} {result.stderr}"
     )
+
+
+def test_inspect_reads_a_run_with_no_studio_dependency() -> None:
+    """``satay.inspect`` is core, and this proves it by *using* it (KAN-477).
+
+    ``inspect`` reaches the read-view assembly in ``satay.control.views`` through a lazy
+    import, the same arrangement ``fork`` and ``RunHandle.cancel`` already use. That is
+    exactly the shape the import-time scan above cannot see: ``satay.control`` is pure
+    Python today, but it is also the package the FastAPI stack lives in, and one
+    module-level ``import fastapi`` added there would put a studio-only dependency behind
+    a core public function without failing any import-time check.
+
+    So this child interpreter drives a real workflow, reads it back through the public
+    name, asserts it got the recorded call, and only then scans ``sys.modules``.
+    """
+    program = textwrap.dedent(
+        f"""
+        import asyncio, sys
+        import satay
+        from satay.journal.store import SQLiteStore
+
+        @satay.task()
+        async def _hygiene_double(value: int) -> int:
+            return value * 2
+
+        @satay.workflow
+        async def _hygiene_reads(value: int) -> int:
+            return await _hygiene_double(value)
+
+        async def main() -> None:
+            store = SQLiteStore.open(":memory:")
+            handle = satay.start(_hygiene_reads, 21, store=store)
+            assert await handle.result() == 42
+            inspection = await satay.inspect(handle.run_id, store=store)
+            assert [c.identity for c in inspection.calls] == ["_hygiene_double:0"], inspection
+            assert inspection.calls[0].output == 42, inspection
+            store.close()
+
+        asyncio.run(main())
+        pulled = sorted(
+            n for n in sys.modules if n.split(".")[0] in {FORBIDDEN_IN_CORE!r}
+        )
+        if pulled:
+            sys.stdout.write("PULLED:" + ",".join(pulled))
+            raise SystemExit(1)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"satay.inspect needed a studio-only dependency: {result.stdout} {result.stderr}"
+    )
