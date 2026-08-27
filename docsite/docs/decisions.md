@@ -51,6 +51,9 @@ If you read four, read these.
 | [0024](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0024-dev-stack-app-module-loading.md) | `satay dev` imports the user's app modules (`--app`) |
 | [0029](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0029-write-time-redaction.md) | Write-time redaction: slot-scoped, off by default |
 | [0030](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0030-run-app-and-the-parked-result.md) | `satay.run_app`, and what `result()` answers for a parked run |
+| [0033](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0033-reading-a-run-without-forking.md) | `satay.inspect`: reading a run's recorded calls, redacted, without forking |
+| [0034](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0034-structural-diff-of-two-runs.md) | `satay.diff`: where two runs differ, as paths computed before redaction |
+| [0035](https://github.com/leejianrong/satay-runtime/blob/main/docs/adr/0035-usage-rollup-and-a-redaction-word-boundary-fix.md) | `RunInspection.usage`: a run's self-reported totals, and the redaction bug it found |
 
 ## Packaging, tooling, and process
 

@@ -24,6 +24,7 @@ from typing import Any
 from satay.journal import Store
 from satay.journal.codec import decode
 from satay.journal.events import Event, EventType, RunRecord, RunStatus
+from satay.journal.timeline import model_usage
 from satay.valuediff import diff_values
 
 #: Task-lifecycle event types that carry a durable-call identity in their payload.
@@ -503,6 +504,26 @@ def _run_outcome(events: Sequence[Event]) -> tuple[Any, dict[str, Any] | None]:
     return None, None
 
 
+def _usage_totals(events: Sequence[Event]) -> dict[str, int | float]:
+    """Sum every numeric field across a run's self-reported usage entries (ADR-0008).
+
+    Schemaless by construction, same as the entries themselves: whatever a task reports
+    (``input_tokens``, ``output_tokens``, a caller's own ``usd``, ...) is summed under its
+    own key. A non-numeric field (``model``, or anything a redactor later masks to the
+    ``REDACTED`` string) is left out of the totals rather than counted as zero — a field
+    that cannot be summed is *unknown*, not zero. Counts failed attempts by default, the
+    same convention :func:`~satay.journal.timeline.model_usage` and ``task_detail`` use
+    (KAN-479): a retried call paid for every answer it threw away.
+    """
+    totals: dict[str, int | float] = {}
+    for entry in model_usage(events):
+        for key, value in entry.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            totals[key] = totals.get(key, 0) + value
+    return totals
+
+
 async def run_calls(store: Store, run_id: str) -> dict[str, Any]:
     """One run's durable calls with their recorded inputs and outputs, in schedule order.
 
@@ -513,7 +534,9 @@ async def run_calls(store: Store, run_id: str) -> dict[str, Any]:
     :class:`satay.control.api.ReadAPI` does for the HTTP reads.
 
     Adds the identity fields (``ordinal`` xor ``key``, ``map_group``, ``first_seq``) that
-    the compare rows leave out, and the run-level ``output``/``error``.
+    the compare rows leave out, the run-level ``output``/``error``, and ``usage`` — the
+    run's self-reported totals (ADR-0035), summed here rather than left to every caller to
+    re-derive the way ``examples/fork_and_compare_demo.py`` used to.
 
     Covers tasks **and** child workflows, ordered together by the sequence in which the
     parent scheduled them.
@@ -537,6 +560,7 @@ async def run_calls(store: Store, run_id: str) -> dict[str, Any]:
         "calls": await _calls_with_children(store, events, record),
         "output": output,
         "error": error,
+        "usage": _usage_totals(events),
     }
 
 

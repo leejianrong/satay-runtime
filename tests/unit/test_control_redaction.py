@@ -18,6 +18,21 @@ def test_structural_contract_keys_are_not_flagged() -> None:
         assert not redactor.matches(field), field
 
 
+def test_matching_is_whole_word_not_a_raw_substring() -> None:
+    """``token`` must not fire on the plural ``input_tokens`` / ``output_tokens``.
+
+    A raw substring test matches ``token`` inside ``tokens`` too, so every self-reported
+    usage entry (ADR-0008) silently had its token counts redacted on every read that goes
+    through :class:`~satay.control.api.ReadAPI` -- found while building the usage rollup
+    this fix unblocks. Real token-shaped fields still match.
+    """
+    redactor = Redactor()
+    for field in ("input_tokens", "output_tokens"):
+        assert not redactor.matches(field), field
+    for field in ("token", "access_token", "session_token", "refresh_token"):
+        assert redactor.matches(field), field
+
+
 def test_redact_masks_matching_values_and_recurses() -> None:
     redactor = Redactor()
     out = redactor.redact(
