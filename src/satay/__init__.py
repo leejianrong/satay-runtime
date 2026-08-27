@@ -15,6 +15,7 @@ The public surface (ARCHITECTURE §1):
 - ``run_app`` — ``async with``: the journal open and the poll loop running
 - ``TaskContext`` — the task-body context
 - ``RunHandle`` — the run handle
+- ``RunStatus`` — what ``RunHandle.status()`` returns; a ``StrEnum``
 - ``PARKED`` — what ``result()`` returns for a run parked with nothing to wake it
 """
 
@@ -43,6 +44,11 @@ from satay.api import (
 from satay.api.app import run_app
 from satay.api.fork import fork
 from satay.api.run_handle import PARKED, WorkflowFailedError
+
+# `RunHandle.status()` returns a `RunStatus`, so the type has to be reachable from the
+# public package: a user should not have to import out of `satay.journal.events` to name
+# the value a public method just handed them (KAN-524).
+from satay.journal.events import RunStatus
 from satay.replay.failures import TaskFailedError
 from satay.versioning import VersionMismatchError
 
@@ -92,6 +98,7 @@ __all__ = [
     "EffectSafetyError",
     "NondeterminismError",
     "RunHandle",
+    "RunStatus",
     "TaskContext",
     "TaskFailedError",
     "VersionMismatchError",

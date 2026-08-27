@@ -139,13 +139,13 @@ class RunController:
             return PARKED
         return await self._outcome()
 
-    async def status(self) -> str:
-        """Return the run's current status ('running' until the row exists)."""
+    async def status(self) -> RunStatus:
+        """Return the run's current status (``RUNNING`` until the row exists)."""
         await self._resolve_keyed_run()
         record = await self._store.get_run(self._run_id)
         if record is None:
-            return RunStatus.RUNNING.value
-        return record.status.value
+            return RunStatus.RUNNING
+        return record.status
 
     async def cancel(self) -> None:
         """Append ``WorkflowCancelled`` and halt the run (N4, V5).

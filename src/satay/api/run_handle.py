@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 if TYPE_CHECKING:
     from satay.journal import Store
+    from satay.journal.events import RunStatus
 
 
 class Parked:
@@ -116,7 +117,7 @@ class RunController(Protocol):
 
     async def result(self) -> Any: ...
 
-    async def status(self) -> str: ...
+    async def status(self) -> RunStatus: ...
 
     async def cancel(self) -> None: ...
 
@@ -150,8 +151,15 @@ class RunHandle:
             raise RuntimeError("run handle is not attached to a controller")
         return await self._controller.result()
 
-    async def status(self) -> str:
-        """Read the run's current status without driving it."""
+    async def status(self) -> RunStatus:
+        """Read the run's current status without driving it.
+
+        Returns the :class:`~satay.journal.events.RunStatus` member, not a bare string,
+        so a comparison can be typo-proof (``is RunStatus.COMPLETED``) and ``mypy`` can
+        check an exhaustive ``match``. ``RunStatus`` is a :class:`enum.StrEnum`, so the
+        older ``== "completed"`` form keeps working and keeps printing as before
+        (KAN-524).
+        """
         if self._controller is None:  # pragma: no cover - defensive
             raise RuntimeError("run handle is not attached to a controller")
         return await self._controller.status()

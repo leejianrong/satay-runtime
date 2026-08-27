@@ -151,7 +151,8 @@ is the authority, so keep the two in step:
   `start_child`
 - **Entry points:** `run_app` (ADR-0030; `async with` gives you an open journal and a
   running poll loop, and it is core, not `satay[studio]`), `fork` (ADR-0028)
-- **Values:** `RunHandle`, `PARKED` (ADR-0030; what `result()` returns for a run parked
+- **Values:** `RunHandle`, `RunStatus` (KAN-524; a `StrEnum`, so `== "completed"` still
+  works), `PARKED` (ADR-0030; what `result()` returns for a run parked
   with nothing in this process to wake it, and it is not `None`)
 - **Errors:** `WorkflowFailedError`, `TaskFailedError`, `NondeterminismError`,
   `EffectSafetyError`, `VersionMismatchError`

@@ -251,7 +251,9 @@ What `start` does depends on what it finds:
 | `run_id=` | unknown | Treated as new, using the id you gave. |
 | `idempotency_key=` | keyed, existing | Resolves to the same logical run instead of duplicating it. |
 
-A run's status is one of `running`, `waiting`, `completed`, `failed`, or `cancelled`. `waiting` is
+A run's status is a `satay.RunStatus` — one of `running`, `waiting`, `completed`, `failed`, or
+`cancelled`. It is a `StrEnum`, so `await handle.status() == "completed"` and
+`is satay.RunStatus.COMPLETED` both work, and it prints as the bare word above. `waiting` is
 the interesting one: a run parked on a `satay.sleep` or a `wait_for_event` has no live coroutine
 at all. It was released from memory, and something has to wake it. Waking is a graceful resume, so
 it writes no `WorkflowResumed` and shows no `⚡`.

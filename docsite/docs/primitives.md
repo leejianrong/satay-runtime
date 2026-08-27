@@ -57,7 +57,7 @@ happened yet" from a workflow that returned `None` on purpose:
 
 ```python
 if await handle.result() is satay.PARKED:
-    print(await handle.status())   # 'waiting'
+    print(await handle.status())   # waiting
 ```
 
 !!! tip "A run parked on an event nobody sends waits forever"
