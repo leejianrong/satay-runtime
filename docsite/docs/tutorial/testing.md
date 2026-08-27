@@ -342,8 +342,9 @@ around it break on refactors that changed nothing a user can see. So assert on t
 
 - **The result.** `await handle.result()`, or `satay.PARKED` if the run is waiting on a timer or
   an event that nothing in the test has fired yet.
-- **The status.** `await handle.status()`, one of `running`, `waiting`, `completed`, `failed`,
-  `cancelled`.
+- **The status.** `await handle.status()`, a `satay.RunStatus`: one of `running`, `waiting`,
+  `completed`, `failed`, `cancelled`. It is a `StrEnum`, so comparing against the string or
+  against `satay.RunStatus.COMPLETED` are both fine.
 - **The exception.** `pytest.raises(satay.WorkflowFailedError)`, then check `error_type` and
   `error_message`.
 - **The journal.** `await store.read_events(run_id)` gives you the event list. Assert on types,

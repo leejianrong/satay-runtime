@@ -32,6 +32,7 @@ from satay.api.run_handle import PARKED, RunHandle, await_unpark
 if TYPE_CHECKING:
     from satay.config import EffectSafety, NondeterminismPolicy, VersionMismatchPolicy
     from satay.journal import Store
+    from satay.journal.events import RunStatus
     from satay.testing.clock import Clock
     from satay.testing.faults import FaultInjector
     from satay.testing.rng import Rng
@@ -220,12 +221,12 @@ class ForkController:
         annotation = _return_annotation(workflow_def.fn) if workflow_def is not None else None
         return _outcome_from_events(await self._store.read_events(self._run_id), annotation)
 
-    async def status(self) -> str:
+    async def status(self) -> RunStatus:
         """Read the fork's current status without driving it."""
         from satay.journal.events import RunStatus
 
         record = await self._store.get_run(self._run_id)
-        return RunStatus.RUNNING.value if record is None else record.status.value
+        return RunStatus.RUNNING if record is None else record.status
 
     async def cancel(self) -> None:
         """Cancel the fork — the same journal transition as every other cancel path."""

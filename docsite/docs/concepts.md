@@ -251,7 +251,15 @@ What `start` does depends on what it finds:
 | `run_id=` | unknown | Treated as new, using the id you gave. |
 | `idempotency_key=` | keyed, existing | Resolves to the same logical run instead of duplicating it. |
 
-A run's status is one of `running`, `waiting`, `completed`, `failed`, or `cancelled`. `waiting` is
+A workflow takes the run input as **exactly one parameter**, because that is how Satay calls it:
+`checkout(1999)` above, and `checkout(None)` when `start` was given no input. A workflow with no
+parameters, or with two required ones, is rejected by `@satay.workflow` at import with a
+`TypeError`, rather than failing mid-run and leaving a failed run in the journal. If a workflow
+does not need the input, take it and ignore it: `async def nightly(_: Any = None)`.
+
+A run's status is a `satay.RunStatus` — one of `running`, `waiting`, `completed`, `failed`, or
+`cancelled`. It is a `StrEnum`, so `await handle.status() == "completed"` and
+`is satay.RunStatus.COMPLETED` both work, and it prints as the bare word above. `waiting` is
 the interesting one: a run parked on a `satay.sleep` or a `wait_for_event` has no live coroutine
 at all. It was released from memory, and something has to wake it. Waking is a graceful resume, so
 it writes no `WorkflowResumed` and shows no `⚡`.

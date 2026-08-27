@@ -57,7 +57,7 @@ happened yet" from a workflow that returned `None` on purpose:
 
 ```python
 if await handle.result() is satay.PARKED:
-    print(await handle.status())   # 'waiting'
+    print(await handle.status())   # waiting
 ```
 
 !!! tip "A run parked on an event nobody sends waits forever"
@@ -235,11 +235,11 @@ all work together, each keeping its own identity.
 
 ```python
 @satay.workflow
-async def dashboard(user_id: str, order_ids: list[str]) -> list:
+async def dashboard(request: DashboardRequest) -> list:
     return await satay.gather(
-        load_profile(user_id),
-        satay.map(load_order, order_ids, key=lambda o: o),
-        satay.start_child(recompute_stats, user_id),
+        load_profile(request.user_id),
+        satay.map(load_order, request.order_ids, key=lambda o: o),
+        satay.start_child(recompute_stats, request.user_id),
     )
 ```
 
