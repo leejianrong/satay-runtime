@@ -235,11 +235,11 @@ all work together, each keeping its own identity.
 
 ```python
 @satay.workflow
-async def dashboard(user_id: str, order_ids: list[str]) -> list:
+async def dashboard(request: DashboardRequest) -> list:
     return await satay.gather(
-        load_profile(user_id),
-        satay.map(load_order, order_ids, key=lambda o: o),
-        satay.start_child(recompute_stats, user_id),
+        load_profile(request.user_id),
+        satay.map(load_order, request.order_ids, key=lambda o: o),
+        satay.start_child(recompute_stats, request.user_id),
     )
 ```
 
