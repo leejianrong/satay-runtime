@@ -57,6 +57,90 @@ async def test_read_events_ordered_by_seq() -> None:
     store.close()
 
 
+# -- decoded-event memoisation (ADR-0036, ARCHITECTURE §9) ------------------------
+
+
+async def test_read_events_reflects_appends_interleaved_with_reads() -> None:
+    """The headline correctness property: a repeat read is never stale or duplicated."""
+    store = SQLiteStore.open(":memory:")
+    await store.create_run(_run("r1"))
+
+    await store.append(_event("r1"))
+    first = await store.read_events("r1")
+    assert [e.seq for e in first] == [1]
+
+    await store.append(_event("r1"))
+    await store.append(_event("r1"))
+    second = await store.read_events("r1")
+    assert [e.seq for e in second] == [1, 2, 3]
+
+    third = await store.read_events("r1")  # nothing new appended
+    assert [e.seq for e in third] == [1, 2, 3]
+    store.close()
+
+
+async def test_read_events_hands_back_the_same_object_when_nothing_is_new() -> None:
+    """A cache hit is a cache hit: no reconstruction, not just the same values."""
+    store = SQLiteStore.open(":memory:")
+    await store.create_run(_run("r1"))
+    await store.append(_event("r1"))
+
+    first = await store.read_events("r1")
+    second = await store.read_events("r1")
+    assert second is first
+    store.close()
+
+
+async def test_read_events_only_decodes_what_was_appended_since_the_last_read() -> None:
+    """The actual point of the cache: repeat reads must not re-decode old payloads."""
+    store = SQLiteStore.open(":memory:")
+    await store.create_run(_run("r1"))
+    for _ in range(5):
+        await store.append(_event("r1"))
+
+    decoded: list[str] = []
+    original = store._decode_payload
+
+    def _spy(payload_json: str) -> object:
+        decoded.append(payload_json)
+        return original(payload_json)
+
+    store._decode_payload = _spy  # type: ignore[method-assign]
+
+    await store.read_events("r1")
+    assert len(decoded) == 5  # the first read pays for the whole journal so far
+
+    await store.read_events("r1")
+    assert len(decoded) == 5  # nothing new: zero further decodes
+
+    await store.append(_event("r1"))
+    await store.read_events("r1")
+    assert len(decoded) == 6  # exactly the one new event, not the journal again
+    store.close()
+
+
+async def test_read_events_cache_is_scoped_to_one_store_not_the_database_file(
+    tmp_path: object,
+) -> None:
+    """The cache lives on the ``SQLiteStore`` object, not anywhere durable."""
+    from pathlib import Path
+
+    assert isinstance(tmp_path, Path)
+    db = tmp_path / "satay.db"
+
+    store = SQLiteStore.open(db)
+    await store.create_run(_run("r1"))
+    await store.append(_event("r1"))
+    assert len(await store.read_events("r1")) == 1
+    store.close()
+
+    reopened = SQLiteStore.open(db)
+    assert reopened._event_cache == {}  # a fresh store starts with nothing memoised
+    events = await reopened.read_events("r1")
+    assert [e.seq for e in events] == [1]  # still reads correctly from disk
+    reopened.close()
+
+
 async def test_create_run_is_idempotent() -> None:
     store = SQLiteStore.open(":memory:")
     await store.create_run(_run("r1"))

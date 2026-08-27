@@ -10,6 +10,12 @@ Schema is versioned with ``PRAGMA user_version`` and migrated forward on open. A
 temp-file path or ``":memory:"`` is supported (the latter keeps the one connection
 alive for the store's lifetime, since a fresh connection is a fresh in-memory DB).
 
+**Decoded events are memoised per run, for this store's own lifetime** (ADR-0036,
+ARCHITECTURE §9): :meth:`read_events` fetches and decodes only what has been appended
+since its last call for that run, rather than re-decoding the whole journal on every
+drive. Safe because the journal is append-only (ADR-0004) and the cache never outlives
+the process.
+
 **Write-time redaction (ADR-0029) is off by default.** Turned on — with
 ``write_redaction="on"`` or ``SATAY_WRITE_REDACTION=on`` — the recording path scrubs
 sensitive values out of the ``*_ref`` value slots before they are serialized or spilled,
@@ -125,6 +131,12 @@ class SQLiteStore:
     ) -> None:
         self._conn = connection
         self._run_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        #: Decoded-event memoisation, within this store's own lifetime (ADR-0036,
+        #: ARCHITECTURE §9). A tuple, not a list: immutable, so :meth:`read_events` can
+        #: hand back the cached object itself on a cache hit rather than copying it.
+        #: Journals are append-only (ADR-0004: no deletion, no compaction), so a cached
+        #: prefix is only ever extended, never invalidated.
+        self._event_cache: dict[str, tuple[Event, ...]] = {}
         #: Where over-threshold payloads spill (N19). ``None`` disables spill entirely,
         #: which is the case for a purely in-memory store; a file-backed store derives a
         #: sibling ``blobs/`` directory automatically so spill "just works" (ADR-0004).
@@ -329,13 +341,35 @@ class SQLiteStore:
     # -- reads -------------------------------------------------------------------
 
     async def read_events(self, run_id: str) -> Sequence[Event]:
-        """Read a run's events in ``seq`` order."""
-        rows = self._conn.execute(
-            "SELECT run_id, seq, event_id, type, ts, payload_json "
-            "FROM events WHERE run_id = ? ORDER BY seq",
-            (run_id,),
-        ).fetchall()
-        return [self._row_to_event(row) for row in rows]
+        """Read a run's events in ``seq`` order.
+
+        Memoised per run for this store's lifetime (ADR-0036, ARCHITECTURE §9): a
+        repeat call — the common case, since every drive of a run re-reads its whole
+        journal from the top (ADR-0001) — fetches and decodes only the rows appended
+        since the last call, then extends the cached tuple, instead of re-decoding a
+        journal this process has already decoded once. A run this store has never read
+        before still pays the full cost of its journal so far, once.
+
+        Safe under the append-only journal (ADR-0004: no run deletion, no compaction):
+        a cached prefix is a fact that stays true forever, so there is nothing to
+        invalidate, only more to append. Scoped to this store's own lifetime, same as
+        every other in-memory state here — a fresh :meth:`open` starts with an empty
+        cache, so this never persists beyond the process (ADR-0012 single-writer, one
+        store per process).
+        """
+        async with self._run_locks[run_id]:
+            cached = self._event_cache.get(run_id, ())
+            after_seq = cached[-1].seq if cached else 0
+            rows = self._conn.execute(
+                "SELECT run_id, seq, event_id, type, ts, payload_json "
+                "FROM events WHERE run_id = ? AND seq > ? ORDER BY seq",
+                (run_id, after_seq),
+            ).fetchall()
+            if not rows:
+                return cached
+            merged = cached + tuple(self._row_to_event(row) for row in rows)
+            self._event_cache[run_id] = merged
+            return merged
 
     def _decode_payload(self, payload_json: str) -> Any:
         """Decode a stored payload, rehydrating any spilled blob references first (N19).
