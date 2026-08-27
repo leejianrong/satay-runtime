@@ -16,7 +16,7 @@ What the file demonstrates, in order:
    cuts the journal immediately before the bad call and re-runs it under a sharper
    instruction. One call executes; the other five answer from the copied prefix.
 3. **The bill.** The two numbers side by side, because that is the argument.
-4. **The compare.** ``ReadAPI.compare`` aligns both runs by durable-call identity, so
+4. **The compare.** ``satay.diff`` aligns both runs by durable-call identity, so
    "five identical, one differs" is read off two real journals rather than asserted.
 5. **The rule.** A fork's copied prefix is *history*, so ``workflow_input=`` reaches only
    the calls after the fork point. The demo forks twice more to show what that costs when
@@ -43,15 +43,14 @@ import re
 import sys
 import tempfile
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import satay
 from satay.config import DATA_DIR_ENV_VAR, db_path
-from satay.control.api import ReadAPI
-from satay.control.views import call_identity
-from satay.journal.events import Event, EventType
+from satay.journal.events import Event
 from satay.journal.store import SQLiteStore
 from satay.journal.timeline import model_usage
 from satay.testing import ManualClock
@@ -487,65 +486,54 @@ ADDRESS_TICKET = Brief(
 
 
 # -- reading the journal -------------------------------------------------------------
+#
+# Everything about *which durable calls a run made, and what they recorded* is read
+# through ``satay.inspect`` and ``satay.diff`` (ADR-0033/ADR-0034) below — the public
+# surface that reads a journal back without forking it, re-executing it, or hand-walking
+# raw events by identity. The one thing they do not cover is ``ctx.record_model_usage``'s
+# dollar figures: there is no aggregate view for those yet (roadmap item 6), so
+# :func:`billed_here` still reads the raw journal directly for that one number.
 
 
-def fork_seq(events: list[Event]) -> int:
-    """The seq of this run's ``RunForked`` marker, or 0 for a run that was started.
+def fork_boundary(inspection: satay.RunInspection) -> int:
+    """The seq above which this run's own work begins, or 0 for a run that was started.
 
     A fork's journal opens with a **verbatim copy** of the source's prefix, so everything
-    at or below this seq is inherited history and everything above it is work this run
-    actually did. That distinction is the entire measurement below.
+    at or below ``forked_from["fork_point_seq"]`` is inherited history and everything
+    above it is work this run actually did. That distinction is the entire measurement
+    below.
     """
-    return next((e.seq for e in events if e.type is EventType.RUN_FORKED), 0)
+    forked_from = inspection.forked_from
+    return int(forked_from["fork_point_seq"]) if forked_from is not None else 0
 
 
-def executed_here(events: list[Event]) -> list[str]:
-    """The durable calls whose Python body actually ran in *this* run.
+def executed_here(inspection: satay.RunInspection) -> list[str]:
+    """The durable-call identities whose Python body actually ran in *this* run.
 
-    A ``TaskAttemptStarted`` above the fork marker means the executor entered your
-    function. Below it, the event is a copy of one the source run wrote.
+    A call's ``first_seq`` above the fork boundary means it was scheduled — and so
+    executed — after the cut. At or below it, the call is a copy of one the source run
+    already made.
     """
-    boundary = fork_seq(events)
-    return [
-        call_identity(event.payload)
-        for event in events
-        if event.seq > boundary and event.type is EventType.TASK_ATTEMPT_STARTED
-    ]
+    boundary = fork_boundary(inspection)
+    return [call.identity for call in inspection.calls if call.first_seq > boundary]
 
 
-def durable_calls(events: list[Event]) -> list[str]:
-    """Every durable-call identity this run resolved, replayed or executed."""
-    seen = []
-    for event in events:
-        if event.type is EventType.TASK_SCHEDULED:
-            identity = call_identity(event.payload)
-            if identity not in seen:
-                seen.append(identity)
-    return seen
-
-
-def billed_here(events: list[Event]) -> tuple[int, int, float]:
-    """Input tokens, output tokens and dollars this run was charged, above the fork marker.
+def billed_here(events: Sequence[Event], boundary: int) -> tuple[int, int, float]:
+    """Input tokens, output tokens and dollars this run was charged, above ``boundary``.
 
     The copied prefix carries the source's usage entries too. They are *history*, not a
     second charge, so they are excluded here — which is exactly the arithmetic that makes
     a fork cheap.
     """
-    boundary = fork_seq(events)
     entries = model_usage([e for e in events if e.seq > boundary])
     input_tokens = sum(int(e.get("input_tokens", 0)) for e in entries)
     output_tokens = sum(int(e.get("output_tokens", 0)) for e in entries)
     return input_tokens, output_tokens, usd(input_tokens, output_tokens)
 
 
-def policies_used(events: list[Event]) -> list[str]:
+def policies_used(inspection: satay.RunInspection) -> list[str]:
     """The topics of the keyed ``look_up`` calls on this run's journal, copied or not."""
-    return [identity.split(":key:")[1] for identity in durable_calls(events) if ":key:" in identity]
-
-
-def lineage(events: list[Event]) -> dict[str, Any]:
-    """The ``RunForked`` payload: where this fork came from and whether its input changed."""
-    return next(e.payload for e in events if e.type is EventType.RUN_FORKED)
+    return [call.key for call in inspection.calls if call.key is not None]
 
 
 def money(input_tokens: int, output_tokens: int, dollars: float) -> str:
@@ -576,6 +564,7 @@ async def part_one(store: SQLiteStore, clock: ManualClock) -> tuple[str, dict[st
 
     handle = satay.start(answer_ticket, REFUND_TICKET, store=store, clock=clock)
     result: dict[str, Any] = await handle.result()
+    inspection = await satay.inspect(handle.run_id, store=store)
     events = list(await store.read_events(handle.run_id))
 
     print(f"\n   run {handle.run_id} — {await handle.status()}")
@@ -591,7 +580,7 @@ async def part_one(store: SQLiteStore, clock: ManualClock) -> tuple[str, dict[st
         "   was told. A stack trace shows nothing and a retry produces the same answer,\n"
         "   because the bug is in the input, not in the code."
     )
-    print(f"\n     {len(durable_calls(events))} durable calls   {money(*billed_here(events))}")
+    print(f"\n     {len(inspection.calls)} durable calls   {money(*billed_here(events, 0))}")
     return handle.run_id, result
 
 
@@ -613,8 +602,9 @@ async def part_two(
         source_id, before_task="draft_reply", workflow_input=sharper, store=store, clock=clock
     )
     result: dict[str, Any] = await handle.result()
-    events = list(await store.read_events(handle.run_id))
-    marker = lineage(events)
+    inspection = await satay.inspect(handle.run_id, store=store)
+    marker = inspection.forked_from
+    assert marker is not None  # a fresh fork always carries lineage
 
     print(f"\n   fork run {handle.run_id} — {await handle.status()}")
     print(quote(str(result["reply"])))
@@ -624,9 +614,7 @@ async def part_two(
     print(f"     ids that do not exist       {result['hallucinated']}")
     print(f"     promises money back         {result['promises_refund']}")
     print(
-        f"   RunForked: source={marker['source_run_id']} "
-        f"fork_point_seq={marker['fork_point_seq']} "
-        f"input_overridden={marker.get('input_overridden', False)}"
+        f"   RunForked: source={marker['source_run_id']} fork_point_seq={marker['fork_point_seq']}"
     )
     return handle.run_id, result
 
@@ -636,13 +624,16 @@ async def part_two(
 
 async def part_three(store: SQLiteStore, source_id: str, fork_id: str) -> None:
     """The number the whole feature is for."""
-    source = list(await store.read_events(source_id))
-    forked = list(await store.read_events(fork_id))
-    total = len(durable_calls(source))
-    ran = executed_here(forked)
+    source_inspection = await satay.inspect(source_id, store=store)
+    fork_inspection = await satay.inspect(fork_id, store=store)
+    total = len(source_inspection.calls)
+    ran = executed_here(fork_inspection)
     reused = total - len(ran)
-    source_bill = billed_here(source)
-    fork_bill = billed_here(forked)
+
+    source_events = list(await store.read_events(source_id))
+    fork_events = list(await store.read_events(fork_id))
+    source_bill = billed_here(source_events, 0)
+    fork_bill = billed_here(fork_events, fork_boundary(fork_inspection))
 
     print("\n3) what the fork actually re-ran")
     print(f"   durable calls it executed           {len(ran)}  {ran}")
@@ -663,30 +654,30 @@ async def part_three(store: SQLiteStore, source_id: str, fork_id: str) -> None:
 # -- part 4: compare, call by call ----------------------------------------------------
 
 
-def cell(side: dict[str, Any] | None) -> str:
-    return "absent" if side is None else str(side["status"])
+def cell(side: satay.RecordedCall | None) -> str:
+    return "absent" if side is None else side.status
 
 
 async def part_four(store: SQLiteStore, source_id: str, fork_id: str) -> None:
     """Align the two runs by durable-call identity and read the divergence off the table."""
-    view = await ReadAPI(store).compare(source_id, fork_id)
-    # ``compare`` returns rows sorted by identity, which is stable but alphabetical.
+    source_inspection = await satay.inspect(source_id, store=store)
+    run_diff = await satay.diff(source_id, fork_id, store=store)
+    # ``diff`` returns calls sorted by identity, which is stable but alphabetical.
     # Re-order them into the order the source run actually issued the calls, because the
     # point being made is "everything before the cut, then the one call after it".
-    schedule = durable_calls(list(await store.read_events(source_id)))
-    rows = sorted(view["rows"], key=lambda row: schedule.index(row["identity"]))
+    schedule = [call.identity for call in source_inspection.calls]
+    rows = sorted(run_diff.calls, key=lambda call: schedule.index(call.identity))
 
     print("\n4) compare, call by call")
-    print(f"     ReadAPI.compare({source_id[:8]}…, {fork_id[:8]}…)")
+    print(f"     satay.diff({source_id[:8]}…, {fork_id[:8]}…)")
     print(f"     GET /runs/{source_id}/compare?to={fork_id}")
     print(f"\n   {'durable call':<35}{'source':<11}{'fork':<11}recorded output")
     identical = 0
     for row in rows:
-        left, right = row["a"], row["b"]
-        same = left is not None and right is not None and left["output"] == right["output"]
+        same = not row.changed
         identical += same
         note = "identical — replayed" if same else "DIFFERS  <- the fixed call"
-        print(f"   {row['identity']:<35}{cell(left):<11}{cell(right):<11}{note}")
+        print(f"   {row.identity:<35}{cell(row.a):<11}{cell(row.b):<11}{note}")
     print(
         f"\n   {len(rows)} calls aligned on both sides; {identical} identical, "
         f"{len(rows) - identical} different — and the\n"
@@ -713,13 +704,13 @@ async def part_five(store: SQLiteStore, clock: ManualClock, source_id: str) -> t
         clock=clock,
     )
     stale_result: dict[str, Any] = await stale.result()
-    stale_events = list(await store.read_events(stale.run_id))
+    stale_inspection = await satay.inspect(stale.run_id, store=store)
 
     print(f"\n   fork run {stale.run_id} — {await stale.status()}, guardrail ", end="")
     print(f"{verdict(stale_result)}, and useless")
     print(quote(str(stale_result["reply"])))
-    print(f"     durable calls it executed:  {executed_here(stale_events)}")
-    print(f"     policies on its journal:    {', '.join(policies_used(stale_events))}")
+    print(f"     durable calls it executed:  {executed_here(stale_inspection)}")
+    print(f"     policies on its journal:    {', '.join(policies_used(stale_inspection))}")
     print(
         "   Every citation is real, so the guardrail passes. The research is simply\n"
         "   answering the previous question, because those four calls already happened\n"
@@ -735,16 +726,18 @@ async def part_five(store: SQLiteStore, clock: ManualClock, source_id: str) -> t
         clock=clock,
     )
     fresh_result: dict[str, Any] = await fresh.result()
+    fresh_inspection = await satay.inspect(fresh.run_id, store=store)
     fresh_events = list(await store.read_events(fresh.run_id))
 
     print(f"\n   fork run {fresh.run_id} — {await fresh.status()}, guardrail ", end="")
     print(f"{verdict(fresh_result)}")
     print(quote(str(fresh_result["reply"])))
     print(
-        f"     durable calls it executed:  {len(executed_here(fresh_events))} of "
-        f"{len(durable_calls(fresh_events))}   {money(*billed_here(fresh_events))}"
+        f"     durable calls it executed:  {len(executed_here(fresh_inspection))} of "
+        f"{len(fresh_inspection.calls)}   "
+        f"{money(*billed_here(fresh_events, fork_boundary(fresh_inspection)))}"
     )
-    print(f"     policies on its journal:    {', '.join(policies_used(fresh_events))}")
+    print(f"     policies on its journal:    {', '.join(policies_used(fresh_inspection))}")
     print(
         "\n   So: put the fork point before the first durable call that should see the new\n"
         "   input (ADR-0028). `before_task=` exists to let you say exactly that, and the\n"
