@@ -403,9 +403,11 @@ seams and stay constant across every phase below.
 
 - **Replay cost scales with journal length.** Event-sourced replay re-runs a workflow
   from the top on each drive, reusing recorded results, so cost grows with the number
-  of durable calls in a run. This is irrelevant at MVP scale; if it ever bites, add
-  decoded-result memoisation within a process's lifetime (and, later, continuation
-  snapshots). It does not change ADR-0001.
+  of durable calls in a run. **Decoded-result memoisation within a process's
+  lifetime is done** ([ADR-0036](adr/0036-decoded-event-memoisation.md)): a repeat
+  read of an unchanged run costs `O(1)`, not `O(N)`. **Continuation snapshots**
+  remain future work, for the case memoisation alone does not reach — it does not
+  change ADR-0001.
 - **Static-analysis linter** for workflow bodies as an author-time aid, on top of the
   runtime nondeterminism check (ADR-0003).
 - **Optional model-adapter libraries** as separate packages, never a core dependency
