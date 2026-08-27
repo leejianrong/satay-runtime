@@ -23,7 +23,7 @@ from typing import Any
 
 from satay.journal import Store
 from satay.journal.codec import decode
-from satay.journal.events import Event, EventType, RunRecord
+from satay.journal.events import Event, EventType, RunRecord, RunStatus
 
 #: Task-lifecycle event types that carry a durable-call identity in their payload.
 _TASK_EVENTS = frozenset(
@@ -432,14 +432,19 @@ async def compare(store: Store, run_id: str, other_run_id: str) -> dict[str, Any
     }
 
 
-async def _compare_side(
-    store: Store, run_id: str, record: RunRecord, current_version: str
-) -> dict[str, Any]:
-    events = await store.read_events(run_id)
+def _calls_view(events: Sequence[Event], record: RunRecord) -> dict[str, dict[str, Any]]:
+    """Assemble every durable call of one run, keyed by identity, in schedule order.
+
+    Pure over the journal, so both the two-run compare and the single-run
+    :func:`run_calls` share one assembly rather than two that can drift. Ordering is
+    ``_scan_tasks``'s first-seen order, i.e. the order the calls were scheduled — note
+    that :func:`compare` deliberately re-sorts its rows by identity for stable alignment,
+    while :func:`run_calls` keeps this order.
+    """
     tasks = _scan_tasks(events)
     completed = {i for i, t in tasks.items() if t["completed"]}
     exhausted = {i for i, t in tasks.items() if t["exhausted"]}
-    run_failed = record.status.value == "failed"
+    run_failed = record.status is RunStatus.FAILED
 
     # Per-call input / output / timing, so the side-by-side view can mark exactly what a
     # change did (inputs, outputs, attempts, or duration). Additive to the compare
@@ -474,9 +479,117 @@ async def _compare_side(
             "attempts": info["attempts"],
             "duration_seconds": duration,
         }
+    return calls
+
+
+def _run_outcome(events: Sequence[Event]) -> tuple[Any, dict[str, Any] | None]:
+    """The run-level ``(output, error)`` recorded in the journal, neither one raising.
+
+    The runtime's own :func:`satay.api.runner._outcome_from_events` *raises* a failed
+    run's recorded error, which is right for ``await handle.result()`` and wrong for a
+    read: a reader wants to be told about the failure, not to be interrupted by it.
+    """
+    for e in reversed(events):
+        if e.type is EventType.WORKFLOW_COMPLETED:
+            return decode(e.payload["output_ref"]), None
+        if e.type is EventType.WORKFLOW_FAILED:
+            return None, dict(e.payload["error"])
+    return None, None
+
+
+async def run_calls(store: Store, run_id: str) -> dict[str, Any]:
+    """One run's durable calls with their recorded inputs and outputs, in schedule order.
+
+    The single-run half of :func:`compare`, which until now could only be reached by
+    supplying a second run id. Backs the Python-level read API (``satay.inspect``,
+    KAN-477); it emits raw, **unredacted** data like every other builder here, so its
+    callers are responsible for applying a :class:`~satay.redaction.Redactor` exactly as
+    :class:`satay.control.api.ReadAPI` does for the HTTP reads.
+
+    Adds the identity fields (``ordinal`` xor ``key``, ``map_group``, ``first_seq``) that
+    the compare rows leave out, and the run-level ``output``/``error``.
+
+    Covers tasks **and** child workflows, ordered together by the sequence in which the
+    parent scheduled them.
+
+    ``calls`` is a **list** carrying ``identity`` as a field, not a dict keyed by
+    identity, and that is load-bearing rather than stylistic. A ``Redactor`` matches
+    *field names* by substring, so keying by identity would let a task merely **named**
+    ``fetch_secret`` collide with the ``secret`` pattern and have its entire call record
+    masked. :func:`compare` is safe from this only incidentally — it flattens each side's
+    calls into ``a``/``b`` values before the redactor ever sees them.
+    """
+    from satay import versioning
+
+    record = await _require_run(store, run_id)
+    events = await store.read_events(run_id)
+    scanned = _scan_tasks(events)
+    calls = []
+    for identity, call in _calls_view(events, record).items():
+        info = scanned[identity]
+        entry = {"identity": identity, **call, "first_seq": info["first_seq"]}
+        entry["map_group"] = info["map_group"]
+        if "key" in info:
+            entry["key"] = info["key"]
+        else:
+            entry["ordinal"] = info["ordinal"]
+        calls.append(entry)
+
+    # Child workflows are durable calls too, and `_scan_tasks` cannot see them: only the
+    # four TASK_* events carry a task identity, so a `start_child` call would be silently
+    # missing from a read whose whole job is showing what a run recorded. The child's own
+    # result lives in the child's journal, not the parent's, so it is read from there —
+    # the same linkage `tree` follows.
+    for e in events:
+        if e.type is not EventType.CHILD_WORKFLOW_SCHEDULED:
+            continue
+        child_run_id = e.payload["child_run_id"]
+        child_record = await store.get_run(child_run_id)
+        child_output = None
+        if child_record is not None:
+            child_output, _ = _run_outcome(await store.read_events(child_run_id))
+        child: dict[str, Any] = {
+            "identity": call_identity(e.payload) if "task_name" in e.payload else child_run_id,
+            "task_name": e.payload.get("workflow_name"),
+            "status": child_record.status.value if child_record is not None else "unknown",
+            # Wrapped in a list to match the task convention, where `input_ref` holds
+            # `encode(list(args))`. A child's `input_ref` is the single input value, and a
+            # value that happens to *be* a list would otherwise read back as N arguments.
+            "input": [decode(e.payload["input_ref"])] if "input_ref" in e.payload else None,
+            "output": child_output,
+            # The parent records no attempts for a child; retries belong to the child's own
+            # tasks. One scheduling is what the parent's journal actually attests to.
+            "attempts": 1,
+            "duration_seconds": None,
+            "first_seq": e.seq,
+            "child_run_id": child_run_id,
+            "map_group": None,
+        }
+        if "key" in e.payload and e.payload.get("key") is not None:
+            child["key"] = e.payload["key"]
+        else:
+            child["ordinal"] = e.payload.get("ordinal")
+        calls.append(child)
+
+    calls.sort(key=lambda call: call["first_seq"])
+    output, error = _run_outcome(events)
+    return {
+        "summary": _run_summary(
+            record, versioning.current_code_version(), forked_from=_fork_lineage(events)
+        ),
+        "calls": calls,
+        "output": output,
+        "error": error,
+    }
+
+
+async def _compare_side(
+    store: Store, run_id: str, record: RunRecord, current_version: str
+) -> dict[str, Any]:
+    events = await store.read_events(run_id)
     return {
         "summary": _run_summary(record, current_version, forked_from=_fork_lineage(events)),
-        "calls": calls,
+        "calls": _calls_view(events, record),
     }
 
 
