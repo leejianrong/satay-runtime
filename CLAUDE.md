@@ -27,7 +27,8 @@ Two policies are easy to confuse and have nothing to do with each other:
 ## Deliberate gaps, do not "fix" these without a card
 
 - No blob GC, no run deletion, no compaction (ADR-0004). Forks share blobs with their
-  source run, so any future GC has to be reference-aware.
+  source run, so any future GC has to be reference-aware. A design card exists
+  (mark-and-sweep, not implemented): ADR-0037.
 - Fan-out is fail-fast *by default*. `map` and `gather` take `return_exceptions=True` for
   collect mode, which records a terminal `TaskFailed` per collected failure (ADR-0027,
   superseding ADR-0020). `start_child` has no flag; collect it as a `gather` member.
