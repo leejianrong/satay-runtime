@@ -9,6 +9,11 @@ which is the terminal twin of ``TaskCompleted`` rather than a new kind of durabl
 leaving it bare stranded a verdict in the middle of a family the renderer already covers
 (ADR-0016 refinement, KAN-957). ``satay dev`` is not part of the core CLI: it lives in the
 ``satay[studio]`` extra, so the core surfaces a clear message pointing at the install.
+
+``satay runs delete`` and ``satay gc`` (ADR-0037/0039) are the runtime's first
+**destructive** verbs, deliberately CLI-only with no importable Python equivalent
+(ADR-0039 Decision 2). ``gc`` is dry-run by default, printing what it would reclaim;
+``--apply`` is required to actually delete blob files.
 """
 
 from __future__ import annotations
@@ -59,6 +64,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the data directory (default: ./.satay).",
     )
+    delete = runs_sub.add_parser(
+        "delete", help="Delete one terminal run's journal rows (ADR-0037/0039)."
+    )
+    delete.add_argument("run_id", help="The run id to delete.")
+    delete.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override the data directory (default: ./.satay).",
+    )
+
+    gc = subcommands.add_parser(
+        "gc", help="Sweep blob files no run's journal references (ADR-0037/0039)."
+    )
+    gc.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override the data directory (default: ./.satay).",
+    )
+    gc.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually delete reclaimable blobs (default: dry run, reports only).",
+    )
+    gc.add_argument(
+        "--grace-period-seconds",
+        type=float,
+        default=None,
+        help="Protect blobs younger than this many seconds (default: 300).",
+    )
 
     # `dev` is declared so it shows in `satay --help`; its options are owned by the Typer
     # command in the studio extra (ADR-0016), so `main` intercepts the verb before argparse
@@ -87,6 +121,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "runs" and args.runs_command == "show":
         return _runs_show(args.run_id, args.data_dir)
+    if args.command == "runs" and args.runs_command == "delete":
+        return _runs_delete(args.run_id, args.data_dir)
+    if args.command == "gc":
+        return _gc(args.data_dir, apply=args.apply, grace_period_seconds=args.grace_period_seconds)
 
     parser.error(f"unknown command: {args.command}")
     return 2  # pragma: no cover - parser.error raises SystemExit
@@ -129,6 +167,75 @@ def _runs_show(run_id: str, data_dir: str | None) -> int:
         return 0
 
     return asyncio.run(_load())
+
+
+def _runs_delete(run_id: str, data_dir: str | None) -> int:
+    """Delete one terminal run's rows; does not touch blobs (ADR-0037/0039)."""
+    import asyncio
+
+    from satay.config import db_path, resolve_data_dir
+    from satay.journal.store import SQLiteStore
+
+    path = db_path(resolve_data_dir(data_dir))
+    if not path.exists():
+        print(f"no satay database at {path}", file=sys.stderr)
+        return 1
+
+    async def _delete() -> int:
+        store = SQLiteStore.open(path)
+        try:
+            await store.delete_run(run_id)
+        except LookupError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        finally:
+            store.close()
+        print(f"deleted run {run_id!r}")
+        return 0
+
+    return asyncio.run(_delete())
+
+
+def _gc(data_dir: str | None, *, apply: bool, grace_period_seconds: float | None) -> int:
+    """Dry-run (default) or apply a blob-GC mark-and-sweep pass (ADR-0037/0039)."""
+    import asyncio
+
+    from satay.blobs import BlobStore
+    from satay.blobs.gc import DEFAULT_GRACE_PERIOD_SECONDS, collect_garbage
+    from satay.config import blob_dir, db_path, resolve_data_dir
+    from satay.journal.store import SQLiteStore
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    path = db_path(resolved_data_dir)
+    if not path.exists():
+        print(f"no satay database at {path}", file=sys.stderr)
+        return 1
+    grace = DEFAULT_GRACE_PERIOD_SECONDS if grace_period_seconds is None else grace_period_seconds
+
+    async def _run() -> int:
+        store = SQLiteStore.open(path)
+        try:
+            blobs = BlobStore(blob_dir(resolved_data_dir))
+            report = await collect_garbage(store, blobs, apply=apply, grace_period_seconds=grace)
+        finally:
+            store.close()
+        reclaimed_mb = report.reclaimable_bytes / (1024 * 1024)
+        kept_mb = report.kept_bytes / (1024 * 1024)
+        kept_count = report.referenced_count + len(report.protected_ids)
+        if apply:
+            print(f"reclaimed {len(report.reclaimable_ids)} blobs, {reclaimed_mb:.1f} MB")
+        else:
+            print(
+                f"would reclaim {len(report.reclaimable_ids)} blobs, {reclaimed_mb:.1f} MB "
+                f"({kept_count} blobs, {kept_mb:.1f} MB still referenced or in the grace period)"
+            )
+            print("re-run with --apply to delete them")
+        return 0
+
+    return asyncio.run(_run())
 
 
 if __name__ == "__main__":  # pragma: no cover

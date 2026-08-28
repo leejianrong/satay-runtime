@@ -72,6 +72,14 @@ class Store(Protocol):
         """List known run ids."""
         ...
 
+    async def delete_run(self, run_id: str) -> None:
+        """Delete one run's rows outright (ADR-0037/0039). Terminal runs only."""
+        ...
+
+    async def referenced_blob_ids(self) -> set[str]:
+        """Every blob id still named by any remaining run's journal (ADR-0037/0039)."""
+        ...
+
     # -- timers and events (V3, ADR-0007/0021) -----------------------------------
 
     async def add_timer(self, timer: TimerRecord) -> None:

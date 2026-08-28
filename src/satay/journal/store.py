@@ -13,8 +13,9 @@ alive for the store's lifetime, since a fresh connection is a fresh in-memory DB
 **Decoded events are memoised per run, for this store's own lifetime** (ADR-0036,
 ARCHITECTURE §9): :meth:`read_events` fetches and decodes only what has been appended
 since its last call for that run, rather than re-decoding the whole journal on every
-drive. Safe because the journal is append-only (ADR-0004) and the cache never outlives
-the process.
+drive. Safe because the journal is append-only for a *live* run (ADR-0004) and the
+cache never outlives the process; :meth:`delete_run` (ADR-0039) evicts a deleted run's
+cache entry, the one case an entry is ever removed rather than only extended.
 
 **Write-time redaction (ADR-0029) is off by default.** Turned on — with
 ``write_redaction="on"`` or ``SATAY_WRITE_REDACTION=on`` — the recording path scrubs
@@ -36,10 +37,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from satay.blobs import BlobStore, rehydrate_encoded, spill_encoded
+from satay.blobs import BlobStore, is_blob_ref, rehydrate_encoded, spill_encoded
 from satay.config import BLOB_DIR_NAME, WriteRedaction, resolve_write_redaction
 from satay.journal.codec import decode, encode
 from satay.journal.events import (
+    TERMINAL_STATUSES,
     Event,
     EventType,
     InboxEventRecord,
@@ -49,7 +51,7 @@ from satay.journal.events import (
     TimerRecord,
     TimerStatus,
 )
-from satay.redaction import Redactor
+from satay.redaction import Redactor, is_value_slot
 
 _LOG = logging.getLogger("satay")
 
@@ -350,12 +352,13 @@ class SQLiteStore:
         journal this process has already decoded once. A run this store has never read
         before still pays the full cost of its journal so far, once.
 
-        Safe under the append-only journal (ADR-0004: no run deletion, no compaction):
-        a cached prefix is a fact that stays true forever, so there is nothing to
-        invalidate, only more to append. Scoped to this store's own lifetime, same as
-        every other in-memory state here — a fresh :meth:`open` starts with an empty
-        cache, so this never persists beyond the process (ADR-0012 single-writer, one
-        store per process).
+        Safe under the append-only journal (ADR-0004: no compaction, no rewriting a
+        live run's history): a cached prefix is a fact that stays true forever, so
+        there is nothing to invalidate, only more to append — except a run that
+        :meth:`delete_run` (ADR-0039) has removed outright, which evicts this cache
+        too. Scoped to this store's own lifetime, same as every other in-memory state
+        here — a fresh :meth:`open` starts with an empty cache, so this never persists
+        beyond the process (ADR-0012 single-writer, one store per process).
         """
         async with self._run_locks[run_id]:
             cached = self._event_cache.get(run_id, ())
@@ -412,6 +415,73 @@ class SQLiteStore:
         """List known run ids, oldest first."""
         rows = self._conn.execute("SELECT run_id FROM runs ORDER BY created_at").fetchall()
         return [row["run_id"] for row in rows]
+
+    async def delete_run(self, run_id: str) -> None:
+        """Delete one run's ``runs`` and ``events`` rows outright (ADR-0037/0039).
+
+        The run must be terminal (:data:`~satay.journal.events.TERMINAL_STATUSES` —
+        completed, failed, or cancelled), the same precondition ``fork`` already uses,
+        so a driver that might still resume a run can never have it deleted from under
+        it. Raises ``LookupError`` for an unknown run, ``ValueError`` for a non-terminal
+        one.
+
+        Touches only this run's own rows: no cascade to a fork's lineage or a parent's
+        `child_run_id`, and no blob deletion — a fork or an unrelated run can still
+        name the exact same content-addressed blob (ADR-0004/Q54), so blob GC is a
+        separate, reference-aware sweep (:mod:`satay.blobs.gc`) run independently of
+        any single deletion. A dangling `child_run_id` / `source_run_id` after this is
+        the same "unknown run id" case `inspect`/`diff` already tolerate.
+        """
+        async with self._run_locks[run_id]:
+            record = await self.get_run(run_id)
+            if record is None:
+                raise LookupError(f"run {run_id!r} not found")
+            if record.status not in TERMINAL_STATUSES:
+                allowed = ", ".join(sorted(s.value for s in TERMINAL_STATUSES))
+                raise ValueError(
+                    f"cannot delete run {run_id!r}: status is {record.status.value!r}, "
+                    f"not terminal ({allowed})"
+                )
+            conn = self._conn
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            self._event_cache.pop(run_id, None)
+
+    async def referenced_blob_ids(self) -> set[str]:
+        """Every blob id still named by any remaining run's journal (ADR-0037/0039).
+
+        The **mark** half of blob GC's mark-and-sweep. Reads ``payload_json`` straight
+        from SQLite — *before* :meth:`_decode_payload`'s blob-reference rehydration —
+        because rehydration resolves a spilled reference into its full inline value,
+        which would hide every blob reference from a mark phase built on
+        :meth:`read_events` instead. Value slots are selected the same way write-time
+        redaction selects them (:func:`satay.redaction.is_value_slot`, suffix-based so
+        a future ``*_ref`` field is covered automatically); a slot's raw value counts
+        only when :func:`satay.blobs.is_blob_ref` recognises its shape. Recomputed from
+        scratch on every call — no incremental index to drift (the same reasoning
+        ADR-0036's cache uses, applied here to correctness instead of performance).
+
+        Deliberately does not scan ``event_inbox``: its own ``payload_ref`` column is
+        redacted on write but never spilled (confirmed by reading
+        :meth:`add_inbox_event`, which calls no ``spill_encoded``), so a blob
+        reference cannot originate there.
+        """
+        ids: set[str] = set()
+        rows = self._conn.execute("SELECT payload_json FROM events").fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if not isinstance(payload, Mapping):
+                continue
+            for key, value in payload.items():
+                if is_value_slot(key) and is_blob_ref(value):
+                    ids.add(str(value["id"]))
+        return ids
 
     async def get_run_by_idempotency_key(self, idempotency_key: str) -> RunRecord | None:
         """Return the earliest run created with ``idempotency_key`` (keyed start, N13)."""
