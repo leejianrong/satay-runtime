@@ -6,6 +6,42 @@ crash, reusing recorded results. Execution is at-least-once, with runtime-derive
 idempotency keys. One process, SQLite, no external infra. The debugger (Studio) ships in
 the optional `satay[studio]` extra.
 
+## Commands
+
+Use the `make` targets. The hook and CI both go through them, so they cannot drift.
+`make help` lists everything.
+
+```bash
+make dev          # uv sync (dev group)
+make dev-studio   # uv sync --extra studio --frozen, what every CI job installs
+make lint         # ruff check + ruff format --check
+make type         # mypy --strict over src (syncs the studio extra first)
+make check        # lint + type
+make test         # unit tests only, the fast inner loop
+make test-all     # the full suite (unit + integration + e2e), as CI runs it
+make docs         # docs version check + repo-link check + zensical build --strict
+make docs-version # flip every version the docs quote to the newest release tag
+make secrets      # gitleaks over history + tree (needs gitleaks on PATH)
+make ci           # everything CI gates on: check + test-all + docs
+```
+
+Three things that will otherwise cost you an afternoon:
+
+- **mypy needs the studio extra.** Without `fastapi`, `uvicorn` and `typer` installed it
+  reports 21 import and decorator errors in `satay.control` and `satay.devstack` that say
+  nothing about the code. `make type` syncs it for you, so a bare `uv run mypy src` on a
+  dev-only env will look broken when it is not.
+- **A whole-suite run needs the studio extra too**, and aborts at collection without it
+  (KAN-460). A narrowed run (`tests/unit`, a file, a node id, `-k`, `-m`, `--lf`) only
+  warns, which keeps `make test` green on a plain `make dev` env.
+  `SATAY_ALLOW_MISSING_STUDIO_EXTRA=1` downgrades the error, and never belongs in CI.
+- **`.python-version` pins 3.13**, the newer of the two versions CI runs. If a failure
+  looks version-shaped, check `uv run python -V` first.
+
+Install the pre-push hook with `make install-hooks` (bypass with `git push --no-verify`).
+It mirrors what branch protection requires: `make check`, `make test-all`, `make docs`,
+and `make secrets` when `gitleaks` is on PATH.
+
 ## Trust the code over the docs
 
 V1 to V8 are merged, `0.1.0` is released, and nothing in `src/` raises
@@ -46,75 +82,30 @@ Two policies are easy to confuse and have nothing to do with each other:
 
 ## Direction
 
-`0.1.0` has shipped. Two ADRs set what comes next and what counts as important.
+`0.1.0` has shipped. Three ADRs set what comes next — read before proposing new surface:
 
-[ADR-0025](docs/adr/0025-positioning-agents-first.md), agents first, platform second. The
-debugger is the wedge. Durability is a commodity claim in 2026 (Temporal, Restate, DBOS,
-Inngest, Hatchet), so fork-from-a-prefix, replay, and call-by-call compare, locally with
-no account, are what nobody else has. The first user is an app developer building AI
-features, not a platform team. PostgreSQL, multi-worker and distributed execution keep
-their ARCHITECTURE §9 ordering and come after the launch. The no-agent-abstraction
-non-goal holds: five primitives and cookbook examples, no loop framework, no provider
-adapters, no graph DSL.
+- [ADR-0025](docs/adr/0025-positioning-agents-first.md) — agents first, platform second.
+  The debugger (fork, replay, call-by-call compare, locally, no account) is the wedge.
+  PostgreSQL, multi-worker and distributed execution wait for ARCHITECTURE §9's ordering,
+  after launch. No-agent-abstraction non-goal: five primitives and cookbook examples, no
+  loop framework, no provider adapters, no graph DSL.
+- [ADR-0026](docs/adr/0026-license-and-hosted-journal-plane.md) — Apache-2.0 forever; the
+  paid tier is hosting only (ingest, retention, hosted Studio, sharing, cost reporting),
+  never hosted execution. Write-time redaction
+  ([ADR-0029](docs/adr/0029-write-time-redaction.md)) is off by default, slot-scoped to
+  `*_ref` fields; read-time redaction stays the default and only protects API responses.
+  No hosting implementation exists yet.
+- [ADR-0032](docs/adr/0032-products-on-top-pipeline-graph-builder.md) — a pipeline-graph
+  builder may exist, but only as a **separate repo** compiling down to readable
+  `@workflow`/`@task` Python. No graph DSL, node registry, or graph interpreter belongs in
+  `satay` itself, and the runtime must stay releasable with the builder deleted. Watch for
+  the pull toward graph-shaped core features (a node registry, step metadata, a graph id
+  on runs) — default answer is no.
 
-[ADR-0026](docs/adr/0026-license-and-hosted-journal-plane.md), Apache-2.0 forever plus a
-hosted journal plane. Nothing is withheld from a self-hosted user. The paid tier is
-hosting only (journal ingest, retention, hosted Studio, team sharing, cost reporting),
-never hosted execution. One requirement landed early, write-time redaction
-([ADR-0029](docs/adr/0029-write-time-redaction.md)): off by default, slot-scoped to the
-`*_ref` value fields so replay identity is untouched. Read-time redaction is still the
-default and still protects only the API response. No hosting implementation exists.
-
-[ADR-0032](docs/adr/0032-products-on-top-pipeline-graph-builder.md), what may be built *on*
-Satay. A visual pipeline-graph builder (Kubeflow/Airflow-shaped) is sanctioned as a
-**separate product in a separate repo** that **compiles down to readable
-`@workflow`/`@task` Python**. The coupling is one-way: no graph DSL, no node registry and
-no graph interpreter in `satay`, and the runtime must stay releasable with the builder
-deleted. So "no graph DSL" now means the core specifically, not the idea. Watch for the
-pull it creates toward graph-shaped core features (a node registry, a step-metadata event
-slot, a graph id on runs, a second durable-call identity scheme) — default answer is no,
-those belong builder-side.
-
-sibei-flow is the sibling project and the designated first tenant. The two are independent
-products sharing one engine, and the coupling surface is the journal read format (stdlib
-frozen dataclasses), not the execution core. Its needs are legitimate input, but ADR-0025
-wins where they conflict. See `docs/CONTEXT.md` § "Relationship to sibei-flow".
-
-## Commands
-
-Use the `make` targets. The hook and CI both go through them, so they cannot drift.
-`make help` lists everything.
-
-```bash
-make dev          # uv sync (dev group)
-make dev-studio   # uv sync --extra studio --frozen, what every CI job installs
-make lint         # ruff check + ruff format --check
-make type         # mypy --strict over src (syncs the studio extra first)
-make check        # lint + type
-make test         # unit tests only, the fast inner loop
-make test-all     # the full suite (unit + integration + e2e), as CI runs it
-make docs         # docs version check + repo-link check + zensical build --strict
-make docs-version # flip every version the docs quote to the newest release tag
-make secrets      # gitleaks over history + tree (needs gitleaks on PATH)
-make ci           # everything CI gates on: check + test-all + docs
-```
-
-Three things that will otherwise cost you an afternoon:
-
-- **mypy needs the studio extra.** Without `fastapi`, `uvicorn` and `typer` installed it
-  reports 21 import and decorator errors in `satay.control` and `satay.devstack` that say
-  nothing about the code. `make type` syncs it for you, so a bare `uv run mypy src` on a
-  dev-only env will look broken when it is not.
-- **A whole-suite run needs the studio extra too**, and aborts at collection without it
-  (KAN-460). A narrowed run (`tests/unit`, a file, a node id, `-k`, `-m`, `--lf`) only
-  warns, which keeps `make test` green on a plain `make dev` env.
-  `SATAY_ALLOW_MISSING_STUDIO_EXTRA=1` downgrades the error, and never belongs in CI.
-- **`.python-version` pins 3.13**, the newer of the two versions CI runs. If a failure
-  looks version-shaped, check `uv run python -V` first.
-
-Install the pre-push hook with `make install-hooks` (bypass with `git push --no-verify`).
-It mirrors what branch protection requires: `make check`, `make test-all`, `make docs`,
-and `make secrets` when `gitleaks` is on PATH.
+sibei-flow is the sibling project and first tenant: an independent product sharing this
+engine, coupled only through the journal read format (stdlib frozen dataclasses). Its
+needs are legitimate input, but ADR-0025 wins where they conflict — see `docs/CONTEXT.md`
+§ "Relationship to sibei-flow".
 
 ## Workflow conventions
 
@@ -138,7 +129,8 @@ src/satay/
   journal/     event model (frozen dataclasses), Store seam, codec        (A3)
   executor/    TaskExecutor seam, LocalTaskExecutor, retry/backoff        (A4)
   timers/      timer + event poll loop, event inbox                       (A5)
-  control/     HTTP control + read API, redactor on reads; studio only    (A7/A8)
+  control/     HTTP control + read API (A7/A8). server.py is studio-only;
+               views.py is core-safe and reached from api/inspect + diff.
   versioning/  code-version stamper + mismatch policy                     (A10)
   blobs/       payload spill to local files over 256 KiB                  (A3.4)
   devstack/    `satay dev` orchestrator; studio extra only                (A9)
@@ -158,9 +150,10 @@ is the authority, so keep the two in step:
   by default), `diff` (ADR-0034; call-by-call compare of two runs, as jq-style paths
   computed *before* redaction so masked values still compare correctly)
 - **Values:** `RunHandle`, `RunStatus` (KAN-524; a `StrEnum`, so `== "completed"` still
-  works), `RunInspection` / `RecordedCall` (ADR-0033), `RunDiff` / `CallDiff` /
-  `ValueDiff` (ADR-0034), `PARKED` (ADR-0030; what `result()` returns for a run parked
-  with nothing in this process to wake it, and it is not `None`)
+  works), `RunInspection` / `RecordedCall` (ADR-0033), `CallStatus` (ADR-0038; the
+  per-call/attempt status `StrEnum`), `RunDiff` / `CallDiff` / `ValueDiff` (ADR-0034),
+  `PARKED` (ADR-0030; what `result()` returns for a run parked with nothing in this
+  process to wake it, and it is not `None`)
 - **Errors:** `WorkflowFailedError`, `TaskFailedError`, `NondeterminismError`,
   `EffectSafetyError`, `VersionMismatchError`
 
@@ -199,7 +192,8 @@ newer than the code).
 ## Pointers
 
 - `docs/ARCHITECTURE.md` §1 to §2, structure and system model
-- `docs/CONTEXT.md`, glossary and decision register D1 to D23
+- `docs/CONTEXT.md`, glossary and decision register (D1 to D27, plus named decisions on
+  license, name, python version, and product scope)
 - `docs/RELEASING.md`, the release procedure, including the docsite version flip
 - ADRs of record: 0011 (test seam), 0012 (co-hosting/single-writer), 0013 (packaging),
   0015 (toolchain), 0016 (core deps), 0017 (persistence), 0019 (platform/release)
