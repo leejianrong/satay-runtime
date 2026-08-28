@@ -17,6 +17,7 @@ import type {
   Tree,
   TreeNode,
   UsageEntry,
+  ValueDiff,
   VersionMismatch,
 } from "./types";
 
@@ -256,6 +257,11 @@ export interface CompareRowView {
   changed: boolean;
   /** Per-field flags for rendering (timing surfaced but not counted as a substantive change). */
   diffs: { input: boolean; output: boolean; attempts: boolean; duration: boolean };
+  /** The structural path diff for input/output (``satay.valuediff``), null on an unaligned
+   *  row — there is no second value to compare against. Carries ``paths``/``redacted``/
+   *  ``truncated`` for a richer render than the plain booleans in ``diffs``. */
+  input: ValueDiff | null;
+  output: ValueDiff | null;
 }
 
 export interface CompareView {
@@ -266,30 +272,28 @@ export interface CompareView {
   changedCount: number;
 }
 
-function sameJson(x: unknown, y: unknown): boolean {
-  return JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
-}
-
 export function buildCompare(cmp: Compare): CompareView {
   const rows = (cmp.rows ?? []).map((row): CompareRowView => {
     const a = row.a ?? null;
     const b = row.b ?? null;
-    const both = a !== null && b !== null;
-    const input = both && !sameJson(a.input, b.input);
-    const output = both && !sameJson(a.output, b.output);
-    const attempts = both && a.attempts !== b.attempts;
-    const duration = both && a.duration_seconds !== b.duration_seconds;
-    const aligned = row.aligned === true && both;
-    // Absent-on-one-side is itself a change; timing jitter alone is not counted.
-    const changed = !aligned || input || output || attempts;
+    const diff = row.diff;
+    const input = diff.input;
+    const output = diff.output;
     return {
       identity: row.identity,
       taskName: row.task_name ?? null,
       a,
       b,
-      aligned,
-      changed,
-      diffs: { input, output, attempts, duration },
+      aligned: row.aligned === true,
+      changed: diff.changed === true,
+      diffs: {
+        input: input?.changed === true,
+        output: output?.changed === true,
+        attempts: diff.attempts === true,
+        duration: diff.duration_seconds === true,
+      },
+      input,
+      output,
     };
   });
   return { a: cmp.a, b: cmp.b, rows, changedCount: rows.filter((r) => r.changed).length };

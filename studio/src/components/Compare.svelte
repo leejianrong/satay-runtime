@@ -25,6 +25,13 @@
     const s = pretty(v);
     return s.length > 80 ? s.slice(0, 79) + "…" : s;
   }
+
+  /** Render a ValueDiff's paths, jq-style — "." means not localisable to a field. */
+  function paths(vd: { changed: boolean; paths: string[] } | null): string {
+    if (!vd || !vd.changed) return "";
+    const shown = vd.paths.filter((p) => p !== ".");
+    return shown.join(", ");
+  }
 </script>
 
 <h1 class="view-title">Compare runs</h1>
@@ -79,8 +86,22 @@
                 <span class="absent">— absent —</span>
               {:else}
                 <div class="cell-line"><StatusChip status={side.status} /></div>
-                <div class="cell-line" class:diff={row.diffs.input}><span class="k">in</span> <code>{short(side.input)}</code></div>
-                <div class="cell-line" class:diff={row.diffs.output}><span class="k">out</span> <code>{short(side.output)}</code></div>
+                <div class="cell-line" class:diff={row.diffs.input}>
+                  <span class="k">in</span> <code>{short(side.input)}</code>
+                  {#if row.diffs.input}
+                    {#if paths(row.input)}<span class="paths">{paths(row.input)}</span>{/if}
+                    {#if row.input?.redacted}<span class="badge warn">redacted</span>{/if}
+                    {#if row.input?.truncated}<span class="badge warn">truncated</span>{/if}
+                  {/if}
+                </div>
+                <div class="cell-line" class:diff={row.diffs.output}>
+                  <span class="k">out</span> <code>{short(side.output)}</code>
+                  {#if row.diffs.output}
+                    {#if paths(row.output)}<span class="paths">{paths(row.output)}</span>{/if}
+                    {#if row.output?.redacted}<span class="badge warn">redacted</span>{/if}
+                    {#if row.output?.truncated}<span class="badge warn">truncated</span>{/if}
+                  {/if}
+                </div>
                 <div class="cell-line" class:diff={row.diffs.attempts}><span class="k">attempts</span> {side.attempts}</div>
                 <div class="cell-line time" class:diff={row.diffs.duration}><span class="k">took</span> {fmtDuration(side.duration_seconds)}</div>
               {/if}
@@ -112,6 +133,8 @@
   .c-ident .ident { font-family: var(--font-mono); font-weight: 600; font-size: 12.5px; }
   .badge { display: inline-block; margin-left: 7px; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: #fff; }
   .badge.only { background: var(--waiting); }
+  .badge.warn { background: var(--waiting); }
+  .cell-line .paths { display: inline-block; margin-left: 7px; font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
   .cell-line { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); margin: 2px 0; }
   .cell-line .k { display: inline-block; min-width: 58px; color: var(--text-faint); font-size: 9.5px; letter-spacing: 0.6px; text-transform: uppercase; }
   .cell-line code { color: var(--text); }

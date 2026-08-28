@@ -238,6 +238,8 @@ describe("mismatch-banner + lineage view-model (U8/N17)", () => {
 });
 
 describe("compare view-model — align by identity, mark what a change did (U7)", () => {
+  // `diff` mirrors the server's satay.control.views._row_diff / satay.valuediff shape —
+  // the view-model consumes it directly rather than recomputing sameness client-side.
   const cmp = {
     a: { run_id: "orig", workflow_name: "wf", status: "completed", code_version: "git:1", created_at: "x", idempotency_key: null },
     b: { run_id: "fork", workflow_name: "wf", status: "completed", code_version: "git:2", created_at: "y", idempotency_key: null },
@@ -245,15 +247,30 @@ describe("compare view-model — align by identity, mark what a change did (U7)"
       // Reused upstream: identical input+output → unchanged (timing differs, not counted).
       { identity: "step_one:0", task_name: "step_one", aligned: true,
         a: { task_name: "step_one", status: "completed", input: [1], output: 2, attempts: 1, duration_seconds: 0.10 },
-        b: { task_name: "step_one", status: "completed", input: [1], output: 2, attempts: 1, duration_seconds: 0.31 } },
+        b: { task_name: "step_one", status: "completed", input: [1], output: 2, attempts: 1, duration_seconds: 0.31 },
+        diff: {
+          changed: false,
+          input: { changed: false, paths: [], redacted: false, truncated: false },
+          output: { changed: false, paths: [], redacted: false, truncated: false },
+          attempts: false,
+          duration_seconds: true,
+        } },
       // Re-run downstream under changed code: same input, different output → changed.
       { identity: "fork_step:0", task_name: "fork_step", aligned: true,
         a: { task_name: "fork_step", status: "completed", input: [2], output: 3, attempts: 1, duration_seconds: 0.05 },
-        b: { task_name: "fork_step", status: "completed", input: [2], output: 102, attempts: 1, duration_seconds: 0.06 } },
+        b: { task_name: "fork_step", status: "completed", input: [2], output: 102, attempts: 1, duration_seconds: 0.06 },
+        diff: {
+          changed: true,
+          input: { changed: false, paths: [], redacted: false, truncated: false },
+          output: { changed: true, paths: ["."], redacted: false, truncated: false },
+          attempts: false,
+          duration_seconds: true,
+        } },
       // Present on one side only → changed / one-side.
       { identity: "extra:0", task_name: "extra", aligned: false,
         a: null,
-        b: { task_name: "extra", status: "completed", input: [9], output: 9, attempts: 2, duration_seconds: 0.2 } },
+        b: { task_name: "extra", status: "completed", input: [9], output: 9, attempts: 2, duration_seconds: 0.2 },
+        diff: { changed: true, input: null, output: null, attempts: false, duration_seconds: false } },
     ],
   } as unknown as Compare;
 
@@ -265,6 +282,8 @@ describe("compare view-model — align by identity, mark what a change did (U7)"
     expect(byId["fork_step:0"].changed).toBe(true);
     expect(byId["fork_step:0"].diffs.output).toBe(true);
     expect(byId["fork_step:0"].diffs.input).toBe(false);
+    // The richer server diff carries the localised path, not just a boolean.
+    expect(byId["fork_step:0"].output?.paths).toEqual(["."]);
   });
 
   it("treats an identity present on only one side as changed and not aligned", () => {
@@ -273,10 +292,21 @@ describe("compare view-model — align by identity, mark what a change did (U7)"
     expect(extra.aligned).toBe(false);
     expect(extra.changed).toBe(true);
     expect(extra.a).toBe(null);
+    expect(extra.input).toBe(null);
+    expect(extra.output).toBe(null);
   });
 
   it("counts how many calls differ (the 'what did my change do' headline)", () => {
     expect(buildCompare(cmp).changedCount).toBe(2); // fork_step + extra
+  });
+
+  it("surfaces redaction and truncation from the server's ValueDiff", () => {
+    const redacted = {
+      ...cmp,
+      rows: [{ ...cmp.rows[1], diff: { ...(cmp.rows[1] as any).diff, output: { changed: true, paths: ["."], redacted: true, truncated: false } } }],
+    } as unknown as Compare;
+    const vm = buildCompare(redacted);
+    expect(vm.rows[0].output?.redacted).toBe(true);
   });
 
   it("tolerates unknown added row/summary fields (ADR-0018)", () => {

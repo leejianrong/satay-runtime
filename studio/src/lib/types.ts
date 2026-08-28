@@ -143,12 +143,34 @@ export interface CompareCall extends Extensible {
   duration_seconds: number | null;
 }
 
+/** Where one field's two recorded values differ (``satay.valuediff.diff_values``). */
+export interface ValueDiff extends Extensible {
+  changed: boolean;
+  /** Differing locations, jq-style (``.style``, ``[1].topic``). ``["."]`` means the
+   *  difference is not localisable to any field — a scalar, or two sides of different shapes. */
+  paths: string[];
+  /** A compared leaf was masked in the journal itself (ADR-0029): equality is unknown. */
+  redacted: boolean;
+  /** A cap was hit, so ``paths`` is a prefix of the truth rather than all of it. */
+  truncated: boolean;
+}
+
+/** ``satay.control.views._row_diff``: where one compare row's two sides differ. */
+export interface RowDiff extends Extensible {
+  changed: boolean;
+  input: ValueDiff | null;
+  output: ValueDiff | null;
+  attempts: boolean;
+  duration_seconds: boolean;
+}
+
 export interface CompareRow extends Extensible {
   identity: string;
   task_name: string | null;
   a: CompareCall | null;
   b: CompareCall | null;
   aligned: boolean;
+  diff: RowDiff;
 }
 
 export interface Compare extends Extensible {
