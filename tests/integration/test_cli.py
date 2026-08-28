@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 import satay
+from satay.blobs import BlobStore
 from satay.cli.main import main
+from satay.config import blob_dir
 from satay.journal.events import Event, EventType, RunRecord, RunStatus
 from satay.journal.store import SQLiteStore
 
@@ -90,6 +93,91 @@ def test_runs_show_missing_run_returns_error(
     code = main(["runs", "show", "does-not-exist", "--data-dir", str(data_dir)])
     assert code == 1
     assert "not found" in capsys.readouterr().err
+
+
+def test_runs_delete_removes_a_terminal_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    db = data_dir / "satay.db"
+    _seed(db, "run-x", with_resume=False)
+
+    code = main(["runs", "delete", "run-x", "--data-dir", str(data_dir)])
+
+    assert code == 0
+    assert "deleted" in capsys.readouterr().out
+    assert main(["runs", "show", "run-x", "--data-dir", str(data_dir)]) == 1
+
+
+def test_runs_delete_rejects_a_non_terminal_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    db = data_dir / "satay.db"
+
+    async def _seed_running() -> None:
+        store = SQLiteStore.open(db)
+        await store.create_run(
+            RunRecord(
+                run_id="run-running",
+                workflow_name="demo",
+                status=RunStatus.RUNNING,
+                code_version="dev:test",
+                created_at=datetime(2026, 7, 22, tzinfo=UTC),
+            )
+        )
+        store.close()
+
+    asyncio.run(_seed_running())
+
+    code = main(["runs", "delete", "run-running", "--data-dir", str(data_dir)])
+
+    assert code == 1
+    assert "not terminal" in capsys.readouterr().err
+
+
+def test_gc_dry_run_reports_reclaimable_blobs_without_deleting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    db = data_dir / "satay.db"
+    _seed(db, "run-x", with_resume=False)
+    blobs = BlobStore(blob_dir(data_dir))
+    orphan_id = blobs.put(b"orphan" * 1000)
+    path = blobs.directory / f"{orphan_id}.blob"
+    old = path.stat().st_mtime - 3600
+    os.utime(path, (old, old))
+
+    code = main(["gc", "--data-dir", str(data_dir), "--grace-period-seconds", "60"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "would reclaim 1 blobs" in out
+    assert path.exists()
+
+
+def test_gc_apply_deletes_reclaimable_blobs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    db = data_dir / "satay.db"
+    _seed(db, "run-x", with_resume=False)
+    blobs = BlobStore(blob_dir(data_dir))
+    orphan_id = blobs.put(b"orphan" * 1000)
+    path = blobs.directory / f"{orphan_id}.blob"
+    old = path.stat().st_mtime - 3600
+    os.utime(path, (old, old))
+
+    code = main(["gc", "--data-dir", str(data_dir), "--apply", "--grace-period-seconds", "60"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "reclaimed 1 blobs" in out
+    assert not path.exists()
 
 
 def test_dev_dispatches_to_the_studio_command(
