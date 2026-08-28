@@ -138,3 +138,21 @@ asserts membership or named fields and passes untouched.
   three committed bundle files under `src/satay/_studio_assets/`, and this environment's
   Node/pnpm do not match the versions CI pins. Regenerating a checked-in artifact on a
   mismatched toolchain is a worse risk than a follow-up PR.
+
+## Refinement (Studio wiring landed, 2026-08-28)
+
+The follow-up PR this ADR deferred has shipped (`205e568`, ADR-0034 wiring PR). Two things
+this ADR's original text still describes as pending are done:
+
+- **The Alternatives entry above** ("Ship the Studio rendering in the same change —
+  deferred") is resolved: Studio's Compare view now renders `satay.diff`'s server-computed
+  `RowDiff`/`ValueDiff` fields directly.
+- **The Consequences bullet** "Two diff implementations coexist, deliberately and
+  temporarily... Studio keeps its client-side booleans until the frontend half lands" no
+  longer holds. `buildCompare` (`studio/src/lib/viewmodels.ts`) reads `row.diff` from the
+  read API; the client-side `sameJson` whole-value-equality function it names is deleted,
+  not merely superseded. One diff implementation exists, in `satay/valuediff.py`, as
+  Decision 2 always intended.
+
+Nothing else in this ADR is affected — Decisions 1–10 and the remaining Consequences and
+Alternatives entries describe the shipped behaviour accurately.
