@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import satay
+from satay.control import views
 from satay.journal.events import EventType
 from satay.journal.store import SQLiteStore
 from satay.testing.clock import ManualClock
@@ -163,6 +164,53 @@ async def test_collected_item_still_exhausts_its_retry_budget(
     events = list(await store.read_events(handle.run_id))
     assert len(_events_of(events, EventType.TASK_ATTEMPT_FAILED)) == 3
     assert len(_events_of(events, EventType.TASK_FAILED)) == 1  # exactly one terminal record
+    store.close()
+
+
+# -- 2b. the failure stays visible to the *read layer*, not just the journal ------
+
+
+async def test_task_detail_reports_a_collected_failure_as_failed_with_its_traceback() -> None:
+    """KAN-867. ``task_detail`` used to derive ``status`` from whether the *run* failed,
+    so a collected failure — whose run survives it — left the field stuck at ``running``
+    forever. It now keys off the same retry-exhaustion signal ``tree``/``inspect``/``diff``
+    already used, and reads the traceback straight off ``TaskFailed``'s own payload, since
+    there is no run-level ``WorkflowFailed`` to fall back on for a call the run survived.
+    """
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(collect_map_wf, [2, 3, 4], store=store)
+    await handle.result()
+
+    detail = await views.task_detail(store, handle.run_id, "collect_item:key:item-3")
+    assert detail["status"] == "failed"
+    assert detail["error"]["type"] == "ValueError"
+    assert "item 3 is poison" in detail["error"]["message"]
+    assert "Traceback" in detail["error"]["traceback"]
+
+    # A completed sibling is unaffected.
+    ok_detail = await views.task_detail(store, handle.run_id, "collect_item:key:item-2")
+    assert ok_detail["status"] == "completed"
+    assert "error" not in ok_detail
+    store.close()
+
+
+async def test_inspect_and_tree_already_report_a_collected_failure_as_failed() -> None:
+    """Unlike ``task_detail`` (fixed above), ``satay.inspect``/``tree`` derive status from
+    retry exhaustion already, not from the run's own outcome — pinned here so it cannot
+    silently regress alongside the ``task_detail`` fix."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(collect_map_wf, [2, 3, 4], store=store)
+    await handle.result()
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    failed_call = next(c for c in inspection.calls if c.key == "item-3")
+    assert failed_call.status is satay.CallStatus.FAILED
+
+    result = await views.tree(store, handle.run_id)
+    (map_node,) = [n for n in result["nodes"] if n["kind"] == "map"]
+    assert map_node["status"] == "failed"
+    item = next(i for i in map_node["items"] if i["key"] == "item-3")
+    assert item["status"] == "failed"
     store.close()
 
 
