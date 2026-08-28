@@ -28,12 +28,20 @@ from satay.journal.timeline import model_usage
 from satay.valuediff import diff_values
 
 #: Task-lifecycle event types that carry a durable-call identity in their payload.
+#: Includes ``TASK_FAILED`` (ADR-0027's collect-mode terminal marker, KAN-867): it is
+#: the failure-side twin of ``TASK_COMPLETED`` for a call inside a collect-mode
+#: composite, where the run itself survives and no ``WorkflowFailed`` records the
+#: failure. ``_scan_tasks`` and ``_calls_view`` need no case for it — the *preceding*
+#: ``TASK_ATTEMPT_FAILED`` (with ``next_delay=None``) already marks the identity
+#: exhausted, which is what their status derivation actually keys on — but
+#: ``task_detail`` reads it directly, for the traceback only ``TaskFailed`` carries.
 _TASK_EVENTS = frozenset(
     {
         EventType.TASK_SCHEDULED,
         EventType.TASK_ATTEMPT_STARTED,
         EventType.TASK_ATTEMPT_FAILED,
         EventType.TASK_COMPLETED,
+        EventType.TASK_FAILED,
     }
 )
 
@@ -319,15 +327,24 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
     """``GET /runs/{id}/tasks/{identity}`` — a logical task and its physical attempts.
 
     Groups the attempts of one logical task with its input, output, per-attempt error /
-    retry-delay / duration / usage, and — when the run failed — the native traceback
-    recorded on ``WorkflowFailed``.
+    retry-delay / duration / usage, and the native traceback — from the run-level
+    ``WorkflowFailed`` for a fail-fast failure, or from ``TaskFailed`` itself for a
+    collect-mode one, where the run survives and there is no ``WorkflowFailed`` to fall
+    back on (ADR-0027).
+
+    ``status`` reaches ``FAILED`` off the same signal ``_scan_tasks`` already uses for
+    `tree`/`inspect`/`diff` — an attempt failing with no further retry budget — rather
+    than off whether the *run* failed. A collect-mode call is terminally failed even
+    though the run around it completed, and checking the run's own outcome (the previous
+    approach) left ``status`` stuck at ``RUNNING`` forever for exactly that call
+    (KAN-867, closed alongside ADR-0038's CallStatus sweep).
 
     The recorded model-usage slot (V2) appears twice, deliberately: on each attempt that
     reported any, and totalled in ``usage`` for the logical task. The total includes
     **failed** attempts, since the provider billed those too, so a task that never
     completed still prices itself (KAN-479).
     """
-    record = await _require_run(store, run_id)
+    await _require_run(store, run_id)  # existence check only (see above for why)
     events = await store.read_events(run_id)
 
     matching = [
@@ -354,6 +371,7 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
 
     attempts: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
+    exhausted = False  # an attempt failed with no further retry budget (mirrors _scan_tasks)
     for e in matching:
         p = e.payload
         if e.type is EventType.TASK_SCHEDULED and "input_ref" in p:
@@ -373,6 +391,8 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
             current["next_delay"] = p.get("next_delay")
             current["ended_at"] = e.ts.isoformat()
             current["duration_seconds"] = _duration(current["started_at"], e.ts.isoformat())
+            if current["next_delay"] is None:
+                exhausted = True
             _bill(detail, current, p)
         elif e.type is EventType.TASK_COMPLETED and current is not None:
             current["status"] = CallStatus.COMPLETED.value
@@ -382,21 +402,25 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
                 detail["output"] = decode(p["output_ref"])
             _bill(detail, current, p)
             detail["status"] = CallStatus.COMPLETED.value
+        elif e.type is EventType.TASK_FAILED:
+            # The terminal call-level marker for a collect-mode failure (ADR-0027): the
+            # run survives it, so there is no WorkflowFailed to supply this call's
+            # traceback from below — TaskFailed's own payload carries one directly.
+            detail["error"] = dict(p.get("error", {}))
 
     detail["attempts"] = attempts
-    if (
-        detail["status"] != CallStatus.COMPLETED.value
-        and record.status is RunStatus.FAILED
-        and any(a["status"] == CallStatus.FAILED.value for a in attempts)
-    ):
+    if detail["status"] != CallStatus.COMPLETED.value and exhausted:
         detail["status"] = CallStatus.FAILED.value
 
-    # Native stack trace: surface the run-level WorkflowFailed traceback when the run
-    # failed (the per-attempt error record carries only type + message).
-    for e in reversed(events):
-        if e.type is EventType.WORKFLOW_FAILED:
-            detail["error"] = dict(e.payload.get("error", {}))
-            break
+    # Native stack trace: TaskFailed above already supplied one for a collect-mode
+    # failure; a fail-fast failure has no TaskFailed for this identity, so fall back to
+    # the run-level WorkflowFailed traceback (the per-attempt error record carries only
+    # type + message, never a traceback).
+    if "error" not in detail:
+        for e in reversed(events):
+            if e.type is EventType.WORKFLOW_FAILED:
+                detail["error"] = dict(e.payload.get("error", {}))
+                break
 
     return detail
 

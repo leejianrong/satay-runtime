@@ -177,3 +177,35 @@ the freeze traded CLI restraint against Studio coverage that does not exist for 
 
 The neighbouring consequence stands unchanged: **Studio still does not render `TaskFailed`**
 (KAN-867). Nothing else in this ADR is affected.
+
+## Refinement (KAN-867 closed, 2026-08-28)
+
+KAN-867 turned out to be two claims, and only one was still true. Checked directly against the
+running code rather than taken on the ADR's word (the ADR-0016 refinement's own framing —
+"`_TASK_EVENTS` ... is the same four V1 types" — is what this refinement corrects):
+
+- **`tree`/`inspect`/`diff` already reported a collected failure as `failed`, and had for a
+  while.** `_scan_tasks`'s `exhausted` tracking (an attempt failing with `next_delay=None`) is
+  what `_task_status` actually keys on, and that signal is set by the *preceding*
+  `TaskAttemptFailed` regardless of whether `TaskFailed` itself is in `_TASK_EVENTS` — a
+  collect-mode failure always exhausts its retries before `TaskFailed` is recorded, so the run
+  tree, `satay.inspect`, and `satay.diff` were correct here well before today. This consequence's
+  "shows its failed attempts but no terminal marker" was accurate once, at the time the run tree
+  had no `exhausted` concept at all, and stopped being accurate once that tracking landed — the
+  text was never updated. Verified directly (`satay.map(..., return_exceptions=True)`, inspecting
+  the failed item) rather than assumed, after an unrelated ADR-0033-gap sweep took this ADR's
+  wording at face value and found the described gap didn't reproduce.
+- **`task_detail` (`GET /runs/{id}/tasks/{identity}`) was the real, reproducible gap.** Its
+  `status` field derived from whether the *run* failed (`record.status is RunStatus.FAILED`), not
+  from retry exhaustion — so for a call whose run survived it, `status` stayed `running` forever,
+  and no traceback was ever available (a fail-fast failure's traceback comes from the run-level
+  `WorkflowFailed`, which a collect-mode run never records). Fixed by giving `task_detail` the
+  same `exhausted` signal `_scan_tasks` uses, and by reading `TaskFailed` directly for its
+  traceback — which required adding `EventType.TASK_FAILED` to `_TASK_EVENTS` after all, not for
+  `tree`/`inspect`/`diff` (they needed nothing), but because `task_detail`'s own event filter was
+  built on that same whitelist and had no other way to see the event carrying the traceback.
+- Studio needed no frontend change: `TaskDetail.svelte` renders `detail.status` through the
+  already-generic `StatusChip` (any string, mapped to a CSS class), which already has a `.failed`
+  style from run-level rendering. The fix is entirely in `satay.control.views`.
+- KAN-867 is closed. `_TASK_EVENTS`'s comment now documents which of its four original
+  consumers actually needed the addition (only `task_detail`) and which didn't.
