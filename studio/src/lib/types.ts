@@ -13,6 +13,12 @@ export interface Extensible {
 
 export type RunStatus = "running" | "waiting" | "completed" | "failed" | "cancelled" | string;
 
+/** Mirrors ``satay.journal.events.CallStatus`` (ADR-0038): one vocabulary for a durable
+ *  call's status, whether reached via a task attempt, a map/tree item rollup, or a
+ *  ``start_child`` call mirroring its child run. Distinct from {@link RunStatus} — a
+ *  run itself is never `"unknown"`. */
+export type CallStatus = "running" | "completed" | "failed" | "waiting" | "cancelled" | "unknown" | string;
+
 /** V7 additive field: a run's stamped code version vs the current one (N17, ADR-0018). */
 export interface VersionMismatch extends Extensible {
   stamped: string;
@@ -65,7 +71,7 @@ export interface TaskNode extends Extensible {
   kind: "task";
   identity: string;
   task_name: string;
-  status: RunStatus;
+  status: CallStatus;
   attempts: number;
   ordinal?: number;
   key?: string;
@@ -75,7 +81,7 @@ export interface MapNode extends Extensible {
   kind: "map";
   group: string;
   task_name: string;
-  status: RunStatus;
+  status: CallStatus;
   items: TaskNode[];
 }
 
@@ -84,7 +90,7 @@ export interface ChildNode extends Extensible {
   identity: string;
   workflow_name: string;
   child_run_id: string;
-  status: RunStatus;
+  status: CallStatus;
   tree?: Tree;
 }
 
@@ -106,7 +112,7 @@ export interface UsageEntry extends Extensible {
 
 export interface Attempt extends Extensible {
   attempt: number;
-  status: RunStatus;
+  status: CallStatus;
   started_at: string;
   ended_at: string | null;
   duration_seconds: number | null;
@@ -121,7 +127,7 @@ export interface TaskDetail extends Extensible {
   run_id: string;
   identity: string;
   task_name: string;
-  status: RunStatus;
+  status: CallStatus;
   ordinal?: number;
   key?: string;
   input: Json;
@@ -136,7 +142,7 @@ export interface TaskDetail extends Extensible {
 
 export interface CompareCall extends Extensible {
   task_name: string;
-  status: RunStatus;
+  status: CallStatus;
   input: Json;
   output: Json;
   attempts: number;
