@@ -394,6 +394,72 @@ async def test_a_child_whose_input_is_a_list_reads_back_as_one_argument() -> Non
     store.close()
 
 
+@satay.workflow
+async def insp_child_sleeps(value: int) -> int:
+    await satay.sleep(300)
+    return value
+
+
+@satay.workflow
+async def insp_parent_forgets_the_child(value: int) -> int:
+    """Starts a child and never awaits its result — the parent completes immediately
+    while the child parks on its own sleep, independent of the parent's own outcome."""
+    await satay.start_child(insp_child_sleeps, value)
+    return value
+
+
+async def test_a_waiting_childs_status_mirrors_its_own_run_status() -> None:
+    """CallStatus.WAITING (ADR-0038) is reachable only for a ``start_child`` call, whose
+    status mirrors its own child run's RunStatus rather than a task's narrower
+    three-value vocabulary."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_parent_forgets_the_child, 1, store=store)
+    assert await handle.result() == 1  # the parent completes; the child parks on its own
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    (child_call,) = inspection.calls
+    assert child_call.status is satay.CallStatus.WAITING
+    store.close()
+
+
+async def test_a_cancelled_childs_status_mirrors_its_own_run_status() -> None:
+    """CallStatus.CANCELLED, the other RunStatus-mirroring value a child call can carry."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_parent_forgets_the_child, 1, store=store)
+    assert await handle.result() == 1
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    child_run_id = inspection.calls[0].child_run_id
+    assert child_run_id is not None
+
+    # `start()` resumes an existing non-terminal run by id rather than creating a new one
+    # (N3) — this is how a test reaches a handle onto a child it did not start directly.
+    child_handle = satay.start(insp_child_sleeps, 1, store=store, run_id=child_run_id)
+    await child_handle.cancel()
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    assert inspection.calls[0].status is satay.CallStatus.CANCELLED
+    store.close()
+
+
+async def test_a_dangling_child_run_id_reports_unknown_status() -> None:
+    """CallStatus.UNKNOWN is the defensive fallback for a child run record that cannot be
+    found — should not happen given ADR-0004's no-deletion guarantee, so the only way to
+    exercise it here is removing the row directly; there is no public way to produce it."""
+    store = SQLiteStore.open(":memory:")
+    handle = satay.start(insp_parent, 5, store=store)
+    await handle.result()
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    child_run_id = inspection.calls[0].child_run_id
+    assert child_run_id is not None
+    store._conn.execute("DELETE FROM runs WHERE run_id = ?", (child_run_id,))
+
+    inspection = await satay.inspect(handle.run_id, store=store)
+    assert inspection.calls[0].status is satay.CallStatus.UNKNOWN
+    store.close()
+
+
 async def test_blob_spilled_output_is_resolved_transparently() -> None:
     """A payload over the spill threshold lives in a blob file; the read resolves it."""
     store = SQLiteStore.open(":memory:")
