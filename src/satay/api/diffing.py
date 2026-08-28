@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from satay.api.inspection import RecordedCall, _recorded_args
+from satay.journal.events import CallStatus
 
 if TYPE_CHECKING:
     from satay.journal import Store
@@ -115,7 +116,7 @@ def _side(call: dict[str, Any] | None) -> RecordedCall | None:
         task_name=call["task_name"],
         args=_recorded_args(call.get("input")),
         output=call.get("output"),
-        status=call["status"],
+        status=CallStatus(call["status"]),
         attempts=call["attempts"],
         duration_seconds=call["duration_seconds"],
         ordinal=call.get("ordinal"),
@@ -146,9 +147,9 @@ async def diff(
     id is unknown.
 
     Comparison is Python equality over decoded values, so ``True``/``1`` and ``2``/``2.0``
-    count as equal and mapping key order is ignored. Studio's own client-side booleans use
-    JSON-string equality and disagree on exactly those cases; they are the ones to change
-    when Studio moves onto this field.
+    count as equal and mapping key order is ignored — Studio's Compare view (ADR-0034)
+    reads this same structural diff rather than keeping a second, JSON-string-equality
+    implementation of its own.
     """
     from satay.api.primitives import _default_store
     from satay.control import views

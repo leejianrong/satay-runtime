@@ -35,6 +35,9 @@ def test_public_surface_is_exported() -> None:
         "inspect",
         "RunInspection",
         "RecordedCall",
+        # The declared type of `RecordedCall.status` (ADR-0038's CallStatus sweep,
+        # closing the gap ADR-0033's Consequences named).
+        "CallStatus",
         # Call-by-call compare from Python (ADR-0034): the third leg of the ADR-0025
         # debugger wedge, after fork and replay.
         "diff",

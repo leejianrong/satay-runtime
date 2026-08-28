@@ -23,7 +23,7 @@ from typing import Any
 
 from satay.journal import Store
 from satay.journal.codec import decode
-from satay.journal.events import Event, EventType, RunRecord, RunStatus
+from satay.journal.events import CallStatus, Event, EventType, RunRecord, RunStatus
 from satay.journal.timeline import model_usage
 from satay.valuediff import diff_values
 
@@ -180,12 +180,12 @@ def _task_status(
     completed: set[str],
     exhausted_failures: set[str],
     run_failed: bool,
-) -> str:
+) -> CallStatus:
     if identity in completed:
-        return "completed"
+        return CallStatus.COMPLETED
     if identity in exhausted_failures or (run_failed and identity not in completed):
-        return "failed"
-    return "running"
+        return CallStatus.FAILED
+    return CallStatus.RUNNING
 
 
 def _scan_tasks(events: Sequence[Event]) -> dict[str, dict[str, Any]]:
@@ -243,7 +243,7 @@ async def _build_tree(store: Store, run_id: str, record: RunRecord) -> dict[str,
             "kind": "task",
             "identity": info["identity"],
             "task_name": info["task_name"],
-            "status": _task_status(info["identity"], completed, exhausted, run_failed),
+            "status": _task_status(info["identity"], completed, exhausted, run_failed).value,
             "attempts": info["attempts"],
         }
         if "key" in info:
@@ -279,11 +279,11 @@ async def _build_tree(store: Store, run_id: str, record: RunRecord) -> dict[str,
         node["items"].sort(key=lambda item: str(item.get("key", "")))
         statuses = {item["status"] for item in node["items"]}
         node["status"] = (
-            "failed"
-            if "failed" in statuses
-            else "completed"
-            if statuses == {"completed"}
-            else "running"
+            CallStatus.FAILED.value
+            if CallStatus.FAILED.value in statuses
+            else CallStatus.COMPLETED.value
+            if statuses == {CallStatus.COMPLETED.value}
+            else CallStatus.RUNNING.value
         )
 
     # Child workflows: recurse into the linked child's own tree (V4 linkage).
@@ -296,7 +296,11 @@ async def _build_tree(store: Store, run_id: str, record: RunRecord) -> dict[str,
                 "identity": call_identity(e.payload) if "task_name" in e.payload else child_run_id,
                 "workflow_name": e.payload.get("workflow_name"),
                 "child_run_id": child_run_id,
-                "status": child_record.status.value if child_record is not None else "unknown",
+                "status": (
+                    child_record.status.value
+                    if child_record is not None
+                    else CallStatus.UNKNOWN.value
+                ),
             }
             if child_record is not None:
                 child_node["tree"] = await _build_tree(store, child_run_id, child_record)
@@ -337,7 +341,7 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
         "run_id": run_id,
         "identity": identity,
         "task_name": head["task_name"],
-        "status": "running",
+        "status": CallStatus.RUNNING.value,
         "input": None,
         "output": None,
         "usage": [],
@@ -357,35 +361,35 @@ async def task_detail(store: Store, run_id: str, identity: str) -> dict[str, Any
         elif e.type is EventType.TASK_ATTEMPT_STARTED:
             current = {
                 "attempt": int(p.get("attempt", 1)),
-                "status": "running",
+                "status": CallStatus.RUNNING.value,
                 "started_at": e.ts.isoformat(),
                 "ended_at": None,
                 "duration_seconds": None,
             }
             attempts.append(current)
         elif e.type is EventType.TASK_ATTEMPT_FAILED and current is not None:
-            current["status"] = "failed"
+            current["status"] = CallStatus.FAILED.value
             current["error"] = dict(p.get("error", {}))
             current["next_delay"] = p.get("next_delay")
             current["ended_at"] = e.ts.isoformat()
             current["duration_seconds"] = _duration(current["started_at"], e.ts.isoformat())
             _bill(detail, current, p)
         elif e.type is EventType.TASK_COMPLETED and current is not None:
-            current["status"] = "completed"
+            current["status"] = CallStatus.COMPLETED.value
             current["ended_at"] = e.ts.isoformat()
             current["duration_seconds"] = _duration(current["started_at"], e.ts.isoformat())
             if "output_ref" in p:
                 detail["output"] = decode(p["output_ref"])
             _bill(detail, current, p)
-            detail["status"] = "completed"
+            detail["status"] = CallStatus.COMPLETED.value
 
     detail["attempts"] = attempts
     if (
-        detail["status"] != "completed"
-        and record.status.value == "failed"
-        and any(a["status"] == "failed" for a in attempts)
+        detail["status"] != CallStatus.COMPLETED.value
+        and record.status is RunStatus.FAILED
+        and any(a["status"] == CallStatus.FAILED.value for a in attempts)
     ):
-        detail["status"] = "failed"
+        detail["status"] = CallStatus.FAILED.value
 
     # Native stack trace: surface the run-level WorkflowFailed traceback when the run
     # failed (the per-attempt error record carries only type + message).
@@ -480,7 +484,7 @@ def _calls_view(events: Sequence[Event], record: RunRecord) -> dict[str, dict[st
             duration = (last_end[identity] - first_start[identity]).total_seconds()
         calls[identity] = {
             "task_name": info["task_name"],
-            "status": _task_status(identity, completed, exhausted, run_failed),
+            "status": _task_status(identity, completed, exhausted, run_failed).value,
             "input": inputs.get(identity),
             "output": outputs.get(identity),
             "attempts": info["attempts"],
@@ -601,7 +605,9 @@ async def _calls_with_children(
         child: dict[str, Any] = {
             "identity": call_identity(e.payload) if "task_name" in e.payload else child_run_id,
             "task_name": e.payload.get("workflow_name"),
-            "status": child_record.status.value if child_record is not None else "unknown",
+            "status": (
+                child_record.status.value if child_record is not None else CallStatus.UNKNOWN.value
+            ),
             # Wrapped in a list to match the task convention, where `input_ref` holds
             # `encode(list(args))`. A child's `input_ref` is the single input value, and a
             # value that happens to *be* a list would otherwise read back as N arguments.

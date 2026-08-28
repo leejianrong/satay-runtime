@@ -78,6 +78,36 @@ class RunStatus(StrEnum):
 TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 
 
+class CallStatus(StrEnum):
+    """Status of one durable call, as the read layer reports it.
+
+    Shared by three sites that used to carry the same three bare strings with no name
+    tying them together (ADR-0033's Consequences, ADR-0038): ``RecordedCall.status``
+    (:mod:`satay.api.inspection`, :mod:`satay.api.diffing`), the per-*attempt* status
+    inside the HTTP read API's ``task_detail`` view, and the map/tree per-item status
+    rollup in :mod:`satay.control.views`. A task call, a fan-out item, and an attempt are
+    always one of the first three values.
+
+    ``WAITING`` and ``CANCELLED`` are reachable only for a ``start_child`` call, whose
+    status mirrors its own child run's :class:`RunStatus` rather than a task's narrower
+    three-value vocabulary. ``UNKNOWN`` is the defensive fallback for a child run record
+    that cannot be found — should not happen given ADR-0004's no-deletion guarantee, but
+    reported rather than raised, the same stance :func:`satay.inspect` takes elsewhere.
+
+    The control plane's own ``cancelling``/``accepted`` (the third vocabulary ADR-0033
+    named) is a *different* concept — an HTTP write endpoint's synchronous
+    acknowledgement, not a call's or a run's status — and is not folded in here; see
+    ``satay.control.server``'s local acknowledgement enum instead.
+    """
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WAITING = "waiting"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
 def new_event_id() -> str:
     """Allocate a globally-unique event id."""
     return uuid.uuid4().hex
