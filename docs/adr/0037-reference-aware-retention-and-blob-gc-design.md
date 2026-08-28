@@ -1,7 +1,9 @@
 # ADR-0037 — Reference-aware retention and blob GC: a design card, not a decision to ship
 
-- **Status:** Proposed — a design card. Nothing in this ADR is implemented; it exists so a
-  future implementation PR has a design to build against instead of starting from a blank page.
+- **Status:** Superseded by [ADR-0039](0039-run-deletion-and-blob-gc.md), which accepts this
+  card's design with three corrections and resolves the two questions left open below. Nothing
+  in this ADR is implemented on its own; read ADR-0039 for the current state before building
+  against this one.
 - **Date:** 2026-08-27
 - **Deciders:** Jian (leejianrong2@gmail.com)
 
