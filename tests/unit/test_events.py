@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from satay.journal.codec import from_json, to_json
-from satay.journal.events import Event, EventType
+from satay.journal.events import CallStatus, Event, EventType, RunStatus
 from satay.journal.timeline import interruption_seqs, render_timeline
 from satay.replay.identity import IdentityResolver
 
@@ -49,6 +49,25 @@ def test_ordinal_counter_increments_independently_per_task() -> None:
 
 def _ev(seq: int, etype: EventType) -> Event:
     return Event(run_id="r1", type=etype, seq=seq)
+
+
+def test_call_status_is_a_strenum_and_old_string_comparisons_still_work() -> None:
+    """CallStatus (ADR-0038) follows the RunStatus/KAN-524 precedent: a StrEnum, so
+    ``== "completed"`` keeps working for every existing consumer, while ``is
+    CallStatus.COMPLETED`` is now available and typo-proof."""
+    assert CallStatus.RUNNING == "running"
+    assert CallStatus.COMPLETED == "completed"
+    assert CallStatus.FAILED == "failed"
+    assert CallStatus("completed") is CallStatus.COMPLETED
+
+
+def test_call_status_also_covers_a_child_calls_run_status_values() -> None:
+    """A ``start_child`` call's status mirrors its own child run's RunStatus, so
+    CallStatus has to accept every RunStatus value too, plus UNKNOWN for the
+    child-run-not-found fallback — not just the three task-call values."""
+    assert CallStatus.WAITING == RunStatus.WAITING
+    assert CallStatus.CANCELLED == RunStatus.CANCELLED
+    assert CallStatus("unknown") is CallStatus.UNKNOWN
 
 
 def test_interruption_marker_detects_resume_point() -> None:

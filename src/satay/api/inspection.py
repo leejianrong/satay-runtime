@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from satay.journal import Store
-    from satay.journal.events import RunStatus
+    from satay.journal.events import CallStatus, RunStatus
     from satay.redaction import Redactor
 
 
@@ -80,15 +80,11 @@ class RecordedCall:
     ``status`` rather than ``output`` to tell those apart — a task that genuinely
     returned ``None`` is indistinguishable here otherwise."""
 
-    status: str
-    """``"completed"``, ``"failed"`` or ``"running"``.
-
-    A bare string on purpose, for now: these three values are the read layer's existing
-    per-*call* vocabulary, which is a different and narrower set than
-    :class:`~satay.journal.events.RunStatus`, and the codebase carries two more
-    un-enumerated status vocabularies besides (attempt-level, and the control plane's
-    ``cancelling``/``accepted``). Enumerating one in isolation would imply a
-    consistency that does not exist yet."""
+    status: CallStatus
+    """:class:`~satay.journal.events.CallStatus` — ``RUNNING``, ``COMPLETED`` or
+    ``FAILED`` for a task call, plus ``WAITING``/``CANCELLED`` (mirroring the child run's
+    own :class:`~satay.journal.events.RunStatus`) and ``UNKNOWN`` for a ``start_child``
+    call (ADR-0038, closing the ADR-0033 gap this field used to carry as a bare string)."""
 
     attempts: int
     duration_seconds: float | None
@@ -189,7 +185,7 @@ async def inspect(
     """
     from satay.api.primitives import _default_store
     from satay.control import views
-    from satay.journal.events import RunStatus
+    from satay.journal.events import CallStatus, RunStatus
     from satay.redaction import Redactor
 
     resolved = store if store is not None else _default_store()
@@ -203,7 +199,7 @@ async def inspect(
             task_name=call["task_name"],
             args=_recorded_args(call["input"]),
             output=call["output"],
-            status=call["status"],
+            status=CallStatus(call["status"]),
             attempts=call["attempts"],
             duration_seconds=call["duration_seconds"],
             ordinal=call.get("ordinal"),

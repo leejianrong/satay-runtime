@@ -17,6 +17,7 @@ a non-loopback bind.
 from __future__ import annotations
 
 import logging
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ from satay.control.security import (
 )
 from satay.control.views import RunNotFoundError
 from satay.journal import Store
+from satay.journal.events import RunStatus
 
 _LOG = logging.getLogger(__name__)
 
@@ -73,6 +75,22 @@ class ForkBody(BaseModel):
     fork_point_seq: int
 
 
+class _WriteAck(StrEnum):
+    """A write endpoint's synchronous acknowledgement (write-then-poll, ADR-0012):
+    the command was accepted onto the queue, not that it has been applied.
+
+    The third status vocabulary ADR-0033's Consequences named (alongside
+    ``CallStatus``, ADR-0038) — deliberately its own small enum rather than folded into
+    ``CallStatus``: this describes an HTTP request's outcome, not a call's or a run's.
+    ``POST /runs`` does not use a member here at all — it reports the new run's actual
+    ``RunStatus.RUNNING``, because that really is the run's status, not an acknowledgement
+    of one.
+    """
+
+    ACCEPTED = "accepted"
+    CANCELLING = "cancelling"
+
+
 def create_app(
     *,
     store: Store,
@@ -106,17 +124,17 @@ def create_app(
             idempotency_key=body.idempotency_key,
             run_id=body.run_id,
         )
-        return {"run_id": run_id, "status": "running"}
+        return {"run_id": run_id, "status": RunStatus.RUNNING.value}
 
     @app.post("/runs/{run_id}/cancel", status_code=202)
     async def cancel_run(run_id: str) -> dict[str, Any]:
         writes.cancel(run_id)
-        return {"run_id": run_id, "status": "cancelling"}
+        return {"run_id": run_id, "status": _WriteAck.CANCELLING.value}
 
     @app.post("/runs/{run_id}/events", status_code=202)
     async def send_event(run_id: str, body: SendEventBody) -> dict[str, Any]:
         writes.send_event(body.event_type, key=body.key, payload=body.payload, run_id=run_id)
-        return {"run_id": run_id, "status": "accepted"}
+        return {"run_id": run_id, "status": _WriteAck.ACCEPTED.value}
 
     @app.post("/runs/{run_id}/fork", status_code=202)
     async def fork_run(run_id: str, body: ForkBody) -> dict[str, Any]:
@@ -126,7 +144,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         # Validated + enqueued; the worker seeds and drives the fork on its next tick
         # (write-then-poll, ADR-0012). The new run id is returned so Studio navigates to it.
-        return {"run_id": new_run_id, "source_run_id": run_id, "status": "accepted"}
+        return {"run_id": new_run_id, "source_run_id": run_id, "status": _WriteAck.ACCEPTED.value}
 
     # -- reads (direct to the store; redaction enforced; never block on the worker) ---
 

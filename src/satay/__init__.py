@@ -19,6 +19,7 @@ The public surface (ARCHITECTURE §1):
 - ``RunHandle`` — the run handle
 - ``RunStatus`` — what ``RunHandle.status()`` returns; a ``StrEnum``
 - ``RunInspection`` / ``RecordedCall`` — what ``inspect`` returns
+- ``CallStatus`` — what ``RecordedCall.status`` is; a ``StrEnum`` (ADR-0038)
 - ``RunDiff`` / ``CallDiff`` / ``ValueDiff`` — what ``diff`` returns
 - ``PARKED`` — what ``result()`` returns for a run parked with nothing to wake it
 """
@@ -53,8 +54,9 @@ from satay.api.run_handle import PARKED, WorkflowFailedError
 
 # `RunHandle.status()` returns a `RunStatus`, so the type has to be reachable from the
 # public package: a user should not have to import out of `satay.journal.events` to name
-# the value a public method just handed them (KAN-524).
-from satay.journal.events import RunStatus
+# the value a public method just handed them (KAN-524). `CallStatus` is the same
+# reasoning applied to `RecordedCall.status` (ADR-0038).
+from satay.journal.events import CallStatus, RunStatus
 from satay.replay.failures import TaskFailedError
 from satay.versioning import VersionMismatchError
 
@@ -102,6 +104,7 @@ __version__: str = _detect_version()
 __all__ = [
     "PARKED",
     "CallDiff",
+    "CallStatus",
     "EffectSafetyError",
     "NondeterminismError",
     "RecordedCall",
