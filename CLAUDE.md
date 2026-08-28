@@ -33,7 +33,9 @@ Two policies are easy to confuse and have nothing to do with each other:
   collect mode, which records a terminal `TaskFailed` per collected failure (ADR-0027,
   superseding ADR-0020). `start_child` has no flag; collect it as a `gather` member.
 - `satay runs show` is frozen at the V1 event subset (ADR-0016). Post-V1 events render as
-  bare type lines by design, and Studio covers the rest.
+  bare type lines by design, and Studio covers the rest. One carve-out: `TaskFailed` is
+  summarised, because it is `TaskCompleted`'s terminal twin rather than a new kind of
+  durable call (ADR-0016 refinement, KAN-957). Not a precedent for the others.
 - Fork accepts terminal runs only (ADR-0004).
 - No PostgreSQL, no multi-worker, no distributed execution. One process, one writer.
 - Async only. No sync workflows or tasks.

@@ -67,3 +67,69 @@ def test_interruption_marker_detects_resume_point() -> None:
 def test_no_interruption_marker_without_resume() -> None:
     events = [_ev(1, EventType.WORKFLOW_CREATED), _ev(2, EventType.WORKFLOW_COMPLETED)]
     assert interruption_seqs(events) == set()
+
+
+def test_task_failed_renders_its_call_identity_and_error() -> None:
+    """A collected failure names the item it belongs to (KAN-957).
+
+    ``TaskFailed`` is the terminal verdict on one durable call (ADR-0027), so the line
+    has to carry the same ``task=``/``key=`` identity its attempt lines carry — a bare
+    type line strands the verdict where two fan-out items are failing side by side.
+    """
+    events = [
+        Event(
+            run_id="r1",
+            seq=1,
+            type=EventType.TASK_ATTEMPT_FAILED,
+            payload={
+                "task_name": "draft",
+                "key": "c-refund",
+                "attempt": 2,
+                "error": {"type": "MalformedResponseError", "message": "no REPLY"},
+            },
+        ),
+        Event(
+            run_id="r1",
+            seq=2,
+            type=EventType.TASK_FAILED,
+            payload={
+                "task_name": "draft",
+                "key": "c-refund",
+                "error": {
+                    "type": "MalformedResponseError",
+                    "message": "no REPLY",
+                    "traceback": "Traceback (most recent call last):\n  ...\n",
+                },
+            },
+        ),
+    ]
+    line = next(
+        line for line in render_timeline(events, run_id="r1").splitlines() if "TaskFailed" in line
+    )
+    assert "task=draft" in line
+    assert "key=c-refund" in line
+    assert "error=MalformedResponseError: no REPLY" in line
+    # No `attempt=`: the verdict covers the whole call, not one try.
+    assert "attempt=" not in line
+    # The traceback stays off the timeline. Only the single terminal WorkflowFailed
+    # prints one; a collect run can hold many TaskFailed events and would flood.
+    assert "Traceback" not in render_timeline(events, run_id="r1")
+
+
+def test_task_failed_falls_back_to_ordinal_for_an_unkeyed_call() -> None:
+    events = [
+        Event(
+            run_id="r1",
+            seq=1,
+            type=EventType.TASK_FAILED,
+            payload={
+                "task_name": "judge",
+                "ordinal": 0,
+                "error": {"type": "TimeoutError", "message": "took too long"},
+            },
+        )
+    ]
+    line = render_timeline(events, run_id="r1").splitlines()[1]
+    assert "task=judge" in line
+    assert "ordinal=0" in line
+    assert "error=TimeoutError: took too long" in line
