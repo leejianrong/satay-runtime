@@ -94,6 +94,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Protect blobs younger than this many seconds (default: 300).",
     )
 
+    # `satay eval BASELINE CANDIDATE` gates one run against another on output *and* cost
+    # (ADR-0041). Read-only and stdlib-only by design: it compares two runs that already
+    # exist, so it never needs the workflows imported — producing the candidate (a fork and
+    # replay under a change) is `satay.replay_eval`'s job, run from the caller's own harness
+    # where the code under test is in scope. Exits non-zero when the candidate regresses.
+    ev = subcommands.add_parser(
+        "eval",
+        help="Gate a candidate run against a baseline on output and cost (ADR-0041).",
+    )
+    ev.add_argument("baseline_run_id", help="The recorded baseline run id.")
+    ev.add_argument("candidate_run_id", help="The candidate run id to gate against it.")
+    ev.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override the data directory (default: ./.satay).",
+    )
+    ev.add_argument(
+        "--expect-output",
+        choices=("unchanged", "changed", "any"),
+        default="unchanged",
+        help=(
+            "unchanged (default): a changed or unconfirmable output is a regression. "
+            "changed: an unchanged output is a regression. any: do not gate output."
+        ),
+    )
+    ev.add_argument(
+        "--max-cost-increase",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Fail if a usage metric rises by more than N (default: cost is not gated).",
+    )
+    ev.add_argument(
+        "--cost-key",
+        default=None,
+        metavar="KEY",
+        help=(
+            "Restrict --max-cost-increase to one usage key (e.g. usd, output_tokens); "
+            "without it the cap applies to every key."
+        ),
+    )
+
     # `dev` is declared so it shows in `satay --help`; its options are owned by the Typer
     # command in the studio extra (ADR-0016), so `main` intercepts the verb before argparse
     # parses it and forwards the remaining args to that command.
@@ -125,6 +167,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _runs_delete(args.run_id, args.data_dir)
     if args.command == "gc":
         return _gc(args.data_dir, apply=args.apply, grace_period_seconds=args.grace_period_seconds)
+    if args.command == "eval":
+        return _eval(
+            args.baseline_run_id,
+            args.candidate_run_id,
+            args.data_dir,
+            expect_output=args.expect_output,
+            max_cost_increase=args.max_cost_increase,
+            cost_key=args.cost_key,
+        )
 
     parser.error(f"unknown command: {args.command}")
     return 2  # pragma: no cover - parser.error raises SystemExit
@@ -236,6 +287,85 @@ def _gc(data_dir: str | None, *, apply: bool, grace_period_seconds: float | None
         return 0
 
     return asyncio.run(_run())
+
+
+def _eval(
+    baseline_run_id: str,
+    candidate_run_id: str,
+    data_dir: str | None,
+    *,
+    expect_output: str,
+    max_cost_increase: float | None,
+    cost_key: str | None,
+) -> int:
+    """Compare two recorded runs and gate; exit non-zero on a regression (ADR-0041)."""
+    import asyncio
+
+    from satay import compare_runs, gate
+    from satay.config import db_path, resolve_data_dir
+    from satay.journal.store import SQLiteStore
+
+    path = db_path(resolve_data_dir(data_dir))
+    if not path.exists():
+        print(f"no satay database at {path}", file=sys.stderr)
+        return 1
+
+    # A --cost-key scopes the cap to that one metric; otherwise the scalar cap applies to
+    # every key. `None` (the default) leaves cost ungated entirely.
+    if max_cost_increase is None:
+        cap: float | dict[str, float] | None = None
+    elif cost_key is not None:
+        cap = {cost_key: max_cost_increase}
+    else:
+        cap = max_cost_increase
+
+    async def _run() -> int:
+        store = SQLiteStore.open(path)
+        try:
+            report = await compare_runs(baseline_run_id, candidate_run_id, store=store)
+        except LookupError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        finally:
+            store.close()
+
+        print(f"baseline  {report.baseline_run_id} ({report.baseline_status})")
+        print(f"candidate {report.candidate_run_id} ({report.candidate_status})")
+        print()
+        if report.output.changed:
+            where = ", ".join(report.output.paths) or "."
+            print(f"output: changed at {where}")
+        elif report.output.redacted:
+            print("output: equality unknown (redacted in the journal)")
+        else:
+            print("output: unchanged")
+
+        if report.usage_delta:
+            print("usage delta:")
+            width = max(len(key) for key in report.usage_delta)
+            for key, delta in sorted(report.usage_delta.items()):
+                print(f"  {key.ljust(width)}  {_signed(delta)}")
+        else:
+            print("usage delta: (none recorded)")
+
+        verdict = gate(report, expect_output=expect_output, max_usage_increase=cap)
+        print()
+        if verdict.passed:
+            print("GATE: PASS")
+            return 0
+        print("GATE: FAIL")
+        for reason in verdict.reasons:
+            print(f"  - {reason}")
+        return 1
+
+    return asyncio.run(_run())
+
+
+def _signed(delta: float) -> str:
+    """Format a usage delta with an explicit sign, ints as ints and floats compactly."""
+    if isinstance(delta, int):
+        return f"{delta:+d}"
+    return f"{delta:+g}"
 
 
 if __name__ == "__main__":  # pragma: no cover

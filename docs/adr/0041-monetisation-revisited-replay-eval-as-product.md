@@ -1,6 +1,6 @@
 # ADR-0041 — Monetisation revisited: replay-based evaluation is the product, and the hosting ceiling rises
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-08
 - **Deciders:** Jian (leejianrong2@gmail.com)
 

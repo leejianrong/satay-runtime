@@ -44,6 +44,14 @@ def test_public_surface_is_exported() -> None:
         "RunDiff",
         "CallDiff",
         "ValueDiff",
+        # Replay-based evaluation (ADR-0041): the debugger wedge pointed at a question —
+        # replay a run against a change, gate CI on output and cost regressions. Thin
+        # composition over fork/diff/inspect, so it is core, not satay[studio].
+        "replay_eval",
+        "compare_runs",
+        "gate",
+        "EvalReport",
+        "GateResult",
         "PARKED",
         # V2 public error types (N9/A10.2).
         "NondeterminismError",
