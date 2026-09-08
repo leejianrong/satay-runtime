@@ -34,6 +34,7 @@ CORE_MODULES = [
     "satay.testing",
     "satay.cli",
     "satay.eval",
+    "satay.agent",
 ]
 
 FORBIDDEN_IN_CORE = ["fastapi", "uvicorn", "pydantic", "typer", "click"]
@@ -233,4 +234,60 @@ def test_replay_eval_runs_with_no_studio_dependency() -> None:
     )
     assert result.returncode == 0, (
         f"satay.replay_eval needed a studio-only dependency: {result.stdout} {result.stderr}"
+    )
+
+
+def test_agent_loop_drives_a_durable_agent_with_no_studio_dependency() -> None:
+    """The ``satay.agent`` on-ramp is core and adds no dependency (ADR-0043).
+
+    The loop imports nothing from the runtime at all, but its *durable* use runs real tasks
+    inside a workflow drive, which reaches the executor and journal. So this child
+    interpreter drives an agent to completion through the loop and only then scans
+    ``sys.modules`` — a regression means a plain ``pip install satay`` can no longer run the
+    blessed loop, which ADR-0041 §4 forbids.
+    """
+    program = textwrap.dedent(
+        f"""
+        import asyncio, sys
+        import satay
+        from satay.agent import AgentStep, ToolCall, agent_loop
+        from satay.journal.store import SQLiteStore
+
+        @satay.task()
+        async def _hy_model(prompt, transcript, /) -> AgentStep:
+            if not transcript:
+                return AgentStep(tool_calls=(ToolCall(id="1", name="inc", arguments={{"n": 1}}),))
+            return AgentStep(text="done")
+
+        @satay.task()
+        async def _hy_inc(call, /) -> int:
+            return int(call.arguments["n"]) + 1
+
+        @satay.workflow
+        async def _hy_agent(x: int) -> str | None:
+            result = await agent_loop(model=_hy_model, tools={{"inc": _hy_inc}}, prompt=x)
+            return result.output
+
+        async def main() -> None:
+            store = SQLiteStore.open(":memory:")
+            handle = satay.start(_hy_agent, 0, store=store)
+            assert await handle.result() == "done"
+            store.close()
+
+        asyncio.run(main())
+        pulled = sorted(
+            n for n in sys.modules if n.split(".")[0] in {FORBIDDEN_IN_CORE!r}
+        )
+        if pulled:
+            sys.stdout.write("PULLED:" + ",".join(pulled))
+            raise SystemExit(1)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"satay.agent needed a studio-only dependency: {result.stdout} {result.stderr}"
     )
