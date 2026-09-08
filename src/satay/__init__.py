@@ -14,6 +14,9 @@ The public surface (ARCHITECTURE §1):
 - ``fork`` — re-cut a finished run from a chosen point, optionally under a new input
 - ``inspect`` — read back a run's recorded durable calls, without forking it
 - ``diff`` — compare two runs call by call, and see where their values differ
+- ``replay_eval`` / ``compare_runs`` — replay-based evaluation: fork a run against a
+  change (or compare two runs that already exist) and report output + cost deltas
+- ``gate`` — turn an ``EvalReport`` into a pass/fail CI verdict on output and cost
 - ``run_app`` — ``async with``: the journal open and the poll loop running
 - ``TaskContext`` — the task-body context
 - ``RunHandle`` — the run handle
@@ -21,6 +24,8 @@ The public surface (ARCHITECTURE §1):
 - ``RunInspection`` / ``RecordedCall`` — what ``inspect`` returns
 - ``CallStatus`` — what ``RecordedCall.status`` is; a ``StrEnum`` (ADR-0038)
 - ``RunDiff`` / ``CallDiff`` / ``ValueDiff`` — what ``diff`` returns
+- ``EvalReport`` / ``GateResult`` — what ``replay_eval`` / ``compare_runs`` and ``gate``
+  return
 - ``PARKED`` — what ``result()`` returns for a run parked with nothing to wake it
 """
 
@@ -51,6 +56,7 @@ from satay.api.diffing import CallDiff, RunDiff, ValueDiff, diff
 from satay.api.fork import fork
 from satay.api.inspection import RecordedCall, RunInspection, inspect
 from satay.api.run_handle import PARKED, WorkflowFailedError
+from satay.eval import EvalReport, GateResult, compare_runs, gate, replay_eval
 
 # `RunHandle.status()` returns a `RunStatus`, so the type has to be reachable from the
 # public package: a user should not have to import out of `satay.journal.events` to name
@@ -106,6 +112,8 @@ __all__ = [
     "CallDiff",
     "CallStatus",
     "EffectSafetyError",
+    "EvalReport",
+    "GateResult",
     "NondeterminismError",
     "RecordedCall",
     "RunDiff",
@@ -118,11 +126,14 @@ __all__ = [
     "VersionMismatchError",
     "WorkflowFailedError",
     "__version__",
+    "compare_runs",
     "diff",
     "fork",
+    "gate",
     "gather",
     "inspect",
     "map",
+    "replay_eval",
     "run_app",
     "send_event",
     "sleep",

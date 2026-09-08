@@ -218,6 +218,147 @@ def test_dev_without_studio_extra_prints_hint(
     assert "satay[studio]" in capsys.readouterr().err
 
 
+@satay.task()
+async def _cli_load(seed: int) -> int:
+    satay.task_context().record_model_usage(input_tokens=100, output_tokens=10, usd=0.01)
+    return seed
+
+
+@satay.task()
+async def _cli_score(base: int, factor: int) -> int:
+    satay.task_context().record_model_usage(
+        input_tokens=factor, output_tokens=1, usd=round(factor * 0.001, 6)
+    )
+    return base * factor
+
+
+@satay.workflow
+async def _cli_job(job: dict[str, int]) -> dict[str, int]:
+    base = await _cli_load(job["seed"])
+    total = await _cli_score(base, job["factor"])
+    return {"seed": job["seed"], "factor": job["factor"], "total": total}
+
+
+async def _seed_eval_runs(db: Path) -> tuple[str, str, str]:
+    """Record a baseline and two evals of it (a pricier and a cheaper draft factor)."""
+    store = SQLiteStore.open(db)
+    try:
+        baseline = satay.start(_cli_job, {"seed": 5, "factor": 2}, store=store)
+        await baseline.result()
+        pricier = await satay.replay_eval(
+            baseline.run_id,
+            before_task="_cli_score",
+            workflow_input={"seed": 5, "factor": 8},
+            store=store,
+        )
+        cheaper = await satay.replay_eval(
+            baseline.run_id,
+            before_task="_cli_score",
+            workflow_input={"seed": 5, "factor": 1},
+            store=store,
+        )
+    finally:
+        store.close()
+    return baseline.run_id, pricier.candidate_run_id, cheaper.candidate_run_id
+
+
+def test_eval_default_gate_fails_on_a_changed_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The default (regression-test) lens: a changed output is a failure, exit non-zero."""
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    base, pricier, _ = asyncio.run(_seed_eval_runs(data_dir / "satay.db"))
+
+    code = main(["eval", base, pricier, "--data-dir", str(data_dir)])
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "output: changed" in out
+    assert "GATE: FAIL" in out
+
+
+def test_eval_cost_gate_passes_a_cheaper_candidate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A cheaper draft passes a 'must not increase usd' gate when output is not gated."""
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    base, _, cheaper = asyncio.run(_seed_eval_runs(data_dir / "satay.db"))
+
+    code = main(
+        [
+            "eval",
+            base,
+            cheaper,
+            "--data-dir",
+            str(data_dir),
+            "--expect-output",
+            "any",
+            "--max-cost-increase",
+            "0",
+            "--cost-key",
+            "usd",
+        ]
+    )
+
+    assert code == 0
+    assert "GATE: PASS" in capsys.readouterr().out
+
+
+def test_eval_cost_gate_fails_a_pricier_candidate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The regression CI catches: a pricier draft trips the usd cap and exits non-zero."""
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    base, pricier, _ = asyncio.run(_seed_eval_runs(data_dir / "satay.db"))
+
+    code = main(
+        [
+            "eval",
+            base,
+            pricier,
+            "--data-dir",
+            str(data_dir),
+            "--expect-output",
+            "any",
+            "--max-cost-increase",
+            "0",
+            "--cost-key",
+            "usd",
+        ]
+    )
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "GATE: FAIL" in out
+    assert "usd" in out
+
+
+def test_eval_unknown_run_returns_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """An unknown run id is a clean exit 1 with a message on stderr, not a traceback."""
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    base, _, _ = asyncio.run(_seed_eval_runs(data_dir / "satay.db"))
+
+    code = main(["eval", base, "does-not-exist", "--data-dir", str(data_dir)])
+
+    assert code == 1
+    assert capsys.readouterr().err  # a message was printed
+
+
+def test_eval_missing_database_returns_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No journal at all is exit 1 with a clear message, matching `runs show`."""
+    data_dir = tmp_path / ".satay"
+    data_dir.mkdir()
+    code = main(["eval", "a", "b", "--data-dir", str(data_dir)])
+    assert code == 1
+    assert "no satay database" in capsys.readouterr().err
+
+
 def _cli_version_output(capsys: pytest.CaptureFixture[str]) -> str:
     """Run ``satay --version`` through ``main`` and return the line it printed."""
     with pytest.raises(SystemExit) as exc_info:

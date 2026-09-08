@@ -33,6 +33,7 @@ CORE_MODULES = [
     "satay.devstack",
     "satay.testing",
     "satay.cli",
+    "satay.eval",
 ]
 
 FORBIDDEN_IN_CORE = ["fastapi", "uvicorn", "pydantic", "typer", "click"]
@@ -176,4 +177,60 @@ def test_inspect_and_diff_read_runs_with_no_studio_dependency() -> None:
     )
     assert result.returncode == 0, (
         f"a core read API needed a studio-only dependency: {result.stdout} {result.stderr}"
+    )
+
+
+def test_replay_eval_runs_with_no_studio_dependency() -> None:
+    """``satay.replay_eval`` / ``satay.gate`` are core, proven by *using* them (ADR-0041).
+
+    Replay-eval is composition over ``fork`` + ``inspect`` + ``diff``, each of which reaches
+    ``satay.control.views`` through a lazy import — the same shape the import-time scan
+    cannot see. So this child interpreter records a run, replays it against a changed input,
+    gates the result, and only then scans ``sys.modules`` for the forbidden packages. A
+    regression here means a plain ``pip install satay`` can no longer run the paid product's
+    core loop, which is exactly what ADR-0041 §4 forbids putting behind the paywall.
+    """
+    program = textwrap.dedent(
+        f"""
+        import asyncio, sys
+        import satay
+        from satay.journal.store import SQLiteStore
+
+        @satay.task()
+        async def _hygiene_step(value: int) -> int:
+            return value + 1
+
+        @satay.workflow
+        async def _hygiene_eval(value: int) -> int:
+            return await _hygiene_step(value)
+
+        async def main() -> None:
+            store = SQLiteStore.open(":memory:")
+            baseline = satay.start(_hygiene_eval, 1, store=store)
+            assert await baseline.result() == 2
+            report = await satay.replay_eval(
+                baseline.run_id, before_task="_hygiene_step", workflow_input=41, store=store
+            )
+            assert report.output.changed, report
+            assert report.candidate_output == 42, report
+            verdict = satay.gate(report, expect_output="changed")
+            assert verdict.passed, verdict
+            store.close()
+
+        asyncio.run(main())
+        pulled = sorted(
+            n for n in sys.modules if n.split(".")[0] in {FORBIDDEN_IN_CORE!r}
+        )
+        if pulled:
+            sys.stdout.write("PULLED:" + ",".join(pulled))
+            raise SystemExit(1)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"satay.replay_eval needed a studio-only dependency: {result.stdout} {result.stderr}"
     )

@@ -4,6 +4,13 @@
 - **Date:** 2026-08-05
 - **Deciders:** Jian (leejianrong2@gmail.com)
 
+_**Update (2026-09-08):** [ADR-0041](0041-monetisation-revisited-replay-eval-as-product.md)
+revises the monetisation and scope posture recorded here — replay-based evaluation
+becomes the paid product, and §4's ban on agent abstractions is narrowed to allow a
+single durable agent-loop on-ramp (one blessed pattern, still no framework). The debugger
+wedge, the agents-first ordering, and the remaining no-framework non-goals hold
+unchanged._
+
 Amends the `D-scope` entry in [CONTEXT.md](../CONTEXT.md)'s decision register (the
 vendor-dossier app is no longer the next milestone) and re-times, without changing,
 the `SQLite → PostgreSQL → multi-worker` ordering in ARCHITECTURE §9. Reopens

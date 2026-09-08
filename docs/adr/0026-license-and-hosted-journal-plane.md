@@ -4,6 +4,12 @@
 - **Date:** 2026-08-05
 - **Deciders:** Jian (leejianrong2@gmail.com)
 
+_**Update (2026-09-08):** [ADR-0041](0041-monetisation-revisited-replay-eval-as-product.md)
+raises the hosting ceiling from tier 1 to tier 2 (tier 3 reopened but explicitly gated)
+and reframes the sold value as replay-based evaluation over the hosted journal. This ADR's
+Apache-2.0-forever core (§1), the write-time-redaction prerequisite (§4), and the
+schema-agnostic, second-tenant plane (§5–6) are reaffirmed unchanged._
+
 Records the licence and monetisation decision, which had no ADR. Extends
 [ADR-0014](0014-local-surface-security.md) (local-surface security) and
 [ADR-0009](0009-local-surfaces.md) (the read API and redactor) with a write-time
