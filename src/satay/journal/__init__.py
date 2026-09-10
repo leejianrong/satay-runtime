@@ -20,6 +20,7 @@ from satay.journal.events import (
     Event,
     EventType,
     InboxEventRecord,
+    RawEvent,
     RunRecord,
     RunStatus,
     TimerKind,
@@ -54,6 +55,10 @@ class Store(Protocol):
 
     async def read_events(self, run_id: str) -> Sequence[Event]:
         """Read a run's events in ``seq`` order."""
+        ...
+
+    async def read_raw_events(self, run_id: str) -> Sequence[RawEvent]:
+        """Read a run's events in ``seq`` order, without blob rehydration or codec decode."""
         ...
 
     async def get_run(self, run_id: str) -> RunRecord | None:
@@ -118,6 +123,7 @@ __all__ = [
     "Event",
     "EventType",
     "InboxEventRecord",
+    "RawEvent",
     "RunRecord",
     "RunStatus",
     "Store",
