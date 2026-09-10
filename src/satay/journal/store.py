@@ -45,6 +45,7 @@ from satay.journal.events import (
     Event,
     EventType,
     InboxEventRecord,
+    RawEvent,
     RunRecord,
     RunStatus,
     TimerKind,
@@ -373,6 +374,35 @@ class SQLiteStore:
             merged = cached + tuple(self._row_to_event(row) for row in rows)
             self._event_cache[run_id] = merged
             return merged
+
+    async def read_raw_events(self, run_id: str) -> Sequence[RawEvent]:
+        """Read a run's events in ``seq`` order, *without* blob rehydration or codec decode.
+
+        The counterpart to :meth:`read_events` for a reader that wants the payload exactly
+        as stored: each :class:`~satay.journal.events.RawEvent` carries ``json.loads`` of
+        the row's ``payload_json`` — any spilled ``blobref`` left in place and no tagged
+        value collapsed. The ingest-wire projection (ADR-0044/0045) needs this so a
+        shipment round-trips byte-for-byte and blobs travel out of band; a future export or
+        copy tool would want the same. Not memoised — it is a cold-path read, unlike the
+        per-drive :meth:`read_events` hot path.
+        """
+        async with self._run_locks[run_id]:
+            rows = self._conn.execute(
+                "SELECT run_id, seq, event_id, type, ts, payload_json "
+                "FROM events WHERE run_id = ? ORDER BY seq",
+                (run_id,),
+            ).fetchall()
+            return [
+                RawEvent(
+                    run_id=row["run_id"],
+                    seq=row["seq"],
+                    event_id=row["event_id"],
+                    type=row["type"],
+                    ts=datetime.fromisoformat(row["ts"]),
+                    payload=json.loads(row["payload_json"]),
+                )
+                for row in rows
+            ]
 
     def _decode_payload(self, payload_json: str) -> Any:
         """Decode a stored payload, rehydrating any spilled blob references first (N19).

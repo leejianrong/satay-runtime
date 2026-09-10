@@ -146,6 +146,29 @@ class Event:
 
 
 @dataclass(frozen=True, slots=True)
+class RawEvent:
+    """A stored event as it sits in the journal, before blob rehydration or codec decode.
+
+    :meth:`Store.read_events <satay.journal.Store.read_events>` rehydrates spilled blobs
+    inline and codec-decodes tagged values, because that is what replay and the read views
+    want. The ingest-wire projection (ADR-0044/0045) wants the opposite: the ``payload``
+    exactly as stored, with any ``{"$satay": "blobref", …}`` reference left in place so the
+    bytes can travel out of band on the content-addressed blob channel, and with no tagged
+    value collapsed — so a shipment round-trips byte-for-byte. This is that raw view:
+    ``payload`` is ``json.loads`` of the stored ``payload_json`` and nothing more, and
+    ``type`` is the opaque stored string (a Satay producer's is an :class:`EventType`
+    value; a foreign producer's is its own vocabulary).
+    """
+
+    run_id: str
+    seq: int
+    event_id: str
+    type: str
+    ts: datetime
+    payload: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class RunRecord:
     """The ``runs``-table row: run identity and denormalised status."""
 
