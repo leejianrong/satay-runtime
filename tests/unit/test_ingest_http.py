@@ -18,7 +18,7 @@ import pytest
 
 from satay.blobs import BlobStore
 from satay.config import BLOB_DIR_NAME
-from satay.ingest import BackpressureError, ship_run
+from satay.ingest import BackpressureError, PlaneResponseError, ship_run
 from satay.ingest.http import HttpTransport, _encode_ndjson
 from satay.journal.events import Event, EventType, RawEvent, RunRecord, RunStatus
 from satay.journal.store import SQLiteStore
@@ -152,6 +152,59 @@ async def test_a_plane_5xx_raises_rather_than_being_swallowed() -> None:
     async with _transport(lambda request: httpx.Response(500)) as transport:
         with pytest.raises(httpx.HTTPStatusError):
             await transport.send(_shipment())
+
+
+@pytest.mark.parametrize("bad", ["inf", "-inf", "nan", "-1"])
+async def test_a_non_finite_or_negative_retry_after_is_ignored(bad: str) -> None:
+    # A hostile/buggy plane must not be able to park the shipper on sleep(inf); such a hint
+    # is dropped so the shipper falls back to its bounded backoff.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": bad})
+
+    async with _transport(handler) as transport:
+        with pytest.raises(BackpressureError) as excinfo:
+            await transport.send(_shipment())
+    assert excinfo.value.retry_after is None
+
+
+async def test_blob_present_treats_any_2xx_as_present() -> None:
+    # A plane may signal presence with 204 No Content, not only 200.
+    async with _transport(lambda request: httpx.Response(204)) as transport:
+        assert await transport.blob_present("sha1") is True
+
+
+async def test_blob_present_rejects_an_undefined_status() -> None:
+    # A 3xx (httpx does not follow redirects by default) is neither present nor absent, so it
+    # raises rather than being read as a silent answer. Which error depends on the httpx
+    # version (some raise_for_status on 3xx, some leave it to the transport's own guard).
+    async with _transport(lambda request: httpx.Response(302)) as transport:
+        with pytest.raises((PlaneResponseError, httpx.HTTPStatusError)):
+            await transport.blob_present("sha1")
+
+
+async def test_a_200_without_ack_seq_is_a_plane_response_error() -> None:
+    async with _transport(lambda request: httpx.Response(200, json={"nope": 1})) as transport:
+        with pytest.raises(PlaneResponseError):
+            await transport.send(_shipment())
+
+
+async def test_a_non_json_200_is_a_plane_response_error() -> None:
+    async with _transport(lambda request: httpx.Response(200, text="not json")) as transport:
+        with pytest.raises(PlaneResponseError):
+            await transport.current_ack("acme", "r1")
+
+
+async def test_run_id_is_percent_encoded_in_the_path() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["raw_path"] = request.url.raw_path.decode()
+        return httpx.Response(200, json={"ack_seq": 0})
+
+    async with _transport(handler) as transport:
+        await transport.current_ack("acme", "a/b")
+    # The '/' in the run id is encoded, so it stays one path segment and cannot alter routing.
+    assert "/v1/runs/a%2Fb/ack" in seen["raw_path"]
 
 
 def test_encode_ndjson_is_header_line_then_one_event_per_line() -> None:

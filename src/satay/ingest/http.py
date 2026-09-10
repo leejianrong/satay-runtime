@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
-from satay.ingest.shipper import BackpressureError, ShipmentAck
+from satay.ingest.shipper import BackpressureError, PlaneResponseError, ShipmentAck
 
 #: Default per-request timeout, in seconds.
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -69,7 +71,7 @@ class HttpTransport:
 
     async def current_ack(self, tenant: str, run_id: str) -> int:
         response = await self._client.get(
-            f"{self._base_url}/v1/runs/{run_id}/ack",
+            f"{self._base_url}/v1/runs/{quote(run_id, safe='')}/ack",
             params={"tenant": tenant},
             headers=self._headers(),
         )
@@ -77,13 +79,13 @@ class HttpTransport:
             return 0  # the plane has never seen this run
         _raise_for_backpressure(response)
         response.raise_for_status()
-        return int(response.json()["ack_seq"])
+        return _read_ack_seq(response)
 
     async def send(self, shipment: Mapping[str, Any]) -> ShipmentAck:
         run_id = shipment["run"]["run_id"]
         body = gzip.compress(_encode_ndjson(shipment))
         response = await self._client.post(
-            f"{self._base_url}/v1/runs/{run_id}/events",
+            f"{self._base_url}/v1/runs/{quote(run_id, safe='')}/events",
             content=body,
             headers=self._headers(
                 {"Content-Type": "application/x-ndjson", "Content-Encoding": "gzip"}
@@ -91,23 +93,25 @@ class HttpTransport:
         )
         _raise_for_backpressure(response)
         response.raise_for_status()
-        return ShipmentAck(ack_seq=int(response.json()["ack_seq"]))
+        return ShipmentAck(ack_seq=_read_ack_seq(response))
 
     async def blob_present(self, blob_id: str) -> bool:
         response = await self._client.head(
-            f"{self._base_url}/v1/blobs/{blob_id}", headers=self._headers()
+            f"{self._base_url}/v1/blobs/{quote(blob_id, safe='')}", headers=self._headers()
         )
         if response.status_code == httpx.codes.NOT_FOUND:
             return False
-        if response.status_code == httpx.codes.OK:
-            return True
         _raise_for_backpressure(response)
-        response.raise_for_status()
-        return False  # pragma: no cover - raise_for_status already raised
+        if response.is_success:  # any 2xx (200, 204, …) means the plane holds this content
+            return True
+        response.raise_for_status()  # 4xx/5xx (and 3xx on httpx versions that raise for it)
+        raise PlaneResponseError(
+            f"unexpected status {response.status_code} for blob HEAD (neither 2xx nor 404)"
+        )
 
     async def put_blob(self, blob_id: str, data: bytes) -> None:
         response = await self._client.put(
-            f"{self._base_url}/v1/blobs/{blob_id}",
+            f"{self._base_url}/v1/blobs/{quote(blob_id, safe='')}",
             content=data,
             headers=self._headers({"Content-Type": "application/octet-stream"}),
         )
@@ -134,6 +138,19 @@ def _encode_ndjson(shipment: Mapping[str, Any]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def _read_ack_seq(response: httpx.Response) -> int:
+    """Read ``ack_seq`` from a plane's ``200`` body, or raise :class:`PlaneResponseError`.
+
+    A body that is not JSON, or is missing a numeric ``ack_seq``, is a plane-contract
+    violation — surfaced as the transport's own error rather than a bare ``KeyError`` /
+    decode error escaping ``ship_run``.
+    """
+    try:
+        return int(response.json()["ack_seq"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PlaneResponseError(f"plane response has no valid 'ack_seq': {exc}") from exc
+
+
 def _raise_for_backpressure(response: httpx.Response) -> None:
     """Translate a ``429`` into :class:`BackpressureError`, parsing ``Retry-After`` if present."""
     if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
@@ -147,11 +164,16 @@ def _parse_retry_after(value: str | None) -> float | None:
     """The ``Retry-After`` delay in seconds, or ``None`` to fall back to the shipper's backoff.
 
     Only the delta-seconds form is honoured; the HTTP-date form is left to the backoff rather
-    than parsed, since the shipper only needs a lower bound on how long to wait.
+    than parsed, since the shipper only needs a lower bound on how long to wait. A non-finite
+    (``inf``/``nan``) or negative value is rejected — a hostile or buggy plane must not be able
+    to park the shipper forever on ``sleep(inf)`` — and falls back to the bounded backoff.
     """
     if value is None:
         return None
     try:
-        return float(value)
+        seconds = float(value)
     except ValueError:
         return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return seconds
