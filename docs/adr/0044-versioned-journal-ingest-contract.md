@@ -1,7 +1,7 @@
 # ADR-0044 — The versioned journal-ingest contract (design)
 
-- **Status:** Proposed
-- **Date:** 2026-09-08
+- **Status:** Accepted
+- **Date:** 2026-09-10 (proposed 2026-09-08)
 - **Deciders:** Jian (leejianrong2@gmail.com)
 
 Pays down the debt [ADR-0026](0026-license-and-hosted-journal-plane.md) §6 named ("the
