@@ -70,6 +70,58 @@ def test_core_import_pulls_no_studio_dependency() -> None:
     )
 
 
+def test_core_import_pulls_in_no_ingest_transport() -> None:
+    """Core knows nothing of the ``satay[ingest]`` shipper or its HTTP client (ADR-0045).
+
+    The shipper is in-tree but is not part of the runtime: nothing in the core imports
+    ``satay.ingest``, and the core certainly never pulls ``httpx`` (the transport's dep).
+    A child interpreter imports only the core modules and proves neither appears.
+    """
+    program = textwrap.dedent(
+        f"""
+        import importlib, sys
+        for name in {CORE_MODULES!r}:
+            importlib.import_module(name)
+        leaked = sorted(
+            n
+            for n in sys.modules
+            if n == "httpx" or n == "satay.ingest" or n.startswith("satay.ingest.")
+        )
+        if leaked:
+            sys.stdout.write("PULLED:" + ",".join(leaked))
+            raise SystemExit(1)
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"core import pulled the ingest extra or its HTTP client: {result.stdout} {result.stderr}"
+    )
+
+
+def test_the_shipper_imports_without_an_http_client() -> None:
+    """``satay.ingest`` (the pure shipper) carries no third-party dependency (ADR-0045).
+
+    Only ``satay.ingest.http`` needs ``httpx``; importing the package and the shipper must
+    not, so a caller can build and inspect a shipment — or wire a non-HTTP transport —
+    without the extra installed. A child interpreter imports the shipper and proves ``httpx``
+    stayed out of ``sys.modules``.
+    """
+    program = textwrap.dedent(
+        """
+        import importlib, sys
+        importlib.import_module("satay.ingest")
+        importlib.import_module("satay.ingest.shipper")
+        if "httpx" in sys.modules:
+            sys.stdout.write("PULLED:httpx")
+            raise SystemExit(1)
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
+    assert result.returncode == 0, (
+        f"importing the shipper pulled an HTTP client: {result.stdout} {result.stderr}"
+    )
+
+
 def test_run_app_drives_a_parked_run_with_no_studio_dependency() -> None:
     """``satay.run_app`` is core, and this proves it by *using* it (KAN-491, ADR-0030).
 
