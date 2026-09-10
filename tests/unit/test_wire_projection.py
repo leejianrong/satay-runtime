@@ -148,6 +148,11 @@ def test_an_unforked_run_has_no_lineage() -> None:
         pytest.param(lambda s: s["run"].pop("run_id"), id="missing-run-id"),
         pytest.param(lambda s: s.__setitem__("redaction", "maybe"), id="bad-redaction"),
         pytest.param(lambda s: s["events"][0].__setitem__("seq", "1"), id="seq-not-an-int"),
+        # A bad enum value or timestamp must surface as ShipmentFormatError, not the bare
+        # ValueError that RunStatus()/datetime.fromisoformat raise (the documented contract).
+        pytest.param(lambda s: s["run"].__setitem__("status", "bananas"), id="unknown-status"),
+        pytest.param(lambda s: s["run"].__setitem__("created_at", "nope"), id="bad-created-at"),
+        pytest.param(lambda s: s["events"][0].__setitem__("ts", "nope"), id="bad-event-ts"),
     ],
 )
 def test_a_malformed_shipment_is_rejected(mutate) -> None:

@@ -163,13 +163,34 @@ def _require(mapping: Mapping[str, Any], key: str, kind: type | tuple[type, ...]
     return value
 
 
+def _parse_status(value: str) -> RunStatus:
+    """A :class:`RunStatus`, or :class:`ShipmentFormatError` for an unknown status string.
+
+    ``RunStatus(value)`` raises a bare ``ValueError`` on a status this build does not know
+    (a newer producer's, or a typo); the contract promises ``ShipmentFormatError`` for a
+    malformed shipment, so it is remapped here rather than escaping uncaught.
+    """
+    try:
+        return RunStatus(value)
+    except ValueError as exc:
+        raise ShipmentFormatError(f"unknown run status {value!r}") from exc
+
+
+def _parse_ts(value: str) -> datetime:
+    """A timestamp, or :class:`ShipmentFormatError` for an unparseable one (as above)."""
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ShipmentFormatError(f"invalid timestamp {value!r}") from exc
+
+
 def _wire_to_event(run_id: str, raw: Mapping[str, Any]) -> RawEvent:
     return RawEvent(
         run_id=run_id,
         seq=_require(raw, "seq", int),
         event_id=_require(raw, "event_id", str),
         type=_require(raw, "type", str),
-        ts=datetime.fromisoformat(_require(raw, "ts", str)),
+        ts=_parse_ts(_require(raw, "ts", str)),
         payload=_require(raw, "payload", Mapping),
     )
 
@@ -189,9 +210,9 @@ def parse_shipment(shipment: Mapping[str, Any]) -> ParsedShipment:
     run = RunRecord(
         run_id=run_id,
         workflow_name=_require(header, "workflow_name", str),
-        status=RunStatus(_require(header, "status", str)),
+        status=_parse_status(_require(header, "status", str)),
         code_version=_require(header, "code_version", str),
-        created_at=datetime.fromisoformat(_require(header, "created_at", str)),
+        created_at=_parse_ts(_require(header, "created_at", str)),
         idempotency_key=None,
     )
     lineage: Lineage | None = None

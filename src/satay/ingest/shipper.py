@@ -68,6 +68,16 @@ class MissingBlobError(IngestError):
     """
 
 
+class PlaneResponseError(IngestError):
+    """The plane responded in a way the ingest contract does not define.
+
+    A ``200`` whose body is missing a valid ``ack_seq``, or a status the transport has no
+    rule for (a ``HEAD`` that is neither ``200``/``2xx`` nor ``404``). Raised so a
+    slightly-wrong plane surfaces as a diagnosable ingest error rather than an opaque
+    ``KeyError`` or a silently wrong answer.
+    """
+
+
 class BackpressureError(IngestError):
     """A transport signals the plane is over quota (``429``); ``retry_after`` is its hint.
 
