@@ -108,6 +108,7 @@ def project_run(
     producer: str,
     tenant: str,
     redaction: RedactionMode,
+    since_seq: int = 0,
 ) -> dict[str, Any]:
     """Project one run and its raw events onto an ingest shipment (ADR-0044 decision 2).
 
@@ -118,6 +119,13 @@ def project_run(
     store holds, not the plane interpreting it. ``events`` should be the run's raw events
     (:meth:`Store.read_raw_events <satay.journal.Store.read_raw_events>`) so blob
     references survive for the out-of-band blob channel.
+
+    ``since_seq`` supports incremental shipping (ADR-0044 decision 6): pass the plane's
+    current acknowledged ``seq`` and only events with a greater ``seq`` are emitted, so a
+    parked or long-running run ships its tail and a producer resumes after a crash without
+    re-sending a stored prefix. Lineage is computed from **all** ``events`` regardless, so
+    a resumed shipment whose tail no longer contains the ``RunForked`` still carries the
+    correct header (the plane keeps the first header idempotently either way).
     """
     header: dict[str, Any] = {
         "run_id": run.run_id,
@@ -138,7 +146,7 @@ def project_run(
         "tenant": tenant,
         "redaction": redaction,
         "run": header,
-        "events": [_event_to_wire(e) for e in events],
+        "events": [_event_to_wire(e) for e in events if e.seq > since_seq],
     }
 
 
