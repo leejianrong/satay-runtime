@@ -16,7 +16,7 @@ site_description = """
 Local-first durable execution for async Python: workflows that replay from the top \
 after a crash and reuse the work that already finished.
 """
-site_url = "https://leejianrong.github.io/satay-runtime/"
+site_url = "https://satay.abangai.dev/"
 site_author = "Jian"
 copyright = "Apache-2.0 licensed. Built from the satay-runtime repository."
 
