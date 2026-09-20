@@ -63,7 +63,11 @@ from satay.control.views import (
 if TYPE_CHECKING:
     # Imported for typing only — never at runtime module load, to keep FastAPI out of
     # the core import (the studio stack lives behind the lazy factory below).
+    from contextlib import AbstractAsyncContextManager
+
     from fastapi import FastAPI
+
+    from satay.control.app import ControlledApp
 
 
 def create_app(*args: Any, **kwargs: Any) -> FastAPI:
@@ -80,6 +84,14 @@ def serve(*args: Any, **kwargs: Any) -> None:
     _serve(*args, **kwargs)
 
 
+def run_app(*args: Any, **kwargs: Any) -> AbstractAsyncContextManager[ControlledApp]:
+    """``satay.run_app``, plus the control/read API for the block (ADR-0046; studio-only,
+    imports FastAPI/uvicorn lazily)."""
+    from satay.control.app import run_app as _run_app
+
+    return _run_app(*args, **kwargs)
+
+
 __all__ = [
     "DEFAULT_REDACTION_PATTERNS",
     "INHERIT",
@@ -90,6 +102,7 @@ __all__ = [
     "Command",
     "CommandQueue",
     "ControlAPI",
+    "ControlledApp",
     "ForkRun",
     "ForkValidationError",
     "NonLoopbackBindError",
@@ -112,6 +125,7 @@ __all__ = [
     "generate_token",
     "is_loopback_host",
     "resolve_fork_point",
+    "run_app",
     "run_calls",
     "run_list",
     "serve",
